@@ -838,7 +838,7 @@ export type PriceListImageReplacement = {
 export function overlayPriceListWorkbook(
   workbook: ParsedPriceListWorkbook,
   rows: readonly PriceListAmazonRow[],
-  options: { imageReplacements?: readonly PriceListImageReplacement[] } = {},
+  options: { imageReplacements?: readonly PriceListImageReplacement[]; appendComparisonColumns?: boolean } = {},
 ): Uint8Array {
   const archive = { ...workbook.archive };
   const serializer = new XMLSerializer();
@@ -913,7 +913,7 @@ export function overlayPriceListWorkbook(
       }
       rowEl.appendChild(cell);
     };
-    const headers = [
+    const headers = options.appendComparisonColumns === false ? [] : [
       "Amazon 設定售價 (USD)",
       "Amazon 最低價格設定 (USD)",
       "售價差額 (Amazon − 表上)",
@@ -939,7 +939,7 @@ export function overlayPriceListWorkbook(
           sheet.cells.find((c) => c.row === headerRow)?.styleId ?? 0,
         ),
       );
-    for (const product of products) {
+    for (const product of options.appendComparisonColumns === false ? [] : products) {
       const amazon = matched.get(`${sheet.name}\0${product.rowNumber}`);
       const basePrice = product.cells.standardPrice;
       const baseMinimum = product.cells.minimumPrice;
@@ -989,7 +989,7 @@ export function overlayPriceListWorkbook(
       cols!.appendChild(col);
     });
     const dimension = elements(doc, "dimension")[0];
-    dimension?.setAttribute(
+    if (headers.length) dimension?.setAttribute(
       "ref",
       `A1:${priceListColumnName(firstColumn + 5)}${sheet.rowCount}`,
     );
@@ -1172,6 +1172,19 @@ export function overlayPriceListWorkbook(
     serializer.serializeToString(contentTypes),
   );
   return zipSync(archive);
+}
+
+/** Reused by generated workbooks to isolate unavailable image bytes per row. */
+export function validatePriceListImageReplacement(
+  image: Pick<PriceListImageReplacement, "bytes" | "mediaType">,
+): void {
+  const png = image.bytes.length >= 24 &&
+    [137, 80, 78, 71, 13, 10, 26, 10].every((byte, index) => image.bytes[index] === byte);
+  const jpeg = image.bytes[0] === 255 && image.bytes[1] === 216;
+  if (image.bytes.byteLength > 2 * 1024 * 1024 ||
+      (image.mediaType === "image/png" ? !png : !jpeg))
+    fail("Amazon 首圖資料無法安全辨識。");
+  imageDimensions(image.bytes);
 }
 
 function imageDimensions(bytes: Uint8Array): { width: number; height: number } {

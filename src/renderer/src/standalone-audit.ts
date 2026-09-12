@@ -1,3 +1,4 @@
+import { IMAGE_AUDIT_MINIMUM_IMAGES, isImageAuditMinimum } from "../../shared/image-audit-options";
 import { parseAdvertisingCoverageSnapshot } from "./advertising-coverage";
 import { parseBusinessPricingAuditSnapshot } from "./business-pricing-audit";
 import { parseImageAuditSnapshot } from "./image-audit";
@@ -16,7 +17,7 @@ export const STANDALONE_AUDIT_KINDS = [
 
 export type StandaloneAuditKind = typeof STANDALONE_AUDIT_KINDS[number];
 export type StandaloneAuditMode = "live" | "demo";
-export type StandaloneAuditOptions = Readonly<{ months?: 6 | 12 | 23 }>;
+export type StandaloneAuditOptions = Readonly<{ months?: 6 | 12 | 23; minimumImages?: number }>;
 export type StandaloneAuditProgress = Readonly<{
   stage: string;
   message: string;
@@ -62,6 +63,7 @@ export type StandaloneAuditExpectation = Readonly<{
   mode: StandaloneAuditMode;
   jobId?: string;
   contextId?: string;
+  options?: StandaloneAuditOptions;
 }>;
 
 type StandaloneAuditRequest = (input: Readonly<{
@@ -170,6 +172,7 @@ export async function startStandaloneAuditJob(input: Readonly<{
     kind: input.kind,
     marketplaceId: input.marketplaceId,
     mode: input.mode,
+    options: input.options ?? (input.kind === "image" ? { minimumImages: IMAGE_AUDIT_MINIMUM_IMAGES } : undefined),
   });
 }
 
@@ -224,6 +227,13 @@ function parseOptions(
   kind: StandaloneAuditKind,
 ): StandaloneAuditOptions {
   const source = record(value, "單項健檢選項");
+  if (kind === "image") {
+    const minimumImages = source.minimumImages === undefined ? IMAGE_AUDIT_MINIMUM_IMAGES : source.minimumImages;
+    if (Object.keys(source).some(key => key !== "minimumImages") || !isImageAuditMinimum(minimumImages)) {
+      throw new Error("圖片健檢最低張數只能選 1–9 張。");
+    }
+    return { minimumImages };
+  }
   if (kind !== "subscription") {
     exactKeys(source, [], "單項健檢選項");
     return {};
@@ -310,6 +320,11 @@ export function parseStandaloneAuditJob(
     progress: parseProgress(source.progress),
   } as const;
 
+  if (base.kind === "image" && expected.options !== undefined &&
+    base.options.minimumImages !== (expected.options.minimumImages ?? IMAGE_AUDIT_MINIMUM_IMAGES)) {
+    throw new Error("圖片健檢門檻與本次選擇不一致，請重新掃描。");
+  }
+
   if (
     source.ready === false &&
     (source.status === "queued" || source.status === "running")
@@ -383,6 +398,7 @@ export function standaloneAuditSnapshotMatchesJob(
     fetchedAt: string;
     marketplaceId: string;
     exportId?: string;
+    minimumImages?: number;
     mode?: StandaloneAuditMode;
   }> | null,
   job: StandaloneAuditJob | null,
@@ -395,6 +411,7 @@ export function standaloneAuditSnapshotMatchesJob(
         fetchedAt?: unknown;
         marketplaceId?: unknown;
         exportId?: unknown;
+        minimumImages?: unknown;
         mode?: unknown;
       }
     : null;
@@ -420,6 +437,7 @@ export function standaloneAuditSnapshotMatchesJob(
     snapshot.marketplaceId === job.marketplaceId &&
     owned.marketplaceId === job.marketplaceId &&
     snapshot.fetchedAt === owned.fetchedAt &&
+    (job.kind !== "image" || (snapshot.minimumImages === (job.options.minimumImages ?? IMAGE_AUDIT_MINIMUM_IMAGES) && owned.minimumImages === (job.options.minimumImages ?? IMAGE_AUDIT_MINIMUM_IMAGES))) &&
     (snapshot.mode === undefined || snapshot.mode === job.mode) &&
     (owned.mode === undefined || owned.mode === job.mode) &&
     exportIdMatches
@@ -651,7 +669,7 @@ export function standaloneAuditTerminalOutcome(
       return "partial";
     }
     if (job.kind === "image") {
-      const snapshot = parseImageAuditSnapshot(job.snapshot, job.marketplaceId);
+      const snapshot = parseImageAuditSnapshot(job.snapshot, job.marketplaceId, job.options.minimumImages ?? IMAGE_AUDIT_MINIMUM_IMAGES);
       return snapshot.summary.incomplete > 0 ? "partial" : "success";
     }
     if (job.kind === "variation") {

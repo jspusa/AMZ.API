@@ -54,6 +54,10 @@ import { OperationsIntelligenceCoordinator, type OperationsIntelligencePort } fr
 import { createOperationsSourceReaders } from "./operations-source-readers";
 import { PriceListWorkbooks } from "./price-list-workbooks";
 import { PriceListAmazon } from "./price-list-amazon";
+import { VineProgressOwner } from "./vine-progress";
+import { InventoryHealthCoordinator } from "./inventory-health-coordinator";
+import type { PrivateLocalJsonPort } from "./private-local-json";
+import { FbaExpiryReads } from "./amazon/fba-expiry-reads";
 import { PriceListError, overlayPriceListWorkbook } from "./price-list-workbook";
 import { readPriceListListing } from "./amazon/price-list-reads";
 import {
@@ -303,6 +307,8 @@ function validApiBody(value: unknown): boolean {
 export class ApiRouter {
   private readonly priceListWorkbooks = new PriceListWorkbooks();
   private readonly priceListAmazon: PriceListAmazon;
+  private readonly inventoryHealth: InventoryHealthCoordinator;
+  private readonly vine: VineProgressOwner;
   private readonly vault: CredentialVault;
   private readonly spExecutionContext: RouterRequestContextAdapter;
   private readonly writeGate: MainWriteGatePort;
@@ -343,11 +349,15 @@ export class ApiRouter {
   private readonly aPlusAuditCoordinator: AplusAuditCoordinatorPort;
   private readonly standaloneAuditCoordinator: StandaloneAuditCoordinatorPort;
   private contextStateRevision = 0;
+  private readonly onContextInvalidated?: () => void;
 
   constructor(input: {
     store: LocalStore;
     vault: CredentialVault;
     approveWrite: WriteApproval;
+    onContextInvalidated?: () => void;
+    inventoryHealthStore?: PrivateLocalJsonPort;
+    vineStore?: PrivateLocalJsonPort;
     agedInventoryReads?: AgedInventoryReadsPort;
     salesAndTrafficRead?: SalesAndTrafficDocumentReader;
     salesAndTrafficDemo?: Partial<SalesAndTrafficDemoSource>;
@@ -403,6 +413,7 @@ export class ApiRouter {
     variationMoveMutations?: VariationMoveMutationsPort;
     businessPricingMutations?: BusinessPricingMutationsPort;
   }) {
+    this.onContextInvalidated = input.onContextInvalidated;
     const store = input.store;
     this.vault = input.vault;
     this.operationsBoard = input.operationsBoard ?? new OperationsBoard({ vault: input.vault });
@@ -579,12 +590,18 @@ export class ApiRouter {
         getStandaloneJob: (request) =>
           this.standaloneAuditCoordinator.getJob(request),
       });
+    this.inventoryHealth = new InventoryHealthCoordinator({
+      context: this.spExecutionContext,
+      expiry: new FbaExpiryReads({ context: this.spExecutionContext, adapter: fbaInboundExternalReadAdapterProduction }),
+      store: input.inventoryHealthStore,
+    });
     this.agedInventoryAuditOwner = input.agedInventoryAudit ??
       new AgedInventoryAudit({
         context: this.spExecutionContext,
         beginReport: (request) => agedInventoryReads.begin(request),
         statusReport: (request) => agedInventoryReads.status(request),
         readReport: (request) => agedInventoryReads.read(request),
+        afterCapture: (request) => this.inventoryHealth.refresh(request),
       });
     this.listingsExportOwner = input.listingsExport ?? new ListingsExport({
       context: this.spExecutionContext,
@@ -657,6 +674,7 @@ export class ApiRouter {
           priceHealth: new PriceHealthReads({ adapter: priceHealthReadAdapterProduction, context: this.spExecutionContext }),
           advertising: this.advertisingCoordinator,
         });
+    this.vine = new VineProgressOwner({ context: this.spExecutionContext, fba: (context, signal) => operationsSourceReaders.fba(context, signal), store: input.vineStore });
     this.operationsIntelligence = input.operationsIntelligence ??
       new OperationsIntelligenceCoordinator({
         context: this.spExecutionContext,
@@ -796,6 +814,9 @@ export class ApiRouter {
 
   private clearContextBoundState(): void {
     this.contextStateRevision += 1;
+    this.onContextInvalidated?.();
+    this.inventoryHealth.clear();
+    this.vine.clear();
     this.priceListAmazon.clear();
     this.priceListWorkbooks.clear();
     this.reportBroker.clear();
@@ -974,6 +995,16 @@ export class ApiRouter {
         if (response.status === 200) this.priceListAmazon.clear();
         return response;
       }
+      case "GET /api/vine":
+        return this.vine.observe(request);
+      case "POST /api/vine/import":
+        return this.vine.import(request);
+      case "GET /api/inventory-health":
+        return this.inventoryHealth.read(request);
+      case "POST /api/inventory-health/confirmation":
+        return this.inventoryHealth.confirm(request);
+      case "POST /api/price-list/amazon-generate":
+        return this.priceListAmazon.generate(request);
       case "POST /api/price-list/amazon-refresh":
         return this.priceListAmazon.start(request);
       case "GET /api/price-list/amazon-refresh":

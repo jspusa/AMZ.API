@@ -1,3 +1,4 @@
+import { isImageAuditMinimum } from "../shared/image-audit-options";
 import type { ApiRequest, ApiResponse } from "../shared/contracts";
 import type { MarketplaceId } from "../shared/marketplaces";
 import { throwIfAborted } from "./abort-utils";
@@ -157,7 +158,7 @@ export class StandaloneAuditCoordinator
     const kind = auditKind(body.kind);
     const marketplaceId = parseMarketplace(body.marketplaceId);
     const mode = body.mode === "live" || body.mode === "demo" ? body.mode : null;
-    let options: { months?: 6 | 12 | 23 } | undefined;
+    let options: { months?: 6 | 12 | 23; minimumImages?: number } | undefined;
     if (body.options !== undefined) {
       if (
         !body.options ||
@@ -167,10 +168,15 @@ export class StandaloneAuditCoordinator
         return invalid("單項健檢 options 格式無效。");
       }
       const source = body.options as Record<string, unknown>;
-      if (Object.keys(source).some((key) => key !== "months")) {
+      if (Object.keys(source).some((key) => key !== (kind === "image" ? "minimumImages" : "months"))) {
         return invalid("單項健檢 options 欄位無效。");
       }
-      if (source.months !== undefined) {
+      if (kind === "image") {
+        if (source.minimumImages !== undefined && !isImageAuditMinimum(source.minimumImages)) {
+          return invalid("圖片健檢最低張數只能選 1–9 張。");
+        }
+        options = source.minimumImages === undefined ? {} : { minimumImages: source.minimumImages };
+      } else if (source.months !== undefined) {
         if (source.months !== 6 && source.months !== 12 && source.months !== 23) {
           return invalid("Subscribe & Save 月數只能選 6、12 或 23。");
         }
@@ -386,6 +392,7 @@ export class StandaloneAuditCoordinator
               }),
           })
         : await this.image.captureStandaloneFromListings({
+            minimumImages: input.options.minimumImages,
             context: listing.context,
             marketplaceId,
             listings: listing.data,

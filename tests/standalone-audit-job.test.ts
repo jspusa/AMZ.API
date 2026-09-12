@@ -105,6 +105,21 @@ describe("standalone audit background job coordinator", () => {
     });
   });
 
+  it("single-flights the same image threshold and separates different thresholds", async () => {
+    const coordinator = new StandaloneAuditJobCoordinator({ gateway: gateway({ run: async () => await new Promise<never>(() => undefined) }) });
+    const identity = { kind: "image" as const, marketplaceId: MARKETPLACE_ID, mode: "live" as const };
+    const byDefault = await coordinator.start(identity);
+    const eight = await coordinator.start({ ...identity, options: { minimumImages: 8 } });
+    const six = await coordinator.start({ ...identity, options: { minimumImages: 6 } });
+    expect(byDefault.options).toEqual({ minimumImages: 8 });
+    expect(byDefault.jobId).toBe(eight.jobId);
+    expect(six.jobId).not.toBe(eight.jobId);
+    for (const minimumImages of [0, 10, 2.5, NaN]) {
+      await expect(coordinator.start({ ...identity, options: { minimumImages } })).rejects.toThrow();
+    }
+    coordinator.clear();
+  });
+
   it("single-flights only an exact audit selection including S&S months", async () => {
     const coordinator = new StandaloneAuditJobCoordinator({
       gateway: gateway({

@@ -22,7 +22,7 @@ function completedImageJob(
     kind: "image",
     marketplaceId: "ATVPDKIKX0DER",
     mode: "live",
-    options: {},
+    options: { minimumImages: snapshot.minimumImages },
     ready: true,
     status: "completed",
     progress: {
@@ -40,6 +40,16 @@ function completedImageJob(
 }
 
 describe("FBA image audit parsing", () => {
+  it("offers a one-to-nine image threshold with eight selected before scanning", () => {
+    const markup = renderToStaticMarkup(createElement(ImageAuditPanel, {
+      marketplaceId: "ATVPDKIKX0DER", marketplaceShort: "US", onOpenSku: () => undefined,
+    }));
+    expect(markup).toContain('aria-label="圖片健檢最低張數"');
+    expect(markup).toContain('<option value="8" selected="">8 張</option>');
+    expect(markup).toContain('<option value="1">1 張</option>');
+    expect(markup).toContain('<option value="9">9 張</option>');
+  });
+
   it("requires the short-lived main-process export snapshot id", () => {
     expect(parseImageAuditExportId({ exportId: "audit-export-1234" })).toBe(
       "audit-export-1234",
@@ -154,15 +164,15 @@ describe("FBA image audit parsing", () => {
     ).toThrow(/目前選擇的站點不一致；已停止顯示與快取/u);
   });
 
-  it("rejects an older bridge threshold instead of silently passing five-image listings", () => {
+  it("rejects a bridge snapshot with a different selected threshold", () => {
     expect(() =>
       parseImageAuditSnapshot({
         marketplaceId: "ATVPDKIKX0DER",
         fetchedAt: "2026-08-08T08:00:00.000Z",
-        minimumImages: 5,
+        minimumImages: 6,
         rows: [],
-      }),
-    ).toThrow(/固定門檻為 6 張.*更新 AMZ\.API Notebook Key Bridge/u);
+      }, "ATVPDKIKX0DER", 8),
+    ).toThrow(/門檻與本次選擇不一致.*更新 AMZ\.API Notebook Key Bridge/u);
   });
 
   it("renders the six-image boundary and a direct image-workspace action", () => {
@@ -185,6 +195,7 @@ describe("FBA image audit parsing", () => {
       createElement(ImageAuditPanel, {
         marketplaceId: "ATVPDKIKX0DER",
         marketplaceShort: "US",
+        minimumImages: 6,
         onOpenSku: () => undefined,
         initialJob: completedImageJob(snapshot, "demo-export-1234"),
         cachedResult: {
@@ -228,6 +239,7 @@ describe("FBA image audit parsing", () => {
         presentation: "workspace",
         initialMarketplaceId: "ATVPDKIKX0DER",
         initialTab: "audit",
+        minimumImages: 6,
         auditCacheByMarketplace: {
           ATVPDKIKX0DER: {
             snapshot,

@@ -93,7 +93,7 @@ describe("dashboard audit workspace interactions", () => {
     const headingFocus = Object.fromEntries(
       AUDIT_SUITE_SECTIONS.map(({ label }) => [label, vi.fn()]),
     ) as Record<string, ReturnType<typeof vi.fn>>;
-    const menuFocus = { "產品區": vi.fn(), "價格區": vi.fn() };
+    const menuFocus = { "產品區": vi.fn(), "價格區": vi.fn(), "營運區": vi.fn() };
     const priceHeadingFocus = vi.fn();
     let renderer: ReactTestRenderer | null = null;
     const querySelector = vi.fn((selector: string) => {
@@ -219,6 +219,13 @@ describe("dashboard audit workspace interactions", () => {
     });
     await flushTimeouts();
     const root = renderer!.root;
+    const minimumSelect = root.findByProps({ "aria-label": "首頁圖片健檢最低張數" });
+    expect(minimumSelect.props.value).toBe(8);
+    const beforeMinimumChange = fetchMock.mock.calls.length;
+    await act(async () => minimumSelect.props.onChange({ currentTarget: { value: "6" } }));
+    expect(root.findByProps({ "aria-label": "首頁圖片健檢最低張數" }).props.value).toBe(6);
+    expect(fetchMock.mock.calls.length).toBe(beforeMinimumChange);
+
 
     expect(root.findAllByProps({ "aria-label": "首頁區段" })).toHaveLength(0);
     const requestsBeforeSectionNavigation = fetchMock.mock.calls.length;
@@ -353,6 +360,7 @@ describe("dashboard audit workspace interactions", () => {
     for (const [group, label, className] of [
       ["產品區", "變體", "variation-workspace"],
       ["價格區", "價目表", "price-list-workspace"],
+      ["營運區", "Vine 進度", "vine-workspace"],
     ] as const) {
       windowMock.scrollY = 900;
       await act(async () => root.findAllByType("button").find((button) => button.props["aria-label"] === group)!.props.onClick());
@@ -400,7 +408,7 @@ describe("dashboard audit workspace interactions", () => {
     await act(async () => { await vi.dynamicImportSettled(); });
     await flushAnimationFrames();
     expect(root.findAll((node) => String(node.props.className ?? "")
-      .split(/\s+/u).includes("variation-workspace"))).not.toHaveLength(0);
+      .split(/\s+/u).includes("variation-workspace")).length).not.toBe(0);
 
     const preventDefault = vi.fn();
     await act(async () => root.findByProps({ "aria-label": "回到 AMZ.API 首頁" })
@@ -409,7 +417,7 @@ describe("dashboard audit workspace interactions", () => {
 
     expect(preventDefault).toHaveBeenCalledOnce();
     expect(root.findAll((node) => String(node.props.className ?? "")
-      .split(/\s+/u).includes("variation-workspace"))).toHaveLength(0);
+      .split(/\s+/u).includes("variation-workspace")).length).toBe(0);
     expect(sectionTargets.get("workspace-top")!.scrollIntoView)
       .toHaveBeenLastCalledWith(expect.objectContaining({ block: "start" }));
     expect(sectionTargets.get("workspace-top")!.focus)

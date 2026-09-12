@@ -93,6 +93,7 @@ export type AgedInventoryAuditDependencies = Readonly<{
   beginReport: AgedInventoryBeginReport;
   statusReport: AgedInventoryStatusReport;
   readReport: AgedInventoryReadReport;
+  afterCapture?: (input: { context: SpExecutionContext; snapshot: AgedInventorySnapshot; signal: AbortSignal; onProgress?: (records: number) => void }) => Promise<void>;
   directTtlMs?: number;
   standaloneTtlMs?: number;
   now?: () => number;
@@ -127,6 +128,7 @@ export class AgedInventoryAudit implements AgedInventoryAuditPort {
   private readonly beginReport: AgedInventoryBeginReport;
   private readonly statusReport: AgedInventoryStatusReport;
   private readonly readReport: AgedInventoryReadReport;
+  private readonly afterCapture: AgedInventoryAuditDependencies["afterCapture"];
   private readonly snapshots: ContextBoundAuditSnapshotStore<AgedInventorySnapshot>;
   private readonly standaloneTtlMs: number;
   private readonly wait: NonNullable<AgedInventoryAuditDependencies["wait"]>;
@@ -139,6 +141,7 @@ export class AgedInventoryAudit implements AgedInventoryAuditPort {
     this.beginReport = input.beginReport;
     this.statusReport = input.statusReport;
     this.readReport = input.readReport;
+    this.afterCapture = input.afterCapture;
     this.standaloneTtlMs = input.standaloneTtlMs ?? DEFAULT_STANDALONE_TTL_MS;
     if (!Number.isSafeInteger(this.standaloneTtlMs) || this.standaloneTtlMs < 1) {
       throw new Error("Aged inventory standalone retention must be positive.");
@@ -232,6 +235,7 @@ export class AgedInventoryAudit implements AgedInventoryAuditPort {
     context: SpExecutionContext;
     revision: number;
     standalone: boolean;
+    onProgress?: (records: number) => void;
   }>): Promise<AgedInventoryAuditCapture> {
     const snapshot = await this.readReport({
       marketplaceId: input.marketplaceId,
@@ -244,6 +248,10 @@ export class AgedInventoryAudit implements AgedInventoryAuditPort {
     this.assertRevision(input.revision);
     throwIfAborted(input.signal);
     this.assertSnapshotContext(snapshot, input.context);
+    await this.afterCapture?.({ context: input.context, snapshot, signal: input.signal, onProgress: input.onProgress });
+    await this.context.assertCurrent(input.context);
+    this.assertRevision(input.revision);
+    throwIfAborted(input.signal);
     const exportId = this.snapshots.publish({
       context: input.context,
       marketplaceId: input.marketplaceId,
@@ -479,6 +487,10 @@ export class AgedInventoryAudit implements AgedInventoryAuditPort {
           context,
           revision,
           standalone: true,
+          onProgress: (records) => {
+            input.heartbeat();
+            input.updateProgress({ stage: "inbound_expiry", message: `正在整理入庫申報效期（已讀取 ${records} 筆）`, completedUnits: records, totalUnits: null });
+          },
         });
         input.updateProgress({
           stage: "complete",

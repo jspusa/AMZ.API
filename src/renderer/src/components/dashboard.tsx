@@ -26,6 +26,8 @@ import {
   type AuditSuiteSectionId,
 } from "../../../shared/audit-suite";
 import DeferredWorkspace from "./deferred-workspace";
+import { createWorkspaceLoader } from "../workspace-loader";
+import { nativeDisplayPreferences, persistDisplayPreferences } from "../display-preferences-client";
 import AdsDrawer from "./ads-drawer";
 import AuditSuiteHomeCard from "./audit-suite-home-card";
 import GlobalSkuSearch from "./global-sku-search";
@@ -101,6 +103,7 @@ import {
   standaloneAuditTerminalOutcome,
   type StandaloneAuditJob,
   type StandaloneAuditKind,
+  type StandaloneAuditOptions,
 } from "../standalone-audit";
 
 const AccountingCenterDrawer = lazy(() => import("./accounting-center-panel").then(
@@ -109,8 +112,9 @@ const AccountingCenterDrawer = lazy(() => import("./accounting-center-panel").th
 const AgedInventoryPanel = lazy(() => import("./aged-inventory-panel"));
 const ReportLibraryPanel = lazy(() => import("./report-library-panel"));
 const ReviewAuditPanel = lazy(() => import("./review-audit-panel"));
-const VariationPlannerDrawer = lazy(() => import("./variation-planner-drawer"));
+const variationWorkspaceLoader = createWorkspaceLoader(() => import("./variation-planner-drawer"));
 const PriceListPanel = lazy(() => import("./price-list-panel"));
+const VinePanel = lazy(() => import("./vine-panel"));
 
 export { standaloneAuditSnapshotMatchesJob };
 
@@ -143,6 +147,7 @@ type Tool =
   | "variations"
   | "price"
   | "price-list"
+  | "vine"
   | "promotion"
   | "subscriptions"
   | "business-pricing"
@@ -217,16 +222,18 @@ export function businessPricingAttentionCount(
 export function standaloneAuditDashboardKey(
   marketplaceId: string,
   kind: StandaloneAuditKind,
+  options?: StandaloneAuditOptions,
 ): string {
-  return `${marketplaceId}\u0000${kind}`;
+  return `${marketplaceId}\u0000${kind}${kind === "image" ? `\u0000${options?.minimumImages ?? 8}` : ""}`;
 }
 
 export function auditSuiteLaunchFailureKey(
   marketplaceId: string,
   mode: "live" | "demo",
   sectionId: AuditSuiteSectionId,
+  options?: StandaloneAuditOptions,
 ): string {
-  return `${marketplaceId}\u0000${mode}\u0000${sectionId}`;
+  return `${marketplaceId}\u0000${mode}\u0000${sectionId}${sectionId === "image" ? `\u0000${options?.minimumImages ?? 8}` : ""}`;
 }
 
 export type AuditSuiteLaunchFailure = Readonly<{
@@ -662,6 +669,7 @@ const TOOL_META: Record<Tool, { label: string; symbol: string; group: Navigation
   subscriptions: { label: "訂閱價格", symbol: "S", group: "pricing" },
   "business-pricing": { label: "B2B 價格", symbol: "B2B", group: "pricing" },
   accounting: { label: "帳務", symbol: "▤", group: "operations" },
+  vine: { label: "Vine 進度", symbol: "V", group: "operations" },
 };
 
 const TOOL_SECTIONS: ReadonlyArray<{
@@ -686,7 +694,7 @@ const TOOL_SECTIONS: ReadonlyArray<{
     label: "營運區",
     symbol: "◎",
     group: "operations",
-    tools: ["restock", "ads", "accounting"],
+    tools: ["restock", "ads", "vine", "accounting"],
   },
   {
     label: "報表區",
@@ -744,8 +752,17 @@ export default function Dashboard({
     useState<TrendRangeSelection>(startingSelection);
   const [openTool, setOpenTool] = useState<Tool | null>(null);
   const [priceListOpened, setPriceListOpened] = useState(false);
+  const [vineOpened, setVineOpened] = useState(false);
   const [variationWorkspaceBusy, setVariationWorkspaceBusy] = useState(false);
-  const inlineTool = openTool === "variations" || openTool === "price-list";
+  const [variationLoadAttempt, setVariationLoadAttempt] = useState(0);
+  const VariationPlannerDrawer = useMemo(() => lazy(variationWorkspaceLoader.load), [variationLoadAttempt]);
+  const [imageAuditMinimumImages, setImageAuditMinimumImages] = useState(() => nativeDisplayPreferences()?.imageAuditMinimumImages ?? 8);
+  const changeImageAuditMinimumImages = (value: number) => {
+    if (!Number.isInteger(value) || value < 1 || value > 9) return;
+    setImageAuditMinimumImages(value);
+    void persistDisplayPreferences({ imageAuditMinimumImages: value });
+  };
+  const inlineTool = openTool === "variations" || openTool === "price-list" || openTool === "vine";
   const inlineReturnRef = useRef<{ scrollY: number; group: NavigationGroup } | null>(null);
   const [openToolMenu, setOpenToolMenu] = useState<NavigationGroup | null>(null);
   const [operationsIntelligenceView, setOperationsIntelligenceView] =
@@ -800,6 +817,7 @@ export default function Dashboard({
   const [returnToUnboundVariationAudit, setReturnToUnboundVariationAudit] = useState(false);
   const closeVariationPlanner = () => {
     setOpenTool(null);
+    setVariationLoadAttempt(attempt => attempt + 1);
     setVariationWorkspaceBusy(false);
     if (returnToUnboundVariationAudit) {
       setReturnToUnboundVariationAudit(false);
@@ -855,6 +873,7 @@ export default function Dashboard({
     });
   };
   const closePriceList = () => { setOpenTool(null); restoreInlineTool(); };
+  const closeVine = () => { setOpenTool(null); restoreInlineTool(); };
   const modalWasOpenRef = useRef(false);
   const auditWorkspaceReturnRef = useRef<{
     sectionId: AuditSuiteSectionId;
@@ -1134,6 +1153,7 @@ export default function Dashboard({
   }, [reportLibraryOpen, reviewAuditOpen]);
 
   const openAuditWorkspace = useCallback((sectionId: AuditSuiteSectionId) => {
+    if (sectionId === "variation") variationWorkspaceLoader.preload();
     reviewReturnRef.current = false;
     auditWorkspaceReturnRef.current = {
       sectionId,
@@ -1210,7 +1230,8 @@ export default function Dashboard({
     if (tool === "images") setImageWorkspaceTab("single");
     if (tool === "variations") setReturnToUnboundVariationAudit(false);
     if (tool === "price-list") setPriceListOpened(true);
-    if (tool === "variations" || tool === "price-list") {
+    if (tool === "vine") setVineOpened(true);
+    if (tool === "variations" || tool === "price-list" || tool === "vine") {
       inlineReturnRef.current = { scrollY: window.scrollY, group: TOOL_META[tool].group };
     }
     if (tool === "subscriptions") setAuditPreference("subscriptions");
@@ -1335,6 +1356,7 @@ export default function Dashboard({
         job.marketplaceId,
         job.mode,
         sectionId,
+        job.options,
       );
       setAuditSuiteLaunchFailures((current) => {
         const failure = current[failureKey];
@@ -1347,7 +1369,7 @@ export default function Dashboard({
       });
     }
     setStandaloneAuditJobs((current) => {
-      const key = standaloneAuditDashboardKey(job.marketplaceId, job.kind);
+      const key = standaloneAuditDashboardKey(job.marketplaceId, job.kind, job.options);
       const merged = mergeAuditJobObservation(current[key], job);
       if (merged === current[key]) return current;
       return { ...current, [key]: merged };
@@ -1622,7 +1644,8 @@ export default function Dashboard({
   const currentContentAuditOutcome = currentContentAudit?.snapshot.rows.some(
     (row) => row.readStatus === "incomplete",
   ) ? "部分完成" : "成功";
-  const currentImageAudit = imageAuditCache[marketplaceId] ?? null;
+  const cachedImageAudit = imageAuditCache[marketplaceId] ?? null;
+  const currentImageAudit = cachedImageAudit?.snapshot.minimumImages === imageAuditMinimumImages ? cachedImageAudit : null;
   const currentImageAuditAttentionCount = currentImageAudit
     ? currentImageAudit.snapshot.summary.underMinimum +
       currentImageAudit.snapshot.summary.incomplete
@@ -1640,7 +1663,7 @@ export default function Dashboard({
     : null;
   const currentStandaloneJob = (kind: StandaloneAuditKind) => {
     const job = standaloneAuditJobs[
-      standaloneAuditDashboardKey(marketplaceId, kind)
+      standaloneAuditDashboardKey(marketplaceId, kind, { minimumImages: imageAuditMinimumImages })
     ] ?? null;
     return job?.mode === currentStandaloneMode ? job : null;
   };
@@ -1656,6 +1679,7 @@ export default function Dashboard({
       marketplaceId,
       currentStandaloneMode,
       sectionId,
+      { minimumImages: imageAuditMinimumImages },
     )] ?? null;
   const currentContentLaunchFailure = currentAuditLaunchFailure("content");
   const currentImageLaunchFailure = currentAuditLaunchFailure("image");
@@ -1685,6 +1709,7 @@ export default function Dashboard({
       marketplaceId,
       currentStandaloneMode,
       sectionId,
+      { minimumImages: imageAuditMinimumImages },
     );
     setAuditSuiteLaunchFailures((current) => {
       if (message === null) {
@@ -1980,6 +2005,8 @@ export default function Dashboard({
       case "image":
         return (
           <ImageWorkspaceDrawer
+            minimumImages={imageAuditMinimumImages}
+            onMinimumImagesChange={changeImageAuditMinimumImages}
             presentation="workspace"
             initialMarketplaceId={marketplaceId}
             initialSellerSku={globalSku}
@@ -2081,9 +2108,9 @@ export default function Dashboard({
 
   const reviewProjector = useMemo(() => new ReviewSourceProjector(), [marketplaceId, currentStandaloneMode]);
   const reviewSources = useMemo(() => reviewProjector.read({
-    marketplaceId, mode: currentStandaloneMode, jobs: standaloneAuditJobs, aplusJob: currentAplusJob,
-    blockedKinds: REVIEW_KINDS.filter(kind => Boolean(auditSuiteLaunchFailures[auditSuiteLaunchFailureKey(marketplaceId, currentStandaloneMode, kind)])),
-  }), [reviewProjector, marketplaceId, currentStandaloneMode, standaloneAuditJobs, currentAplusJob, auditSuiteLaunchFailures]);
+    marketplaceId, mode: currentStandaloneMode, jobs: Object.fromEntries(Object.entries(standaloneAuditJobs).filter(([, job]) => job.kind !== "image" || job.options.minimumImages === imageAuditMinimumImages)), aplusJob: currentAplusJob,
+    blockedKinds: REVIEW_KINDS.filter(kind => Boolean(auditSuiteLaunchFailures[auditSuiteLaunchFailureKey(marketplaceId, currentStandaloneMode, kind, { minimumImages: imageAuditMinimumImages })])),
+  }), [reviewProjector, marketplaceId, currentStandaloneMode, standaloneAuditJobs, currentAplusJob, auditSuiteLaunchFailures, imageAuditMinimumImages]);
   const openReviewSource = (kind: ReviewKind, sellerSku: string) => {
     const source = reviewSources.find(item => item.kind === kind);
     if (source?.state !== "ready" || !source.snapshot?.cells.some(cell => cell.sellerSku === sellerSku)) return;
@@ -2353,7 +2380,14 @@ export default function Dashboard({
               </DeferredWorkspace>
             </div>
           )}
-          {openTool === "variations" ? <DeferredWorkspace onClose={closeVariationPlanner}>
+          {vineOpened && (
+            <div data-vine-session hidden={openTool !== "vine"} inert={openTool !== "vine" ? true : undefined}>
+              <DeferredWorkspace onClose={closeVine}>
+                <VinePanel onClose={closeVine} active={openTool === "vine"} />
+              </DeferredWorkspace>
+            </div>
+          )}
+          {openTool === "variations" ? <DeferredWorkspace key={variationLoadAttempt} onClose={closeVariationPlanner} onRetry={() => setVariationLoadAttempt(attempt => attempt + 1)}>
             <VariationPlannerDrawer
               presentation="workspace"
               workspaceBackLabel={returnToUnboundVariationAudit ? "回到未綁變體健檢" : "回首頁"}
@@ -2368,7 +2402,7 @@ export default function Dashboard({
               onContextResolved={resolveGlobalContext}
               onClose={closeVariationPlanner}
             />
-          </DeferredWorkspace> : openTool === "price-list" ? null : activeAuditWorkspace ? auditWorkspaceView : <>
+          </DeferredWorkspace> : openTool === "price-list" || openTool === "vine" ? null : activeAuditWorkspace ? auditWorkspaceView : <>
           <h1 id="workspace-title" className="visually-hidden">AMZ.API FBA 營運首頁</h1>
 
           {currentConnectionEvidence === "demo" && <section className="os-notice"><span>D</span><div><strong>目前使用展示資料</strong><p>{visibleSalesTrend?.notice || "在右上角本機安全連線加入憑證後，即可切換真實 Amazon 資料。"}</p></div><button type="button" onClick={onOpenConnection}>開啟本機安全連線</button></section>}
@@ -2388,13 +2422,20 @@ export default function Dashboard({
             )}
           </div>
 
-          <div id="home-bulletin" tabIndex={-1}><OperationsBulletinCard /></div>
+          <div id="home-bulletin" tabIndex={-1}><OperationsBulletinCard marketplaceId={marketplace.id} mode={currentStandaloneMode} onOpenHealth={() => { setAuditPreference("inventory"); setAgedInventoryOpen(true); }} /></div>
 
           <section id="home-audits" tabIndex={-1} aria-labelledby="home-audits-title">
           <div className="home-section-heading">
             <h2 id="home-audits-title">商品健檢</h2>
+            <label className="home-image-minimum"><span>圖片至少</span>
+              <select aria-label="首頁圖片健檢最低張數" value={imageAuditMinimumImages} disabled={primaryAuditJobsRunning}
+                onChange={event => changeImageAuditMinimumImages(Number(event.currentTarget.value))}>
+                {[1, 2, 3, 4, 5, 6, 7, 8, 9].map(value => <option key={value} value={value}>{value} 張</option>)}
+              </select>
+            </label>
             <button type="button" className="audit-review-home-button" onClick={openReviewOverview}>健檢總表</button>
             <AuditSuiteHomeCard
+              imageMinimumImages={imageAuditMinimumImages}
               marketplaceId={marketplaceId}
               mode={currentStandaloneMode}
               hasRunningJobs={primaryAuditJobsRunning}
@@ -2685,7 +2726,7 @@ export default function Dashboard({
       {openTool === "inbound" && <InboundShipmentsDrawer marketplaceId={marketplaceId} marketplaceShort={marketplace.shortLabel} marketplaceTimeZone={marketplace.timeZone} cachedResult={currentInboundShipment} onCachedResultChange={cacheInboundShipment} onClose={() => setOpenTool(null)} />}
       {openTool === "restock" && <ReplenishmentDrawer initialMarketplaceId={marketplaceId} initialSellerSku={globalSku} onContextResolved={resolveGlobalContext} onClose={() => setOpenTool(null)} />}
       {openTool === "copy" && <SkuOperationsDrawer initialMarketplaceId={marketplaceId} initialSellerSku={globalSku} initialTab={contentWorkspaceTab} auditCacheByMarketplace={contentAuditCacheForDrawer} onAuditCacheChange={cacheContentAudit} auditMode={currentStandaloneMode} auditJob={currentContentDrawerJob} onAuditJobChange={cacheStandaloneAuditJob} onContextResolved={resolveGlobalContext} onClose={() => setOpenTool(null)} />}
-      {openTool === "images" && <ImageWorkspaceDrawer initialMarketplaceId={marketplaceId} initialSellerSku={globalSku} initialTab={imageWorkspaceTab} auditCacheByMarketplace={imageAuditCacheForDrawer} onAuditCacheChange={cacheImageAudit} auditMode={currentStandaloneMode} auditJob={currentImageDrawerJob} onAuditJobChange={cacheStandaloneAuditJob} onContextResolved={resolveGlobalContext} onClose={() => setOpenTool(null)} />}
+      {openTool === "images" && <ImageWorkspaceDrawer minimumImages={imageAuditMinimumImages} onMinimumImagesChange={changeImageAuditMinimumImages} initialMarketplaceId={marketplaceId} initialSellerSku={globalSku} initialTab={imageWorkspaceTab} auditCacheByMarketplace={imageAuditCacheForDrawer} onAuditCacheChange={cacheImageAudit} auditMode={currentStandaloneMode} auditJob={currentImageDrawerJob} onAuditJobChange={cacheStandaloneAuditJob} onContextResolved={resolveGlobalContext} onClose={() => setOpenTool(null)} />}
       {openTool === "a-plus" && (
         <AplusAuditDrawer
           marketplaceId={marketplaceId}

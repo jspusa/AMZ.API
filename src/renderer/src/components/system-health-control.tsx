@@ -1,3 +1,4 @@
+import { persistDisplayPreferences } from "../display-preferences-client";
 "use client";
 
 import UiBuildInformation from "./ui-build-information";
@@ -55,7 +56,7 @@ const FEATURE_IDEAS: Record<Exclude<AuditPreference, null>, { label: string; ide
   },
   images: {
     label: "圖片健檢",
-    idea: "下一步可加入圖片補齊優先順序，先看少於六張且仍在售的 FBA SKU。",
+    idea: "下一步可加入圖片補齊優先順序，先看低於所選張數門檻且仍在售的 FBA SKU。",
   },
   inventory: {
     label: "冗餘庫存健檢",
@@ -109,6 +110,12 @@ export default function SystemHealthControl({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [fontSize, setFontSize] = useState<UiFontSize>(() => readUiFontSize());
+  const [fontSizePersisted, setFontSizePersisted] = useState(true);
+  const chooseFontSize = (value: UiFontSize) => {
+    setFontSize(value);
+    saveUiFontSize(value);
+    void persistDisplayPreferences({ fontSize: value }).then(saved => setFontSizePersisted(saved !== false));
+  };
   const [appVersion, setAppVersion] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -299,12 +306,11 @@ export default function SystemHealthControl({
                       if (nextIndex === null) return;
                       event.preventDefault();
                       const next = UI_FONT_SIZE_OPTIONS[nextIndex]!;
-                      setFontSize(next.value); saveUiFontSize(next.value);
+                      chooseFontSize(next.value);
                       event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>('[role="radio"]').item(nextIndex)?.focus();
                     }}
                     onClick={() => {
-                      setFontSize(option.value);
-                      saveUiFontSize(option.value);
+                      chooseFontSize(option.value);
                     }}
                   >
                     {option.label}
@@ -312,6 +318,8 @@ export default function SystemHealthControl({
                 ))}
               </div>
             </section>
+
+            {!fontSizePersisted && <p className="appearance-storage-note" role="status">已套用；目前無法儲存偏好，重新開啟後可能恢復預設。請確認 Notebook Key 已更新。</p>}
 
             <AppearancePreference />
 

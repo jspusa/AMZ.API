@@ -38,19 +38,22 @@ const CSS04_ORDERED_FILES = [
   "styles/home-layout.css",
   "styles/variation-workspace.css",
   "styles/price-list.css",
+  "styles/vine.css",
   "styles/usability-polish.css",
   "styles/audit-detail-reading.css",
   "styles/content-audit-focus.css",
   "styles/chart-compact.css",
   "styles/workflow-efficiency.css",
+  "styles/inventory-health.css",
   "styles/audit-review.css",
   "styles/appearance.css",
   "styles/dark-palette.generated.css",
   "styles/dark-surfaces.css",
 ] as const;
 
+// Current composed source includes intentional feature styles after the preserved epochs.
 const ACCEPTED_SOURCE_TEXT_FINGERPRINT =
-  "677aae4b15e700e07117e03e0d617f786b08f4da230581efbbf811aa904a6284";
+  "4673c40c691112430df7f45eb479faac3fdaf8219012665ad1ed40f315b0db56";
 const ACCEPTED_CSS04_PAYLOAD_FINGERPRINT =
   "7963e2e9bd917df3d454dbbae5612203e3008679e674f46cfe8b172dcbd3ef86";
 const RETIRED_STYLESHEET = ["app", "css"].join(".");
@@ -137,8 +140,8 @@ describe("CSS04 final stylesheet extraction", () => {
     );
 
     const normalizedComposition = normalizeNewlines(composition.css);
-    expect((normalizedComposition.match(/\n/gu) ?? []).length).toBe(29286);
-    expect(Buffer.byteLength(normalizedComposition)).toBe(854094);
+    expect((normalizedComposition.match(/\n/gu) ?? []).length).toBe(29573);
+    expect(Buffer.byteLength(normalizedComposition)).toBe(869273);
     expect(
       createHash("sha256").update(normalizedComposition).digest("hex"),
     ).toBe(ACCEPTED_SOURCE_TEXT_FINGERPRINT);

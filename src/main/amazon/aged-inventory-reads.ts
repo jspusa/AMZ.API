@@ -55,6 +55,7 @@ export type AgedInventoryRow = {
   alert: string;
   recommendedAction: string;
   snapshotDate: string | null;
+  unitsShipped?: { t7: number | null; t30: number | null; t60: number | null; t90: number | null };
 };
 
 export type AgedInventorySnapshot = {
@@ -724,6 +725,7 @@ function parseAgedInventoryReportData(
   ]);
   const conditionIndex = reportColumn(headerIndexes, ["condition"]);
   const availableIndex = reportColumn(headerIndexes, ["available"]);
+  const shippedIndexes = [7, 30, 60, 90].map(days => reportColumn(headerIndexes, [`units-shipped-t${days}`]));
   const excessIndex = reportColumn(headerIndexes, [
     "estimated-excess-quantity",
   ]);
@@ -886,6 +888,12 @@ function parseAgedInventoryReportData(
       title: titleIndex >= 0 ? row[titleIndex]?.trim() ?? "" : "",
       condition: conditionIndex >= 0 ? row[conditionIndex]?.trim() ?? "" : "",
       available: reportIntegerCell(row, availableIndex, "可售庫存"),
+      unitsShipped: {
+        t7: reportIntegerCell(row, shippedIndexes[0]!, "7天出貨量"),
+        t30: reportIntegerCell(row, shippedIndexes[1]!, "30天出貨量"),
+        t60: reportIntegerCell(row, shippedIndexes[2]!, "60天出貨量"),
+        t90: reportIntegerCell(row, shippedIndexes[3]!, "90天出貨量"),
+      },
       totalAgedUnits,
       agedOver180,
       ageBuckets,
@@ -1144,7 +1152,7 @@ function demoAgedInventorySnapshot(
     {
       sellerSku: "DEMO-FBA-AGED-01",
       fnSku: "DEMO-FNSKU-AGED-01",
-      asin: "B0DEMOAGED1",
+      asin: "B0DEMOAGE1",
       title: "展示用 FBA 庫齡商品",
       condition: "New",
       available: 240,

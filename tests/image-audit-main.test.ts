@@ -6,6 +6,7 @@ describe("image audit backend snapshot", () => {
     const snapshot = auditListingImageRows({
       marketplaceId: "ATVPDKIKX0DER",
       fetchedAt: "2026-08-08T08:00:00.000Z",
+      minimumImages: 6,
       rows: [
         {
           sellerSku: "FIVE",
@@ -57,14 +58,14 @@ describe("image audit backend snapshot", () => {
     });
   });
 
-  it("rejects any threshold other than the fixed six-image standard", () => {
+  it("rejects a threshold outside the one-to-nine range", () => {
     expect(() =>
       auditListingImageRows({
         marketplaceId: "ATVPDKIKX0DER",
         fetchedAt: "2026-08-08T08:00:00.000Z",
-        minimumImages: 5,
+        minimumImages: 0,
         rows: [],
       }),
-    ).toThrow(/固定門檻為 6 張/);
+    ).toThrow(/最低張數只能選 1–9 張/);
   });
 });

@@ -1,5 +1,6 @@
 "use client";
 
+import { IMAGE_AUDIT_MINIMUM_IMAGES, isImageAuditMinimum } from "../../../shared/image-audit-options";
 import { auditViewScope, useAuditPosition } from "../audit-view-session";
 import AuditSkuFilter, { useAuditSkuBatch } from "./audit-sku-filter";
 
@@ -110,6 +111,8 @@ export default function ImageAuditPanel({
   onCachedResultChange,
   initialJob = null,
   onJobChange,
+  minimumImages: selectedMinimumImages,
+  onMinimumImagesChange,
 }: {
   marketplaceId: string;
   marketplaceShort: string;
@@ -119,13 +122,18 @@ export default function ImageAuditPanel({
   onCachedResultChange?: (cache: ImageAuditCache) => void;
   initialJob?: StandaloneAuditJob | null;
   onJobChange?: (job: StandaloneAuditJob) => void;
+  minimumImages?: number;
+  onMinimumImagesChange?: (value: number) => void;
 }) {
+  const [localMinimumImages, setLocalMinimumImages] = useState(IMAGE_AUDIT_MINIMUM_IMAGES);
+  const minimumImages = selectedMinimumImages ?? localMinimumImages;
   const matchingInitialJob = initialJob?.kind === "image" &&
       initialJob.marketplaceId === marketplaceId &&
-      initialJob.mode === mode
+      initialJob.mode === mode &&
+      initialJob.options.minimumImages === minimumImages
     ? initialJob
     : null;
-  const candidateInitialCache = cachedResult?.snapshot.marketplaceId === marketplaceId
+  const candidateInitialCache = cachedResult?.snapshot.marketplaceId === marketplaceId && cachedResult.snapshot.minimumImages === minimumImages
     ? cachedResult
     : null;
   const initialCache = candidateInitialCache && standaloneAuditSnapshotMatchesJob(
@@ -160,7 +168,7 @@ export default function ImageAuditPanel({
         }
       : null,
   );
-  const viewScope = auditViewScope("image", marketplaceId, mode, snapshot?.fetchedAt);
+  const viewScope = auditViewScope("image", marketplaceId, mode, snapshot ? `${snapshot.fetchedAt}:${snapshot.minimumImages}` : undefined);
   const skuBatch = useAuditSkuBatch(viewScope);
   const positionRef = useAuditPosition(viewScope, Boolean(snapshot) && state === "done");
   const [query, setQuery] = useState(initialCache?.query ?? "");
@@ -179,14 +187,17 @@ export default function ImageAuditPanel({
     setExporting(false);
     const matchingJob = initialJob?.kind === "image" &&
         initialJob.marketplaceId === marketplaceId &&
-        initialJob.mode === mode
+        initialJob.mode === mode &&
+        initialJob.options.minimumImages === minimumImages
       ? initialJob
       : null;
+    setJob(matchingJob);
     setError(matchingJob?.ready && matchingJob.status !== "completed"
       ? matchingJob.error.message
       : null);
     if (
       cachedResult?.snapshot.marketplaceId === marketplaceId &&
+      cachedResult.snapshot.minimumImages === minimumImages &&
       standaloneAuditSnapshotMatchesJob({
         ...cachedResult.snapshot,
         exportId: cachedResult.exportId,
@@ -201,12 +212,12 @@ export default function ImageAuditPanel({
         exportId: cachedResult.exportId,
       });
     } else {
-      setState("idle");
+      setState(matchingJob && !matchingJob.ready ? "polling" : "idle");
       setSnapshot(null);
       setQuery("");
       setReportReference(null);
     }
-  }, [cachedResult, initialJobReconnectRevision, marketplaceId, mode]);
+  }, [cachedResult, initialJobReconnectRevision, marketplaceId, mode, minimumImages]);
 
   const attentionRows = useMemo(
     () => snapshot ? imageAuditAttentionRows(snapshot) : [],
@@ -240,6 +251,7 @@ export default function ImageAuditPanel({
     const completed = parseImageAuditSnapshot(
       completedJob.snapshot,
       marketplaceIdRef.current,
+      minimumImages,
     );
     if (signal.aborted) throw new DOMException("Aborted", "AbortError");
     const reference = {
@@ -310,6 +322,7 @@ export default function ImageAuditPanel({
     try {
       let current = await startStandaloneAuditJob({
         kind: "image",
+        options: { minimumImages },
         marketplaceId,
         mode,
         signal: controller.signal,
@@ -344,13 +357,13 @@ export default function ImageAuditPanel({
 
   useEffect(() => {
     if (!shouldResumeStandaloneAuditJob({
-      initialJob,
+      initialJob: matchingInitialJob,
       expectedKind: "image",
       marketplaceId,
       mode,
       observerJobId: observerJobIdRef.current,
     })) return;
-    const observedJob = initialJob!;
+    const observedJob = matchingInitialJob!;
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
@@ -393,7 +406,7 @@ export default function ImageAuditPanel({
       }
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [initialJobReconnectRevision, marketplaceId, mode]);
+  }, [initialJobReconnectRevision, marketplaceId, mode, minimumImages]);
 
   const statusText = job && !job.ready
     ? job.progress.message
@@ -409,18 +422,31 @@ export default function ImageAuditPanel({
     <section ref={positionRef} className="image-audit-panel" aria-label="全站 FBA 圖片健檢">
       <AuditDetailsDisclosure summary="圖片門檻、資料來源與人工判斷範圍">
         <div className="automation-summary compact">
-          <span className="automation-badge automatic">自動</span><p>全站圖片健檢會找出少於六張圖片與讀取未完成的 FBA SKU；單一 SKU 的格式、像素、PTD 與回查由系統處理。</p>
+          <span className="automation-badge automatic">自動</span><p>全站圖片健檢會找出低於所選門檻的圖片與讀取未完成的 FBA SKU；單一 SKU 的格式、像素、PTD 與回查由系統處理。</p>
           <span className="automation-badge one_click">一鍵</span><p>健檢會自動建立及輪詢報表；圖片排序完成後可安全預檢並送出。</p>
           <span className="automation-badge manual">需人工</span><p>選圖、排序與主圖位置必須由你判斷。</p>
         </div>
         <p className="price-intro">
-          一次掃描所選站點全部 FBA SKU，先以 Amazon relationships 排除沒有圖片工作台的 parent 容器，再列出少於六張 Listing 圖片的商品；讀取未完成會獨立標示，不會誤判成零張。
+          一次掃描所選站點全部 FBA SKU，先以 Amazon relationships 排除沒有圖片工作台的 parent 容器，再列出低於所選門檻的 Listing 圖片的商品；讀取未完成會獨立標示，不會誤判成零張。
         </p>
         <div className="content-export-note">
           <strong>Amazon 唯讀圖片健檢</strong>
           <p>只讀取 Listings attributes；不會下載原圖、不會修改 Amazon，也不會納入 FBM。</p>
         </div>
       </AuditDetailsDisclosure>
+      <label className="ops-marketplace image-audit-minimum">
+        <span>最低圖片張數（含主圖）</span>
+        <select aria-label="圖片健檢最低張數" value={minimumImages}
+          disabled={state !== "idle" && state !== "done"}
+          onChange={event => {
+            const value = Number(event.target.value);
+            if (!isImageAuditMinimum(value)) return;
+            setLocalMinimumImages(value);
+            onMinimumImagesChange?.(value);
+          }}>
+          {[1, 2, 3, 4, 5, 6, 7, 8, 9].map(value => <option key={value} value={value}>{value} 張</option>)}
+        </select>
+      </label>
       {error && <div className="price-error" role="alert">{error}</div>}
       {statusText && (
         <div className="validation-status demo" role="status" aria-live="polite">
@@ -495,7 +521,7 @@ export default function ImageAuditPanel({
             ))}
             {!visibleRows.length && (
               <p className="variation-empty">
-                {attentionRows.length ? "沒有符合搜尋條件的商品。" : "目前沒有少於六張圖片或讀取未完成的 FBA SKU。"}
+                {attentionRows.length ? "沒有符合搜尋條件的商品。" : `目前沒有少於 ${snapshot.minimumImages} 張圖片或讀取未完成的 FBA SKU。`}
               </p>
             )}
           </div>

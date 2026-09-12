@@ -1,6 +1,6 @@
 {
   "name": "amz-api",
-  "version": "0.1.63",
+  "version": "0.1.64",
   "amzApiUpdateChannel": "disabled",
   "description": "A private, local-first Amazon FBA operations console for macOS and Windows 11 Notebook Key.",
   "private": true,
@@ -80,14 +80,19 @@
     "protocols": [
       {
         "name": "AMZ.API Launcher",
-        "schemes": ["amz-api"]
+        "schemes": [
+          "amz-api"
+        ]
       }
     ],
     "mac": {
       "category": "public.app-category.business",
       "hardenedRuntime": true,
       "gatekeeperAssess": false,
-      "target": ["dmg", "zip"],
+      "target": [
+        "dmg",
+        "zip"
+      ],
       "artifactName": "AMZ.API-${version}-${arch}.${ext}",
       "entitlements": "build/entitlements.mac.plist",
       "entitlementsInherit": "build/entitlements.mac.plist"
@@ -101,11 +106,15 @@
       "target": [
         {
           "target": "nsis",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         },
         {
           "target": "zip",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         }
       ],
       "artifactName": "AMZ.API-Notebook-Key-Windows-${arch}.${ext}"

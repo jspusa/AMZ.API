@@ -64,6 +64,7 @@ type AplusStarter = (input: Readonly<{
 export async function startIndividualAuditJobs(input: Readonly<{
   marketplaceId: string;
   mode: StandaloneAuditMode;
+  imageMinimumImages?: number;
   startStandalone?: StandaloneStarter;
   startAplus?: AplusStarter;
   onStandaloneJobChange(job: StandaloneAuditJob): void;
@@ -88,7 +89,9 @@ export async function startIndividualAuditJobs(input: Readonly<{
             kind: definition.kind,
             marketplaceId: input.marketplaceId,
             mode: input.mode,
-            ...(definition.options ? { options: definition.options } : {}),
+            ...(definition.kind === "image"
+              ? { options: { minimumImages: input.imageMinimumImages ?? 8 } }
+              : definition.options ? { options: definition.options } : {}),
           });
           input.onStartSuccess?.(definition.id);
           input.onStandaloneJobChange(job);
@@ -111,6 +114,7 @@ export default function AuditSuiteHomeCard({
   marketplaceId,
   mode,
   hasRunningJobs = false,
+  imageMinimumImages = 8,
   onStandaloneJobChange,
   onAplusJobChange,
   onStartSuccess,
@@ -119,6 +123,7 @@ export default function AuditSuiteHomeCard({
   marketplaceId: string;
   mode: StandaloneAuditMode;
   hasRunningJobs?: boolean;
+  imageMinimumImages?: number;
   onStandaloneJobChange(job: StandaloneAuditJob): void;
   onAplusJobChange(job: AplusAuditObservableJob): void;
   onStartSuccess?(id: AuditSuiteSectionId): void;
@@ -135,6 +140,7 @@ export default function AuditSuiteHomeCard({
       const outcome = await startIndividualAuditJobs({
         marketplaceId,
         mode,
+        imageMinimumImages,
         onStandaloneJobChange,
         onAplusJobChange,
         onStartSuccess,

@@ -89,6 +89,7 @@ export type PriceListComparison = {
 };
 
 export type PriceListAmazonRow = {
+  title?: string | null;
   sheetName: string;
   rowNumber: number;
   sellerSku: string | null;
@@ -105,6 +106,7 @@ export type PriceListAmazonRow = {
 };
 
 export type PriceListAmazonSnapshot = {
+  source?: "workbook" | "amazon";
   workbookId: string;
   state: "running" | "complete" | "failed";
   rows: PriceListAmazonRow[];

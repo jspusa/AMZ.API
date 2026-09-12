@@ -1,0 +1,54 @@
+.inventory-health-panel {
+  min-width: 0; margin-bottom: 24px; padding: 18px; border: 1px solid var(--line);
+  border-radius: 14px; color: var(--ink); background: var(--surface); font-size: .85rem;
+}
+.inventory-health-panel > header {
+  display: flex; justify-content: space-between; align-items: flex-start; gap: 16px;
+}
+.inventory-health-panel h3 { margin: 0; font-size: 1rem; }
+.inventory-health-panel p { line-height: 1.65; margin: 8px 0; }
+.inventory-health-panel :is(header p, small, dt, .inventory-health-source-status, .inventory-health-method, .inventory-health-empty) { color: var(--muted); }
+.inventory-health-panel button {
+  flex-shrink: 0; min-height: 36px; padding: 7px 12px; border: 1px solid var(--line);
+  border-radius: 8px; background: var(--surface); color: var(--ink); font: inherit; cursor: pointer;
+}
+.inventory-health-panel button:disabled { opacity: .55; cursor: not-allowed; }
+.inventory-health-panel :is(button, input):focus-visible { outline: 2px solid currentColor; outline-offset: 3px; }
+.inventory-health-panel input {
+  box-sizing: border-box; min-width: 0; min-height: 36px; padding: 8px 10px;
+  border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--ink); font: inherit;
+}
+.inventory-health-panel > input { width: min(100%, 400px); margin-bottom: 12px; }
+.inventory-health-source-status { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-top: 12px; font-size: .75rem; }
+.inventory-health-source-status strong { flex-basis: 100%; color: var(--ink); }
+.inventory-health-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin: 16px 0; }
+.inventory-health-summary > button { text-align: left; display: grid; grid-template-columns: 1fr auto; gap: 6px; padding: 12px; }
+.inventory-health-summary > button[aria-pressed="true"] { border-color: currentColor; box-shadow: inset 0 0 0 1px currentColor; }
+.inventory-health-summary span { grid-column: 1 / -1; }
+.inventory-health-summary strong { font-size: 1.2rem; font-variant-numeric: tabular-nums; }
+.inventory-health-summary small { align-self: end; }
+.inventory-health-table { max-width: 100%; overflow-x: auto; }
+.inventory-health-panel table { width: 100%; min-width: 760px; border-collapse: collapse; text-align: left; font-size: .8rem; }
+.inventory-health-panel :is(th, td) { padding: 12px 9px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.inventory-health-panel td:first-child { min-width: 150px; max-width: 240px; overflow-wrap: anywhere; }
+.inventory-health-panel td small { display: block; margin-top: 5px; }
+.inventory-health-panel th { font-weight: 600; white-space: nowrap; }
+.inventory-health-panel td.inventory-health-details { max-width: none; padding: 16px 12px; }
+.inventory-health-details dl { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px 16px; margin: 16px 0; }
+.inventory-health-details :is(dt, dd) { margin: 0; overflow-wrap: anywhere; line-height: 1.6; }
+.inventory-health-details dt { font-size: .75rem; }
+.inventory-health-confirmation { border-top: 1px solid var(--line); padding-top: 14px; }
+.inventory-health-confirmation fieldset { border: 0; padding: 0; margin: 0 0 10px; min-width: 0; }
+.inventory-health-confirmation legend { font-weight: 600; margin-bottom: 10px; }
+.inventory-health-confirmation-fields { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.inventory-health-confirmation label { display: grid; gap: 6px; }
+.inventory-health-confirmation input { width: 100%; }
+.inventory-health-confirmation p { color: var(--muted); font-size: .75rem; }
+.inventory-health-method { margin-top: 16px; font-size: .75rem; }
+.inventory-health-method summary { cursor: pointer; }
+@media (max-width: 600px) {
+  .inventory-health-panel { padding: 12px; }
+  .inventory-health-panel > header { flex-direction: column; }
+  .inventory-health-summary { gap: 6px; }
+  .inventory-health-summary > button { padding: 8px; font-size: .75rem; }
+}

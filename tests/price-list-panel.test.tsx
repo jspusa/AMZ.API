@@ -5,6 +5,7 @@ import PriceListPanel, {
   priceListAmazonDifference,
   priceListAmazonValue,
 } from "../src/renderer/src/components/price-list-panel";
+import * as workbookDownloads from "../src/renderer/src/api-workbook-download";
 import type {
   PriceListAmazonRow,
   PriceListAmazonSnapshot,
@@ -101,10 +102,68 @@ afterEach(async () => {
   if (renderer) await act(async () => renderer!.unmount());
   renderer = null;
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
   vi.useRealTimers();
 });
 
 describe("price-list workflow", () => {
+  it("offers a populated Amazon price list without uploading Excel and polls the main job", async () => {
+    vi.useFakeTimers();
+    const snapshot: PriceListAmazonSnapshot = {
+      source: "amazon", workbookId: "price-list-generated.test", state: "running",
+      rows: [], completed: 0, total: 0, fetchedAt: null, message: "核對 FBA 商品中", stage: "identifying",
+    };
+    const saved = vi.spyOn(workbookDownloads, "downloadApiWorkbookResponse").mockResolvedValue();
+    const fetch = vi.fn(async (path: string, _init?: RequestInit) => path.endsWith("/amazon-export")
+      ? new Response(new Uint8Array([80, 75, 1]), { status: 200 })
+      : new Response(JSON.stringify(
+        path.includes("?id=")
+          ? { ...snapshot, state: "complete", total: 1, completed: 1, rows: [{ ...amazon, title: "Generated product", standardPrice: 12, minimumPrice: null, minimumPriceStatus: "unavailable" }] }
+          : snapshot,
+      ), { status: 200 }));
+    vi.stubGlobal("fetch", fetch);
+    await act(async () => { renderer = create(<PriceListPanel onClose={() => undefined} />); });
+    const generate = renderer!.root.findAllByType("button").find((button) => button.children.includes("產生 Amazon 價目表"));
+    expect(generate).toBeDefined();
+    await act(async () => { generate!.props.onClick(); });
+    expect(fetch.mock.calls[0]?.[0]).toBe("/api/price-list/amazon-generate");
+    expect(JSON.stringify(renderer!.toJSON())).toContain("核對 FBA 商品中");
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_500); });
+    expect(fetch.mock.calls[1]?.[0]).toBe("/api/price-list/amazon-refresh?id=price-list-generated.test");
+    const text = JSON.stringify(renderer!.toJSON());
+    expect(text).toContain("Generated product");
+    expect(text).toContain("US$ 12.00");
+    expect(text).toContain("未回報");
+    expect(fetch.mock.calls.some(([path]) => path.includes("/import"))).toBe(false);
+    const download = renderer!.root.findAllByType("button").find((button) => button.children.includes("下載 Amazon 價目表"))!;
+    expect(download.props.disabled).toBe(false);
+    await act(async () => { download.props.onClick(); });
+    expect(fetch.mock.calls.at(-1)).toEqual(["/api/price-list/amazon-export", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ id: "price-list-generated.test", replaceImages: true }),
+    }]);
+    expect(saved).toHaveBeenCalledOnce();
+    expect(saved.mock.calls[0]?.[1]).toBe("AMZ_US_Price_List.xlsx");
+    expect(new Uint8Array(await saved.mock.calls[0]![0].arrayBuffer())).toEqual(new Uint8Array([80, 75, 1]));
+  });
+  it("clears the generated price list on context invalidation and ignores the old generation reply", async () => {
+    let invalidate!: () => void;
+    vi.stubGlobal("window", { fbaOS: { app: { onContextInvalidated: (listener: () => void) => { invalidate = listener; return vi.fn(); } } } });
+    const complete: PriceListAmazonSnapshot = { source: "amazon", workbookId: "price-list-generated.test", state: "complete", rows: [{ ...amazon, title: "Private product" }], completed: 1, total: 1, fetchedAt: amazon.fetchedAt, message: "完成", stage: "complete" };
+    let release!: (response: Response) => void;
+    const fetch = vi.fn(async () => new Response(JSON.stringify(complete)));
+    vi.stubGlobal("fetch", fetch);
+    await act(async () => { renderer = create(<PriceListPanel onClose={() => undefined} />); });
+    await act(async () => { renderer!.root.findAllByType("button").find((button) => button.children.includes("產生 Amazon 價目表"))!.props.onClick(); });
+    expect(JSON.stringify(renderer!.toJSON())).toContain("Private product");
+    fetch.mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }));
+    await act(async () => { renderer!.root.findAllByType("button").find((button) => button.children.includes("重新產生 Amazon 價目表"))!.props.onClick(); });
+    await act(async () => { invalidate(); });
+    expect(JSON.stringify(renderer!.toJSON())).not.toContain("Private product");
+    expect(fetch).toHaveBeenCalledTimes(2);
+    await act(async () => { release(new Response(JSON.stringify(complete))); });
+    expect(JSON.stringify(renderer!.toJSON())).not.toContain("Private product");
+  });
   it.each([
     { standard: "12.00", minimum: "8.00", expected: "same" },
     { standard: "10.99", minimum: "8.00", expected: "different" },

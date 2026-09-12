@@ -87,7 +87,7 @@ describe("FBA image audit snapshot export route", () => {
       rows: Array<{ sellerSku: string }>;
       summary: { total: number; underMinimum: number; incomplete: number };
     };
-    expect(snapshot.minimumImages).toBe(6);
+    expect(snapshot.minimumImages).toBe(8);
 
     const response = await router.handle(
       request({
@@ -118,8 +118,52 @@ describe("FBA image audit snapshot export route", () => {
     for (const row of snapshot.rows) expect(sheet).toContain(row.sellerSku);
     expect(sheet).toContain(MARKETPLACE_ID);
     expect(notes).toContain("同一份 Amazon 全商品報表快照");
-    expect(notes).toContain("至少 6 張圖片");
+    expect(notes).toContain("至少 8 張圖片");
     expect(notes).toContain("不含 FBM");
+  });
+
+  it("keeps selected image thresholds in independent snapshots and exports", async () => {
+    const report = await startReadyReport(router);
+    const base = { marketplaceId: MARKETPLACE_ID, ...report, imageAudit: "1" };
+    const first = await router.handle(request({ ...base, minimumImages: "5" }));
+    const second = await router.handle(request({ ...base, minimumImages: "9" }));
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    if (first.body.kind !== "json" || second.body.kind !== "json") throw new Error("Expected snapshots");
+    const a = first.body.value as { minimumImages: number; exportId: string };
+    const b = second.body.value as { minimumImages: number; exportId: string };
+    expect(a.minimumImages).toBe(5);
+    expect(b.minimumImages).toBe(9);
+    expect(a.exportId).not.toBe(b.exportId);
+    const download = await router.handle(request({ marketplaceId: MARKETPLACE_ID, imageAudit: "1", download: "1", exportId: a.exportId }));
+    if (download.body.kind !== "bytes") throw new Error("Expected workbook");
+    expect(strFromU8(unzipSync(download.body.value)["xl/worksheets/sheet2.xml"]!)).toContain("至少 5 張圖片");
+    for (const minimumImages of ["0", "10", "2.5", "08", "NaN"]) {
+      expect((await router.handle(request({ ...base, minimumImages }))).status).toBe(400);
+    }
+  });
+
+  it("carries the chosen threshold through the standalone main job to its canonical snapshot", async () => {
+    const start = await router.handle({
+      requestId: crypto.randomUUID(), method: "POST", path: "/api/sp-api/standalone-audit", query: {}, headers: {},
+      body: { kind: "json", value: { kind: "image", marketplaceId: MARKETPLACE_ID, mode: "demo", options: { minimumImages: 9 } } },
+    });
+    expect(start.status).toBe(202);
+    if (start.body.kind !== "json") throw new Error("Expected job");
+    const started = start.body.value as { jobId: string; contextId: string; options: unknown };
+    expect(started.options).toEqual({ minimumImages: 9 });
+    const deadline = Date.now() + 5000;
+    while (Date.now() < deadline) {
+      const read = await router.handle({ requestId: crypto.randomUUID(), method: "GET", path: "/api/sp-api/standalone-audit", headers: {}, query: {
+        kind: "image", marketplaceId: MARKETPLACE_ID, mode: "demo", jobId: started.jobId, contextId: started.contextId,
+      } });
+      if (read.status === 202) { await new Promise(resolve => setTimeout(resolve, 1)); continue; }
+      expect(read.status).toBe(200);
+      if (read.body.kind !== "json") throw new Error("Expected snapshot");
+      expect(read.body.value).toMatchObject({ ready: true, status: "completed", options: { minimumImages: 9 }, snapshot: { minimumImages: 9 } });
+      return;
+    }
+    throw new Error("Image audit did not complete");
   });
 
   it("binds the download to the stored marketplace snapshot instead of report ids", async () => {

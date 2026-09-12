@@ -1,3 +1,6 @@
+import { IMAGE_AUDIT_MINIMUM_IMAGES, isImageAuditMinimum } from "../../shared/image-audit-options";
+export { IMAGE_AUDIT_MINIMUM_IMAGES } from "../../shared/image-audit-options";
+
 export type ListingImageAuditReadError = {
   code: "LISTING_QUERY_FAILED" | "LISTING_CONTENT_NOT_RETURNED";
   message: string;
@@ -13,7 +16,6 @@ export type ListingImageAuditSourceRow = {
   readErrors: ListingImageAuditReadError[];
 };
 
-export const IMAGE_AUDIT_MINIMUM_IMAGES = 6 as const;
 
 export function auditListingImageRows(input: {
   marketplaceId: string;
@@ -22,8 +24,8 @@ export function auditListingImageRows(input: {
   minimumImages?: number;
 }) {
   const minimumImages = input.minimumImages ?? IMAGE_AUDIT_MINIMUM_IMAGES;
-  if (minimumImages !== IMAGE_AUDIT_MINIMUM_IMAGES) {
-    throw new Error("圖片健檢固定門檻為 6 張；拒絕使用其他標準。");
+  if (!isImageAuditMinimum(minimumImages)) {
+    throw new Error("圖片健檢最低張數只能選 1–9 張。");
   }
   const rows = input.rows.map((row) => {
     const imageUrls = [...new Set(

@@ -9,6 +9,7 @@ import { throwListingsReadError } from "./listings-response-error";
 import { SpApiError } from "./sp-api-error";
 
 export type PriceListListingFacts = Readonly<{
+  title?: string | null;
   standardPrice: number | null;
   minimumPrice: number | null;
   minimumPriceStatus: "set" | "not-set" | "unavailable";
@@ -151,6 +152,8 @@ export async function readPriceListListing(
       ? priceListAmazonImageUrl(images[0]!.media_location)
       : null);
   return {
+    title: typeof summary.itemName === "string" && summary.itemName.length <= 2_000
+      ? summary.itemName : null,
     standardPrice: standard?.currencyCode === "USD" ? standard.amount : null,
     ...minimum(attributes.purchasable_offer, input.marketplaceId),
     imageUrl,

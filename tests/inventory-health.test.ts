@@ -1,0 +1,51 @@
+import { describe, expect, it } from "vitest";
+import { assessInventoryHealth } from "../src/main/amazon/inventory-health";
+
+const now = new Date("2026-07-01T12:00:00Z");
+const row = {
+  sellerSku: "FBA-ONE", asin: "B000000001", title: "Test product", available: 1000,
+  agedOver180: 500, estimatedExcessQuantity: 300, currencyCode: "USD",
+  estimatedStorageCostNextMonth: 20, estimatedAgedSurcharge: 8,
+  snapshotDate: "2026-07-01", unitsShipped: { t7: 70, t30: 300, t60: 600, t90: 900 },
+};
+const lot = { id: "lot-one", sellerSku: "FBA-ONE", asin: "B000000001",
+  expiryDate: "2026-08-30", declaredQuantity: 1200, sourceRef: "inbound-one",
+  sourceUpdatedAt: "2026-06-01T12:00:00Z", observedAt: now.toISOString(),
+  stopSaleDate: null, confirmedRemaining: 1000, confirmedForSnapshot: "2026-07-01" };
+const input = { marketplaceId: "ATVPDKIKX0DER" as const, mode: "live" as const,
+  fetchedAt: now.toISOString(), rows: [row], lots: [lot], sourceComplete: true, now };
+
+describe("inventory health evidence and calendar eligibility", () => {
+  it("shows the independently worked 1000 units / 10 per day / 60 day shortfall", () => {
+    const result = assessInventoryHealth(input);
+    expect(result.rows[0]).toMatchObject({ status: "clearance-risk", dailyUnits: 10,
+      daysRemaining: 60, projectedShortfall: 400, minimumDailyUnits: 1000 / 60,
+      calendarEligible: true, confirmedRemaining: 1000 });
+  });
+  it("never treats a declared shipment or aged quantity as the remaining lot", () => {
+    const result = assessInventoryHealth({ ...input, lots: [{ ...lot, confirmedRemaining: null, confirmedForSnapshot: null }] });
+    expect(result.rows[0]).toMatchObject({ status: "needs-review", projectedShortfall: null, calendarEligible: false });
+  });
+  it("retains multiple dates, but never allocates the entire SKU sales pace to each lot", () => {
+    const result = assessInventoryHealth({ ...input, lots: [
+      { ...lot, confirmedRemaining: 600 },
+      { ...lot, id: "lot-two", expiryDate: "2026-09-29", confirmedRemaining: 400 },
+    ] });
+    expect(result.rows).toHaveLength(2);
+    expect(result.rows.find(r => r.id === "lot-one")?.calendarEligible).toBe(false);
+    expect(result.rows.find(r => r.id === "lot-two")).toMatchObject({ calendarEligible: true, projectedShortfall: 100 });
+  });
+  it("uses the fastest complete reported pace before asserting a shortfall", () => {
+    const result = assessInventoryHealth({ ...input, rows: [{ ...row, unitsShipped: { t7: 140, t30: 300, t60: 600, t90: 900 } }] });
+    expect(result.rows[0]).toMatchObject({ dailyUnits: 20, status: "on-track", calendarEligible: false });
+  });
+  it("requires current, consistent inventory and complete velocity evidence", () => {
+    for (const variant of [
+      { ...input, sourceComplete: false },
+      { ...input, rows: [{ ...row, unitsShipped: { ...row.unitsShipped, t7: null } }] },
+      { ...input, rows: [{ ...row, available: 900 }] },
+      { ...input, now: new Date("2026-07-06T12:00:00Z") },
+      { ...input, lots: [{ ...lot, confirmedForSnapshot: "2026-06-30" }] },
+    ]) expect(assessInventoryHealth(variant).rows[0].calendarEligible).toBe(false);
+  });
+});

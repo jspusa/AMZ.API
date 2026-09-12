@@ -58,6 +58,7 @@ describe("price-list exact read", () => {
             marketplaceId: US,
             asin: identity.asin,
             productType: "PET_FOOD",
+            itemName: "Amazon current product title",
             mainImage: {
               link: "https://m.media-amazon.com/images/I/current.jpg",
             },
@@ -69,6 +70,7 @@ describe("price-list exact read", () => {
       await readPriceListListing(adapter, { ...identity, marketplaceId: US }),
     ).toMatchObject({
       imageUrl: "https://m.media-amazon.com/images/I/current.jpg",
+      title: "Amazon current product title",
     });
   });
   it("reads configured price, seller minimum and main image without any write capability", async () => {

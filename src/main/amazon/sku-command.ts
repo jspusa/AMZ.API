@@ -1,3 +1,4 @@
+import { IMAGE_AUDIT_MINIMUM_IMAGES } from "../../shared/image-audit-options";
 import type { ProductMasterState } from "../local-store";
 import type { MarketplaceId } from "../../shared/marketplaces";
 import {
@@ -225,12 +226,12 @@ function commandTasks(input: {
   if (input.images.data) {
     const count = input.images.data.images.filter((item) => item.url).length;
     const hasMain = Boolean(input.images.data.images[0]?.url);
-    if (!hasMain || count < 6) {
+    if (!hasMain || count < IMAGE_AUDIT_MINIMUM_IMAGES) {
       add({
         id: "images-incomplete",
         title: hasMain ? "商品圖片可以再補強" : "商品缺少主圖",
         detail: hasMain
-          ? `目前 ${count} 張；可直接拖拉補到建議的 6 張以上。`
+          ? `目前 ${count} 張；可直接拖拉補到預設建議的 ${IMAGE_AUDIT_MINIMUM_IMAGES} 張以上。`
           : "主圖是必備欄位，系統已準備好拖拉上傳與格式檢查。",
         automation: "one_click",
         severity: hasMain ? "info" : "critical",

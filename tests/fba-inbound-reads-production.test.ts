@@ -8,6 +8,31 @@ import { createFbaInboundReadsProductionAdapter } from "../src/main/amazon/fba-i
 const US = "ATVPDKIKX0DER" as const;
 const UK = "A1F83G8C2ARO7P" as const;
 const NOW = new Date("2026-08-25T00:00:00.000Z");
+const BODY_LIMIT_BYTES = 16 * 1024 * 1024;
+const MODERN_PLANS_READ: FbaInboundExternalReadPlan = {
+  source: "modern", marketplaceId: US,
+  request: { kind: "plans", paginationToken: null },
+};
+
+function adapterForBody(response: Response) {
+  const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(response);
+  const adapter = createFbaInboundReadsProductionAdapter({
+    getAccessToken: async () => "TOKEN",
+    invalidateAccessToken: () => undefined,
+    fetchImpl,
+    userAgent: () => "AMZ.API/test",
+    now: () => new Date(NOW),
+    sleep: async () => undefined,
+  });
+  return { adapter, fetchImpl };
+}
+
+function fullSizeJsonObject() {
+  // Trailing JSON whitespace keeps the entire payload valid at either boundary.
+  const bytes = new Uint8Array(BODY_LIMIT_BYTES).fill(32);
+  bytes[0] = 123; bytes[1] = 125;
+  return bytes;
+}
 
 function jsonResponse(
   status: number,
@@ -21,6 +46,93 @@ function jsonResponse(
 }
 
 describe("FBA Inbound production adapter", () => {
+  it("accepts valid JSON exactly at the 16 MiB response boundary", async () => {
+    const response = new Response(fullSizeJsonObject());
+    const { adapter, fetchImpl } = adapterForBody(response);
+
+    await expect(adapter.read(MODERN_PLANS_READ)).resolves.toMatchObject({ envelope: {} });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(response.body!.locked).toBe(false);
+  });
+
+  it.each([undefined, "2"])("stops an oversized stream even when content-length is %s", async (contentLength) => {
+    let reads = 0;
+    const cancel = vi.fn();
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        reads += 1;
+        if (reads === 1) controller.enqueue(fullSizeJsonObject());
+        else if (reads === 2) controller.enqueue(new Uint8Array([32]));
+        else controller.close();
+      },
+      cancel,
+    }, { highWaterMark: 0 });
+    const response = new Response(stream, {
+      headers: contentLength === undefined ? {} : { "content-length": contentLength },
+    });
+    const { adapter, fetchImpl } = adapterForBody(response);
+
+    await expect(adapter.read(MODERN_PLANS_READ)).rejects.toMatchObject({
+      status: 502, code: "FBA_INBOUND_FORMAT_UNSUPPORTED",
+    });
+    expect(reads).toBe(2);
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(response.body!.locked).toBe(false);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("honors caller cancellation after headers while the response body is stalled", async () => {
+    let started!: () => void;
+    const bodyStarted = new Promise<void>(resolve => { started = resolve; });
+    const cancel = vi.fn();
+    const stream = new ReadableStream<Uint8Array>({
+      pull() { started(); return new Promise<void>(() => undefined); },
+      cancel,
+    }, { highWaterMark: 0 });
+    const response = new Response(stream);
+    const { adapter, fetchImpl } = adapterForBody(response);
+    const controller = new AbortController();
+    const reason = new Error("caller stopped this body read");
+    const pending = adapter.read({ ...MODERN_PLANS_READ, signal: controller.signal });
+    const rejected = expect(pending).rejects.toBe(reason);
+    await bodyStarted;
+    controller.abort(reason);
+    await rejected;
+
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(response.body!.locked).toBe(false);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("enforces the body deadline after response headers have already arrived", async () => {
+    vi.useFakeTimers();
+    try {
+      let started!: () => void;
+      const bodyStarted = new Promise<void>(resolve => { started = resolve; });
+      const cancel = vi.fn();
+      const stream = new ReadableStream<Uint8Array>({
+        pull() { started(); return new Promise<void>(() => undefined); },
+        cancel,
+      }, { highWaterMark: 0 });
+      const response = new Response(stream);
+      const { adapter, fetchImpl } = adapterForBody(response);
+      const rejected = expect(adapter.read(MODERN_PLANS_READ)).rejects.toMatchObject({
+        status: 504, code: "FBA_INBOUND_UPSTREAM_UNAVAILABLE",
+        message: "Amazon FBA 入庫回應內容讀取逾時。",
+      });
+      await bodyStarted;
+      await vi.advanceTimersByTimeAsync(14_999);
+      expect(cancel).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      await rejected;
+
+      expect(cancel).toHaveBeenCalledTimes(1);
+      expect(response.body!.locked).toBe(false);
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally { vi.useRealTimers(); }
+  });
+
   it("fixes v0 shipment and item first/continuation reads to their official GET paths", async () => {
     const requests: Array<{ url: URL; init: RequestInit | undefined }> = [];
     const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {

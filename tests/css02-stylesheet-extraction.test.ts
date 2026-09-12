@@ -15,8 +15,9 @@ const CSS02_ORDERED_PREFIX = [
   "styles/business-pricing.css",
 ] as const;
 
+// Current composed source includes intentional feature styles after the preserved epochs.
 const ACCEPTED_SOURCE_TEXT_FINGERPRINT =
-  "677aae4b15e700e07117e03e0d617f786b08f4da230581efbbf811aa904a6284";
+  "4673c40c691112430df7f45eb479faac3fdaf8219012665ad1ed40f315b0db56";
 
 const CSS02_PAYLOAD_EVIDENCE = [
   {

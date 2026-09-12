@@ -234,7 +234,7 @@ describe("dashboard audit background observation", () => {
     expect(standaloneAuditTerminalOutcome(completedJob("image", {
       marketplaceId: "ATVPDKIKX0DER",
       fetchedAt: "2026-08-23T03:00:00.000Z",
-      minimumImages: 6,
+      minimumImages: 8,
       rows: [],
       summary: { total: 0, completed: 0, incomplete: 0, underMinimum: 0 },
     }))).toBe("success");

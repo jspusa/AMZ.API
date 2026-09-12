@@ -1,3 +1,4 @@
+import type { DisplayPreferences, DisplayPreferencesPatch } from "./display-preferences";
 import type { OperationsBoardPublisherDraft } from "./operations-board";
 import type { NotebookCapabilitySnapshot } from "./notebook-capabilities";
 
@@ -130,6 +131,7 @@ export type UpdateStatus = {
 
 export type ExternalDestination =
   | "seller-central"
+  | "amazon-vine"
   | "a-plus-content"
   | "coupons"
   | "subscribe-save"
@@ -159,7 +161,12 @@ export type DesktopBridge = {
     manage(itemId: string): Promise<void>;
     onUpdated(listener: () => void): () => void;
   };
+  preferences?: {
+    read(): Promise<DisplayPreferences>;
+    update(patch: DisplayPreferencesPatch): Promise<DisplayPreferences>;
+  };
   app: {
+    onContextInvalidated?(listener: () => void): () => void;
     version(): Promise<string>;
     capabilities?(): Promise<NotebookCapabilitySnapshot>;
     platform(): Promise<string>;

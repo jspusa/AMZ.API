@@ -17,6 +17,8 @@ import type {
 import { priceListPriceValue } from "../../../shared/price-list-price";
 import { downloadApiWorkbookResponse } from "../api-workbook-download";
 
+import GeneratedPriceListPanel from "./price-list-generated-panel";
+
 type View = "amazon" | "original" | "files";
 type DifferenceStatus = "different" | "same" | "unknown";
 const statusLabels: Record<DifferenceStatus, string> = {
@@ -437,6 +439,13 @@ function OriginalSheet({
   );
 }
 
+async function downloadGeneratedPriceList(id: string, includeImages: boolean): Promise<void> {
+  await downloadApiWorkbookResponse(await response("/api/price-list/amazon-export", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ id, replaceImages: includeImages }),
+  }), "AMZ_US_Price_List.xlsx");
+}
+
 function sourcePrice(cell: PriceListCell | undefined): string {
   const value = priceListPriceValue(cell?.value);
   if (value !== null) return formatMoney(value);
@@ -445,13 +454,27 @@ function sourcePrice(cell: PriceListCell | undefined): string {
     : cell.display;
 }
 
-export default function PriceListPanel({
+type PriceListPanelProps = { onClose(): void; active?: boolean };
+
+export default function PriceListPanel(props: PriceListPanelProps) {
+  const [contextRevision, setContextRevision] = useState(0);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    return window.fbaOS?.app.onContextInvalidated?.(() => setContextRevision((value) => value + 1));
+  }, []);
+  // A changed security context discards both local workbook views and any
+  // generated-price-list component, including their pending observations.
+  return <PriceListWorkspace key={contextRevision} {...props} />;
+}
+
+function PriceListWorkspace({
   onClose,
   active = true,
 }: {
   onClose: () => void;
   active?: boolean;
 }) {
+  const [generatedBusy, setGeneratedBusy] = useState(false);
   const [base, setBase] = useState<PriceListWorkbook | null>(null);
   const [candidate, setCandidate] = useState<PriceListWorkbook | null>(null);
   const [amazon, setAmazon] = useState<PriceListAmazonSnapshot | null>(null);
@@ -503,7 +526,7 @@ export default function PriceListPanel({
     return true;
   }
   const running = amazon?.state === "running";
-  const locked = busy || running;
+  const locked = busy || running || generatedBusy;
   useEffect(() => {
     if (!base || amazon?.state !== "running") return;
     const revision = generation.current;
@@ -693,7 +716,7 @@ export default function PriceListPanel({
           <h2 id="price-list-title" tabIndex={-1} ref={heading}>
             價目表與 Amazon 比對
           </h2>
-          <p>保留你的原表、圖片與價格，直接核對 Amazon 售價及最低價格設定。</p>
+          <p>直接產生 Amazon 價目表，或匯入原表保留圖片與價格並核對差異。</p>
         </div>
         <button type="button" onClick={onClose}>
           ← 返回首頁
@@ -721,6 +744,14 @@ export default function PriceListPanel({
           event.currentTarget.value = "";
         }}
       />
+      <GeneratedPriceListPanel
+        key={generation.current}
+        disabled={busy || running}
+        primary={!base}
+        onBusyChange={setGeneratedBusy}
+        request={json}
+        download={downloadGeneratedPriceList}
+      />
       <div
         className={`price-list-import ${base ? "has-file" : ""}`}
         onDragOver={(event) => event.preventDefault()}
@@ -730,7 +761,7 @@ export default function PriceListPanel({
         }}
       >
         <div>
-          <strong>{base?.fileName ?? "先放入你的原始價目表"}</strong>
+          <strong>{base?.fileName ?? "或匯入原始價目表比對"}</strong>
           <p>
             {base
               ? `${base.sheets.length} 個工作表 · ${base.products.length} 列商品 · ${base.imageCount} 張儲存格圖片 · ${(base.byteLength / 1024 / 1024).toFixed(1)} MB`

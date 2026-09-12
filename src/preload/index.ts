@@ -1,3 +1,4 @@
+import type { DisplayPreferences, DisplayPreferencesPatch } from "../shared/display-preferences";
 import { contextBridge, ipcRenderer } from "electron";
 import type {
   AdvertisingConnectionTestResult,
@@ -72,7 +73,17 @@ const bridge: DesktopBridge = Object.freeze({
       return () => ipcRenderer.removeListener("fba:operations-board-updated", handler);
     },
   }),
+  preferences: Object.freeze({
+    read: () => ipcRenderer.invoke("fba:display-preferences-read") as Promise<DisplayPreferences>,
+    update: (patch: DisplayPreferencesPatch) =>
+      ipcRenderer.invoke("fba:display-preferences-update", patch) as Promise<DisplayPreferences>,
+  }),
   app: Object.freeze({
+    onContextInvalidated: (listener: () => void) => {
+      const handler = () => listener();
+      ipcRenderer.on("fba:context-invalidated", handler);
+      return () => ipcRenderer.removeListener("fba:context-invalidated", handler);
+    },
     version: () => ipcRenderer.invoke("fba:app-version") as Promise<string>,
     capabilities: () => ipcRenderer.invoke("fba:app-capabilities") as Promise<NotebookCapabilitySnapshot>,
     platform: () => ipcRenderer.invoke("fba:app-platform") as Promise<string>,

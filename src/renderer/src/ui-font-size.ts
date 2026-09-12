@@ -1,3 +1,4 @@
+import { nativeDisplayPreferences } from "./display-preferences-client";
 export const UI_FONT_SIZE_STORAGE_KEY = "amz-api:ui-font-size";
 
 export type UiFontSize = "small" | "standard" | "large";
@@ -32,8 +33,11 @@ function documentRoot(): UiPreferenceRoot | null {
 }
 
 export function readUiFontSize(
-  storage: UiPreferenceStorage | null = browserStorage(),
+  storage?: UiPreferenceStorage | null,
 ): UiFontSize {
+  const native = storage === undefined ? nativeDisplayPreferences() : null;
+  if (native) return native.fontSize;
+  if (storage === undefined) storage = browserStorage();
   try {
     const value = storage?.getItem(UI_FONT_SIZE_STORAGE_KEY);
     return isUiFontSize(value) ? value : "standard";

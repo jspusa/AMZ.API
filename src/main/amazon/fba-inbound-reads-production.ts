@@ -2,6 +2,7 @@ import {
   abortableDelay,
   forwardAbort,
   throwIfAborted,
+  waitForPromiseWithSignal,
 } from "../abort-utils";
 import {
   marketplaceById,
@@ -109,6 +110,10 @@ function fixedModernUrl(
     path += `/${encodeURIComponent(request.inboundPlanId)}`;
     if (request.kind === "shipment") {
       path += `/shipments/${encodeURIComponent(request.shipmentId)}`;
+    } else if (request.kind === "plan-items") {
+      path += "/items";
+      query.set("pageSize", "1000");
+      if (request.paginationToken) query.set("paginationToken", request.paginationToken);
     }
   }
   const url = new URL(path, endpoint);
@@ -116,11 +121,39 @@ function fixedModernUrl(
   return url;
 }
 
-async function parseJson(response: Response): Promise<unknown | null> {
-  try {
-    return await response.json();
-  } catch {
+async function parseJson(response: Response, signal?: AbortSignal): Promise<unknown | null> {
+  const limit = 16 * 1024 * 1024;
+  if (!response.body) return null;
+  const declared = response.headers.get("content-length");
+  if (declared !== null && (!/^\d+$/.test(declared) || Number(declared) > limit)) {
+    void response.body.cancel().catch(() => undefined);
     return null;
+  }
+  const reader = response.body.getReader();
+  const control = new AbortController();
+  const unlink = forwardAbort(control, signal);
+  const timer = setTimeout(() => control.abort(new SpApiError("Amazon FBA 入庫回應內容讀取逾時。", { status: 504, code: "FBA_INBOUND_UPSTREAM_UNAVAILABLE" })), FBA_INBOUND_READ_TIMEOUT_MS);
+  const chunks: Uint8Array[] = [];
+  let bytes = 0;
+  try {
+    while (true) {
+      const chunk = await waitForPromiseWithSignal(reader.read(), control.signal);
+      if (chunk.done) break;
+      bytes += chunk.value.length;
+      if (bytes > limit) return null;
+      chunks.push(chunk.value);
+    }
+    throwIfAborted(control.signal);
+    const merged = Buffer.concat(chunks);
+    return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(merged));
+  } catch (error) {
+    throwIfAborted(control.signal);
+    if (error instanceof SpApiError) throw error;
+    return null;
+  } finally {
+    clearTimeout(timer); unlink();
+    void reader.cancel().catch(() => undefined);
+    reader.releaseLock();
   }
 }
 
@@ -259,6 +292,7 @@ export function createFbaInboundReadsProductionAdapter(
       throwIfAborted(plan.signal);
       if (response.status === 401 && !refreshedUnauthorized) {
         refreshedUnauthorized = true;
+        void response.body?.cancel().catch(() => undefined);
         dependencies.invalidateAccessToken(marketplace.region);
         response = await call(plan, true);
         continue;
@@ -267,6 +301,7 @@ export function createFbaInboundReadsProductionAdapter(
         [429, 500, 502, 503, 504].includes(response.status) &&
         transientRetries < 2
       ) {
+        void response.body?.cancel().catch(() => undefined);
         await sleep(
           retryDelayMs(response, transientRetries, random),
           plan.signal,
@@ -294,7 +329,7 @@ export function createFbaInboundReadsProductionAdapter(
       const response = await execute(fixedPlan);
       throwIfAborted(fixedPlan.signal);
       if (!response.ok) throwReadError(response);
-      const envelope = await parseJson(response);
+      const envelope = await parseJson(response, fixedPlan.signal);
       throwIfAborted(fixedPlan.signal);
       if (envelope === null) {
         throw new SpApiError(
