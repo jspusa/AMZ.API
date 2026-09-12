@@ -31,7 +31,7 @@
 - US Seller SKU 的 FBA 庫存／補貨能只讀查詢，且 7／14／30／90 天、自訂 1–365 天與去年同期 AFN 銷售趨勢完整載入。
 - 180 天以上 FBA 庫齡報表能唯讀載入，庫齡與 Amazon 預估冗餘不混為同一指標；它與評論健檢只放在首頁預設收合的「低頻健檢」，不進 run-all。
 - 首頁 run-all 精確包含文案、圖片、A+、未綁變體、訂閱省、B2B 價格、廣告覆蓋七項；七項在背景並行執行，名稱與一般健檢卡完全一致並固定依此順序顯示。任一失敗要保留自己的終局狀態，不能把「全部結束」冒充成功。
-- 全站文案與圖片健檢能以真實 Amazon FBA 範圍載入，cache／編輯／返回流程正常；文案第一次點擊即建立唯一 main-owned flight，相同 selection 的重複點擊只能接回同一工作；文案門檻精確為產品名稱 60、產品亮點 110、每項產品要點 150–200、產品敘述 1,800 Unicode 字元，圖片門檻可在健檢前選擇 1–9 張，預設 8 張；完整讀取且張數低於選值才列不足，單次健檢、全部執行與匯出共用相同選值，讀取未完成不推論。原因只能顯示一次，摘要數字本身可直接篩選，立即修改要聚焦並保留相符原因。文案、圖片、A+、未綁變體、訂閱、B2B 與廣告的首頁入口必須使用共用寬版、單層、非 modal workspace，只由頁面捲動，進入聚焦標題並在返回時恢復原卡片焦點／位置；非首頁入口可保留既有 presentation surface，但不得再疊第二個 modal。各 panel 必須先顯示摘要、進度、主要操作與結果，長篇判定規則／資料來源／安全範圍統一放在預設收合且低調的「詳細說明 ›」，展開不得改變工作狀態。成分宣稱只在完整且非空的 Amazon ingredients 證據下核對：至少兩個不同成分才可否定 single ingredient，Tendon／Tendons 需有同詞成分，ingredients 含 Chicken 時標示 hypoallergenic 待核對；括號逗號與不完整讀取不得誤判。
+- 全站文案與圖片健檢能以真實 Amazon FBA 範圍載入，cache／編輯／返回流程正常；文案第一次點擊即建立唯一 main-owned flight，相同 selection 的重複點擊只能接回同一工作；文案門檻精確為產品名稱 60、產品亮點 110、每項產品要點 150–200、產品敘述 1,800 Unicode 字元，圖片門檻可在健檢前選擇 1–10 張，預設 8 張；完整讀取且張數低於選值才列不足，單次健檢、全部執行與匯出共用相同選值，讀取未完成不推論。原因只能顯示一次，摘要數字本身可直接篩選，立即修改要聚焦並保留相符原因。文案、圖片、A+、未綁變體、訂閱、B2B 與廣告的首頁入口必須使用共用寬版、單層、非 modal workspace，只由頁面捲動，進入聚焦標題並在返回時恢復原卡片焦點／位置；非首頁入口可保留既有 presentation surface，但不得再疊第二個 modal。各 panel 必須先顯示摘要、進度、主要操作與結果，長篇判定規則／資料來源／安全範圍統一放在預設收合且低調的「詳細說明 ›」，展開不得改變工作狀態。成分宣稱只在完整且非空的 Amazon ingredients 證據下核對：至少兩個不同成分才可否定 single ingredient，Tendon／Tendons 需有同詞成分，ingredients 含 Chicken 時標示 hypoallergenic 待核對；括號逗號與不完整讀取不得誤判。
 - 文案 Excel 可按鈕選檔或 drag/drop，且只含 FBA 商品；同一 main-owned 快照必須提供視覺可區分的「待確認清單」與「全部商品完整模板」兩個下載入口，兩份都能回到同一選檔／批次預檢更新流程。schema v2 必須含「說明與索引」、已證明的變體 family 分頁、「未綁變體」與 fail-closed「資料未完成」，並保留原始／更新欄、問題顏色與「類型／說明」。CR／U+0085／U+2028／U+2029 必須無損 round trip；舊檔只能用 main-owned 唯一完整 digest bounded recovery。按鈕顏色只協助辨識 scope，不是任何寫入授權依據。
 - 回傳文案健檢 Excel 時，digest 已證明為原掃描 readStatus=incomplete 的已編輯列與其他能安全歸屬 exact SKU 的 parser／fresh-read／Validation 問題，都要一次完整列出工作表、Excel 列號、實際變更欄位與公開原因；有問題的 SKU 保持零寫入且不進 native approval，其餘獨立安全 SKU 繼續。Amazon `INVALID` 沒有 override 或強制送出入口。無法安全歸屬單列的篡改、跨站點／帳號、公式／巨集／外部連結、context／結果綁定、auth、rate limit、`5xx`、網路、timeout 或 malformed／unknown 全域問題，仍在第一筆 Amazon PATCH 前整批停止。初次 preview 與 native approval 前重新 preview 各自最多 3 筆並行；seller-specific PTD 只能在同一 phase、Product Type、marketplace、account／mode／generation 與 read／write purpose 內 single-flight 沿用。若全被隔離就以零寫入結束。每 SKU 仍只有自己的 ledgered single PATCH attempt；PATCH 按工作簿順序 serial 執行，durable `ACCEPTED` 後立即前進下一筆，不等待 canonical 同步。最多 2 個 main-owned GET-only worker 另對 accepted rows bounded `reconcile()`／`inspect()`；renderer 必須分開顯示「重新預檢 n/N」、「等待 Touch ID／Windows Hello」、「送出 n/N」、「Amazon 已接受 n/N」與「回查完成 n/N」。exact rejection 可隔離該 SKU 並繼續；回查未相符或失敗保留 accepted-pending 且不重送，PATCH `UPDATE_STATUS_UNKNOWN`、auth、context 或任何 receipt 綁定失效則停止尚未開始列。
 - 單 SKU 文案 editor 接受 1–5 個產品要點；只有產品要點本身被編輯時，才可把 Amazon 同語系第 6 項後舊值納入 Exact Bullet Replacement。必須完整顯示目前要點、更新後要點與每個將刪原值，取得和本次 preview exact 綁定的勾選及原生確認；只改標題、亮點、敘述或成分時，overflow 要點必須完整保留。
@@ -66,11 +66,13 @@
 ## 2026-09-12 庫存健康與日常操作
 
 - 保留共用公布欄的手動即期品、促銷及 schema 2 發布流程。自動庫存健康只存這台 Notebook Key 的加密檔案，依 main 的帳號／模式／站點分隔，不上傳 Supply Boss。切換 context 即清除畫面與未完成讀取。
-- 庫齡健檢取得同份報表的近 7／30／60／90 天出貨量，接入 FBA 入庫計畫的申報效期；同 SKU 多效期與來源分開保存。歷史申報數量、庫齡桶、SKU 總庫存皆不是現存批次餘量。
+- 效期與清售風險有獨立同步入口，取得全部 FBA 品項與同份報表近 7／30／60／90 天出貨量，接入 FBA 入庫計畫的申報效期；不受 180 天庫齡篩選或舊健檢工作成敗限制。庫齡與官方費用放在補充資料。同 SKU 多效期與來源分開保存。歷史申報數量、庫齡桶、SKU 總庫存皆不是現存批次餘量。
 - 批次餘量由人工確認，綁定目前庫存快照；庫存、銷量、來源版本或報表日期變動後需重新核對。合計不可超過可售庫存；空白保持未知。停售日由使用者填入且不得晚於效期，不自行套用公司緩衝天數。
 - 清售推估使用四個出貨視窗中最快的日平均，並按目標日期累計同 SKU 已確認批次餘量，避免把同一份銷量重複分配給每批。資料缺漏、矛盾、來源未完整或過期時一律待確認。預測不保證未來銷量；只有仍有正清售缺口的 SKU 進月曆，每 SKU 顯示最早需處理日，其餘批次留明細。
 - US 價目表可不放原 Excel，從已確認的 FBA SKU／ASIN 產生含品名、Amazon 售價、最低價設定、首圖與缺值原因的新 `.xlsx`。缺價格不補 0；個別缺圖不阻止其他商品下載。原表比對與原檔保留流程保持可用。
 - 字體、顏色模式與圖片門檻由 main 保存固定 enum 設定；重開前完成原子寫入，不藉由持久化 renderer session 保存偏好。
-- 圖片整批依精確 SKU 與中間 `01`–`09` 配槽；錯 SKU、重複編號、失敗檔案逐項顯示，可修正後套用草稿。套用草稿不寫 Amazon，既有預覽、原生確認、一次 PATCH 與 readback 不變。
+- 圖片整批依精確 SKU 與中間 `01`–`10` 數字排序配槽，實際可編輯槽仍由 seller PTD 證明，溢位檔不可靜默丟棄；錯 SKU、重複編號、失敗檔案逐項顯示，可修正後套用草稿。套用草稿不寫 Amazon，既有預覽、原生確認、一次 PATCH 與 readback 不變。
 - 變體健檢預載工作區；dynamic import 下載失敗可在原頁重新載入工作區。程式執行錯誤不誤稱斷線，也不利用 reload 清掉未完成寫入。返回目的地、busy gate 與選擇狀態須通過回歸。
-- Vine 目前使用使用者匯入 Seller Central 資料，並核對 US FBA 精確 SKU／ASIN；不宣稱已有公開 Vine API。近 60 個美國日按登記日篩選，分開呈現登記、領取、評論實值與匯入時間。未知保持空值，不能以訂單、免費銷售或一般商品評論替代。資料只存本機加密檔；無法加密時明示僅本次工作階段，既有損壞檔不可默默覆寫。
+- Vine 目前使用使用者匯入 Seller Central 資料，並由 main 核對 US FBA ASIN 身分，原始貼文沒有 SKU 時不要求補造；不宣稱已有公開 Vine API。可直接貼 Seller Central 整頁文字，ASIN 與登記日形成身分；顯示所有仍在進行的登記，不受 60 日限制，進度為 Amazon Vine 評論／已註冊名額。已結束或取消項目排除，單頁缺席不視為結束；缺狀態列待確認。未知保持空值，不能以訂單、免費銷售或一般商品評論替代。資料只存本機加密檔；無法加密時明示僅本次工作階段，既有損壞檔不可默默覆寫。
+
+- 預設圖片服務使用獨立 Supply Boss image audience；首次由 packaged 無網路登入視窗輸入下載頁密碼，新 session 只留 main 記憶體。未配置自有 R2 也可整組準備；上傳結果不明只 GET 查詢，匿名讀回原檔 bytes 核對後才可用於預檢。下載、公布欄及 admin token 不互通。完整補充規格見 [直接上傳、效期與 Vine 修正](specs/2026-09-direct-images-expiry-vine.md)。

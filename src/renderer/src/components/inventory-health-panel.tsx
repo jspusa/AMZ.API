@@ -6,6 +6,7 @@ import {
   type InventoryHealthRow,
   type InventoryHealthStatus,
 } from "../../../shared/inventory-health";
+import { isInventoryHealthSyncJob, type InventoryHealthSyncJob } from "../../../shared/inventory-health-sync";
 
 const count = (value: number | null, missing = "未提供", digits = 1) => value === null
   ? missing : value.toLocaleString("zh-TW", { maximumFractionDigits: digits });
@@ -35,6 +36,28 @@ async function responsePayload(response: Response): Promise<unknown> {
     throw new LocalHealthRequestError(message, response.status);
   }
   return payload;
+}
+
+function syncReply(raw: unknown, marketplaceId: string, mode: "live" | "demo"): InventoryHealthSyncJob | null {
+  if (!raw || typeof raw !== "object" || !("job" in raw)) throw new Error("庫存健康工作資訊不完整。");
+  if (raw.job === null) return null;
+  if (!isInventoryHealthSyncJob(raw.job) || raw.job.marketplaceId !== marketplaceId || raw.job.mode !== mode) throw new Error("庫存健康工作與目前環境不一致。");
+  return raw.job;
+}
+async function waitForSync(initial: InventoryHealthSyncJob, signal: AbortSignal, update: (job: InventoryHealthSyncJob) => void | Promise<void>): Promise<InventoryHealthSyncJob> {
+  let job = initial;
+  while (job.status === "running") {
+    await new Promise<void>((resolve, reject) => {
+      const stop = () => { clearTimeout(timer); signal.removeEventListener("abort", stop); reject(new Error("已停止觀察")); };
+      const timer = setTimeout(() => { signal.removeEventListener("abort", stop); resolve(); }, 1500);
+      signal.addEventListener("abort", stop, { once: true }); if (signal.aborted) stop();
+    });
+    const response = await fetch(`/api/inventory-health/sync?${new URLSearchParams({ marketplaceId: job.marketplaceId, jobId: job.id })}`, { cache: "no-store", signal });
+    const next = syncReply(await responsePayload(response), job.marketplaceId, job.mode);
+    if (!next || next.id !== initial.id) throw new Error("庫存健康工作已更新，請重新讀取。");
+    job = next; if (!signal.aborted) await update(job);
+  }
+  return job;
 }
 
 type Confirmation = Pick<InventoryHealthRow, "expiryDate" | "stopSaleDate" | "confirmedRemaining">;
@@ -72,25 +95,25 @@ function BatchConfirmation({ row, disabled, saving, onSave, onClose }: {
       {error && <p role="alert" className="price-error">{error}</p>}
       <button type="submit">{saving ? "儲存中…" : "儲存本機確認"}</button>
     </fieldset>
-    {disabled && <p>庫存資料不完整或已過期，請先重新執行下方庫齡健檢。</p>}
+    {disabled && <p>庫存或效期來源尚未完整核對，請先同步全部 FBA 效期與銷速。</p>}
     <button type="button" onClick={onClose} disabled={saving}>收起</button>
   </form>;
 }
 
-export default function InventoryHealthPanel({ marketplaceId, mode, sourceFetchedAt = null, syncing = false }: {
+export default function InventoryHealthPanel({ marketplaceId, mode }: {
   marketplaceId: string;
   mode: "live" | "demo";
   sourceFetchedAt?: string | null;
   syncing?: boolean;
 }) {
   const [storedSnapshot, setSnapshot] = useState<InventoryHealthSnapshot | null>(null);
-  const snapshot = storedSnapshot?.marketplaceId === marketplaceId && storedSnapshot.mode === mode &&
-    (!sourceFetchedAt || storedSnapshot.fetchedAt === sourceFetchedAt) ? storedSnapshot : null;
+  const snapshot = storedSnapshot?.marketplaceId === marketplaceId && storedSnapshot.mode === mode ? storedSnapshot : null;
+  const [job, setJob] = useState<InventoryHealthSyncJob | null>(null);
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [filter, setFilter] = useState<InventoryHealthStatus>("clearance-risk");
+  const [filter, setFilter] = useState<InventoryHealthStatus | "all" | "slow">("all");
   const [query, setQuery] = useState("");
   const [limit, setLimit] = useState(100);
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -98,6 +121,15 @@ export default function InventoryHealthPanel({ marketplaceId, mode, sourceFetche
   const saveBusy = useRef(false);
   const invalidated = useRef(false);
   const controllerRef = useRef<AbortController | null>(null);
+  const observeProgress = (current: number, controller: AbortController) => async (active: InventoryHealthSyncJob) => {
+    if (current !== generation.current || controller.signal.aborted) return;
+    setJob(active);
+    if (active.stage !== "expiry") return;
+    const response = await fetch(`/api/inventory-health?${new URLSearchParams({ marketplaceId })}`, { cache: "no-store", signal: controller.signal });
+    if (!response.ok) return;
+    const next = parseReply(await responsePayload(response), marketplaceId, mode);
+    if (current === generation.current && !controller.signal.aborted) setSnapshot(next);
+  };
   const refresh = useCallback(async () => {
     if (saveBusy.current) return;
     invalidated.current = false;
@@ -107,31 +139,64 @@ export default function InventoryHealthPanel({ marketplaceId, mode, sourceFetche
     controllerRef.current = controller;
     setLoading(true); setSaving(false); setError(null); setNotice(null); setSnapshot(null); setExpandedId(null); setLimit(100);
     try {
-      const response = await fetch(`/api/inventory-health?${new URLSearchParams({ marketplaceId })}`, { cache: "no-store", signal: controller.signal });
-      const next = parseReply(await responsePayload(response), marketplaceId, mode);
+      const status = await fetch(`/api/inventory-health/sync?${new URLSearchParams({ marketplaceId })}`, { cache: "no-store", signal: controller.signal });
+      let active = syncReply(await responsePayload(status), marketplaceId, mode);
       if (current !== generation.current || controller.signal.aborted) return;
-      if (next && sourceFetchedAt && next.fetchedAt !== sourceFetchedAt) throw new Error("庫存健康與最新健檢時間不一致，請重新讀取本機資料。");
+      setJob(active);
+      if (active?.status === "running") {
+        setSnapshot(null);
+        active = await waitForSync(active, controller.signal, observeProgress(current, controller));
+        if (current !== generation.current || controller.signal.aborted) return;
+      }
+      if (active?.status === "failed") throw new Error(`${active.error?.message ?? active.message}（${active.error?.code ?? "INVENTORY_HEALTH_SYNC_FAILED"}）`);
+      const latest = await fetch(`/api/inventory-health?${new URLSearchParams({ marketplaceId })}`, { cache: "no-store", signal: controller.signal });
+      const next = parseReply(await responsePayload(latest), marketplaceId, mode);
+      if (current !== generation.current || controller.signal.aborted) return;
       setSnapshot(next);
     } catch (error) {
       if (current !== generation.current || controller.signal.aborted) return;
       setError(error instanceof Error ? error.message : "無法讀取本機庫存健康資料。");
     } finally { if (current === generation.current) setLoading(false); }
-  }, [marketplaceId, mode, sourceFetchedAt]);
+  }, [marketplaceId, mode]);
   useEffect(() => {
-    setFilter("clearance-risk"); setQuery("");
+    setFilter("all"); setQuery(""); setJob(null);
     void refresh();
     return () => { generation.current += 1; controllerRef.current?.abort(); saveBusy.current = false; };
   }, [refresh]);
   useEffect(() => {
     const unsubscribe = window.fbaOS?.app.onContextInvalidated?.(() => {
       generation.current += 1; controllerRef.current?.abort(); saveBusy.current = false; invalidated.current = true;
-      setSnapshot(null); setExpandedId(null); setLoading(false); setSaving(false); setNotice(null);
+      setSnapshot(null); setJob(null); setExpandedId(null); setLoading(false); setSaving(false); setNotice(null);
       setError("帳號環境已更新，請重新讀取本機資料。");
     });
     const onFocus = () => { if (invalidated.current) void refresh(); };
     window.addEventListener("focus", onFocus);
     return () => { unsubscribe?.(); window.removeEventListener("focus", onFocus); };
   }, [refresh]);
+  const synchronize = async () => {
+    if (saveBusy.current || loading) return;
+    invalidated.current = false;
+    const current = ++generation.current;
+    controllerRef.current?.abort();
+    const controller = new AbortController(); controllerRef.current = controller;
+    setLoading(true); setError(null); setNotice(null); setSnapshot(null); setExpandedId(null); setJob(null);
+    try {
+      const response = await fetch("/api/inventory-health/sync", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ marketplaceId }), signal: controller.signal });
+      let active = syncReply(await responsePayload(response), marketplaceId, mode);
+      if (current !== generation.current || controller.signal.aborted) return;
+      if (!active) throw new Error("庫存健康工作未建立。");
+      setJob(active);
+      active = await waitForSync(active, controller.signal, observeProgress(current, controller));
+      if (current !== generation.current || controller.signal.aborted) return;
+      if (active.status === "failed") throw new Error(`${active.error?.message ?? active.message}（${active.error?.code ?? "INVENTORY_HEALTH_SYNC_FAILED"}）`);
+      const result = await fetch(`/api/inventory-health?${new URLSearchParams({ marketplaceId })}`, { cache: "no-store", signal: controller.signal });
+      const next = parseReply(await responsePayload(result), marketplaceId, mode);
+      if (current !== generation.current || controller.signal.aborted) return;
+      setSnapshot(next); setNotice(active.message);
+      window.dispatchEvent(new CustomEvent("amz-api-inventory-health-changed", { detail: { marketplaceId } }));
+    } catch (error) { if (current === generation.current && !controller.signal.aborted) setError(error instanceof Error ? error.message : "庫存健康同步未完成。"); }
+    finally { if (current === generation.current) setLoading(false); }
+  };
   const saveConfirmation = async (row: InventoryHealthRow, value: Confirmation) => {
     if (!snapshot || saveBusy.current || invalidated.current) return;
     saveBusy.current = true; setSaving(true); setError(null); setNotice(null);
@@ -158,45 +223,62 @@ export default function InventoryHealthPanel({ marketplaceId, mode, sourceFetche
       if (current === generation.current) { saveBusy.current = false; setSaving(false); }
     }
   };
+  const syncing = loading || job?.status === "running";
   const calendarIds = new Set(snapshot ? inventoryHealthCalendarRows(snapshot).map(row => row.id) : []);
-  const filtered = snapshot?.rows.filter(row => row.status === filter &&
+  const bySku = new Map<string, InventoryHealthRow>();
+  for (const row of snapshot?.rows ?? []) {
+    const previous = bySku.get(row.sellerSku);
+    if (!previous || (row.expiryDate ?? "9999") < (previous.expiryDate ?? "9999")) bySku.set(row.sellerSku, row);
+  }
+  const slow = (row: InventoryHealthRow) => ["may-outlast-expiry", "slow-selling", "no-sales"].includes(row.stockRisk ?? "unknown");
+  const candidates = filter === "all" || filter === "slow" ? [...bySku.values()].sort((a, b) => Number(slow(b)) - Number(slow(a)) || (b.wholeSkuClearanceDays ?? 0) - (a.wholeSkuClearanceDays ?? 0)) : snapshot?.rows ?? [];
+  const filtered = candidates.filter(row => (filter === "all" || (filter === "slow" ? slow(row) : row.status === filter)) &&
     (!query || `${row.sellerSku} ${row.asin} ${row.title}`.toLocaleLowerCase("en-US").includes(query.toLocaleLowerCase("en-US")))) ?? [];
-  const groups: Array<{ status: InventoryHealthStatus; label: string; star: string }> = [
+  const groups: Array<{ status: InventoryHealthStatus | "all" | "slow"; label: string; star: string }> = [
+    { status: "all", label: "全部 FBA", star: "★" },
+    { status: "slow", label: "銷售偏慢／效期需核對", star: "☆" },
     { status: "clearance-risk", label: "清售風險", star: "★" },
     { status: "needs-review", label: "待確認", star: "☆" },
     { status: "on-track", label: "預估可清完", star: "★" },
   ];
   return <section className="inventory-health-panel" aria-label="庫存健康與清售風險" aria-busy={loading || saving}>
-    <header><div><h3>庫存健康 · 清售風險</h3><p>效期、庫齡與銷速一起核對；只有已確認餘量且預估清不完的品項進入行事曆。</p></div>
-      <button type="button" onClick={() => void refresh()} disabled={loading || syncing || saving}>{loading ? "讀取中…" : "重新讀取本機資料"}</button></header>
+    <header><div><h3>全部 FBA · 效期與清售速度</h3><p>包含低庫齡商品；先看全品號預估清完天數與最早申報效期，批次餘量未知時僅供核對。</p></div>
+      <div className="inventory-health-actions"><button type="button" onClick={() => void synchronize()} disabled={syncing || saving}>{job?.status === "running" ? "同步中…" : "同步全部 FBA 效期與銷速"}</button>
+      <button type="button" onClick={() => void refresh()} disabled={loading || saving}>{loading ? "讀取中…" : "重新讀取本機資料"}</button></div></header>
+    {job && <p role="status">{job.message}{job.status === "running" && " 關閉此區後仍會繼續同步。"}</p>}
+    {job?.status === "partial" && job.error && <p role="alert">{job.error.message}（{job.error.code}）目前可查看庫存估算，批次提醒仍暫停。</p>}
     {notice && <p role="status">{notice}</p>}
     {error && <p className="price-error" role="alert">{error}</p>}
-    {!loading && !error && !snapshot && <p className="inventory-health-empty">尚無庫存健康資料。完成下方庫齡健檢後，Notebook Key 會自動讀取可存取的入庫申報效期。</p>}
+    {error && job?.status === "running" && !loading && <p>目前未能接收背景進度；請按「重新讀取本機資料」接回同一工作。</p>}
+    {!loading && !error && !snapshot && <p className="inventory-health-empty">按「同步全部 FBA 效期與銷速」即可整理所有庫齡的商品，不必先執行 180 天以上庫齡健檢。</p>}
     {snapshot && <>
       <div className="inventory-health-source-status"><span>{snapshot.mode === "demo" ? "展示資料" : "Amazon 來源＋本機批次確認"}</span>
         <time dateTime={snapshot.fetchedAt}>資料讀取：{new Date(snapshot.fetchedAt).toLocaleString("zh-TW")}</time>
-        {snapshot.stale && <strong>資料需重新核對，請重新執行下方庫齡健檢。</strong>}
+        {snapshot.stale && <strong>資料需重新核對，請同步全部 FBA 效期與銷速。</strong>}
         {!snapshot.sourceComplete && <strong>效期來源尚未完整；待確認品項不加入行事曆。</strong>}
       </div>
       <div className="inventory-health-summary" role="group" aria-label="庫存健康顯示範圍">
         {groups.map(group => <button key={group.status} type="button" disabled={saving} aria-label={group.label} aria-pressed={filter === group.status}
           onClick={() => { setFilter(group.status); setLimit(100); setExpandedId(null); }}>
-          <span>{group.star} {group.label}</span><strong>{snapshot.rows.filter(row => row.status === group.status).length.toLocaleString("zh-TW")}</strong><small>批次</small>
+          <span>{group.star} {group.label}</span><strong>{(group.status === "all" ? bySku.size : group.status === "slow" ? [...bySku.values()].filter(slow).length : snapshot.rows.filter(row => row.status === group.status).length).toLocaleString("zh-TW")}</strong><small>{group.status === "all" || group.status === "slow" ? "品號" : "批次"}</small>
         </button>)}
       </div>
       <input type="search" disabled={saving} aria-label="搜尋庫存健康品項" placeholder="搜尋品號、ASIN 或品名" value={query}
         onChange={event => { setQuery(event.target.value); setLimit(100); }} />
       <div className="inventory-health-table"><table>
-        <thead><tr><th scope="col">品項／批次</th><th scope="col">目標清完日</th><th scope="col">本批確認餘量</th><th scope="col">最快平均銷速</th><th scope="col">累計清售缺口</th><th scope="col">核對</th></tr></thead>
+        <thead><tr><th scope="col">品項／批次</th><th scope="col">全品號可售庫存／預估清完</th><th scope="col">最早申報效期</th><th scope="col">目標清完日</th><th scope="col">本批確認餘量</th><th scope="col">已回報最快平均銷速</th><th scope="col">累計清售缺口</th><th scope="col">核對</th></tr></thead>
         <tbody>{filtered.slice(0, limit).map(row => <Fragment key={row.id}>
           <tr><td><strong>{row.title || row.sellerSku}</strong><small>{row.sellerSku}</small><small>{row.expiryDate ? `效期 ${row.expiryDate}` : "效期待確認"}</small></td>
+            <td>{count(row.available, "庫存未提供", 0)} 件<small>{row.stockRisk === "no-sales" ? "已回報期間無出貨，清完天數無法估算" : row.wholeSkuClearanceDays === null ? "清完天數未知" : `約 ${count(row.wholeSkuClearanceDays)} 天清完`}</small>
+              <small>{row.stockRisk === "may-outlast-expiry" ? "☆ 全庫存可能晚於申報效期清完；批次待核對" : row.stockRisk === "slow-selling" ? "☆ 預估超過 180 天才清完" : "全品號估算，不是效期批次餘量"}</small></td>
+            <td>{(row.earliestDeclaredExpiryDate === undefined ? row.expiryDate : row.earliestDeclaredExpiryDate) ?? "尚未取得"}<small>歷史入庫申報，現存批次待確認</small></td>
             <td>{row.stopSaleDate ?? row.expiryDate ?? "待確認"}<small>{row.daysRemaining === null ? "期限未知" : row.daysRemaining <= 0 ? "已到處理期限" : `剩 ${row.daysRemaining} 天`}</small></td>
-            <td>{count(row.confirmedRemaining, "待確認餘量", 0)}</td><td>{row.dailyUnits === null ? "銷速未知" : `${count(row.dailyUnits)} 件／日`}</td>
+            <td>{count(row.confirmedRemaining, "待確認餘量", 0)}</td><td>{(row.estimatedDailyUnits ?? row.dailyUnits) === null ? "銷速未知" : `${count(row.estimatedDailyUnits ?? row.dailyUnits)} 件／日`}</td>
             <td>{row.projectedShortfall === null ? "待確認" : `${count(row.projectedShortfall, "待確認", 0)} 件`}
               {calendarIds.has(row.id) && <small>★ 列入行事曆</small>}</td>
             <td><button type="button" disabled={saving} aria-label={`核對批次：${row.id}`} aria-expanded={expandedId === row.id}
               onClick={() => setExpandedId(expandedId === row.id ? null : row.id)}>核對批次</button></td></tr>
-          {expandedId === row.id && <tr><td colSpan={6} className="inventory-health-details">
+          {expandedId === row.id && <tr><td colSpan={8} className="inventory-health-details">
             <p>{row.reason}</p><dl>
               <div><dt>來源</dt><dd>{row.sourceLabel ?? row.sourceRef}</dd></div><div><dt>來源更新</dt><dd>{row.sourceUpdatedAt}</dd></div>
               <div><dt>庫存報表日期</dt><dd>{row.snapshotDate ?? "未提供"}</dd></div><div><dt>入庫申報數量</dt><dd>{count(row.declaredQuantity, "未提供", 0)}（不是批次餘量）</dd></div>
@@ -206,15 +288,16 @@ export default function InventoryHealthPanel({ marketplaceId, mode, sourceFetche
               <div><dt>下月預估倉儲費</dt><dd>{money(row.estimatedStorageCostNextMonth, row.currencyCode)}</dd></div><div><dt>預估庫齡附加費</dt><dd>{money(row.estimatedAgedSurcharge, row.currencyCode)}</dd></div>
             </dl>
             <BatchConfirmation key={`${row.id}:${snapshot.fetchedAt}`} row={row} saving={saving}
-              disabled={snapshot.stale || row.available === null || row.snapshotDate === null || syncing}
+              disabled={snapshot.stale || !snapshot.sourceComplete || row.available === null || row.snapshotDate === null || syncing}
               onSave={value => saveConfirmation(row, value)} onClose={() => setExpandedId(null)} />
           </td></tr>}
         </Fragment>)}</tbody>
       </table></div>
-      {!filtered.length && <p className="inventory-health-empty">{query ? "沒有符合搜尋的品項。" : filter === "clearance-risk" ? "目前沒有已確認的清售風險；資料缺漏請查看「待確認」。" : "目前沒有此狀態的批次。"}</p>}
+      {!filtered.length && <p className="inventory-health-empty">{query ? "沒有符合搜尋的品項。" : filter === "clearance-risk" ? "目前沒有已確認的清售風險；資料缺漏請查看「待確認」。" : "目前沒有此範圍的品項。"}</p>}
       {filtered.length > limit && <button type="button" onClick={() => setLimit(value => value + 100)}>再顯示 100 批次（已顯示 {limit}／{filtered.length}）</button>}
       <details className="inventory-health-method"><summary>計算方式與資料有效期限</summary>
         <p>{snapshot.notice}</p><p>清售缺口累計同一 SKU 到此日以前的已確認批次；銷速採 7／30／60／90 天中最快平均值，預測不保證未來銷量。全 SKU 庫存、庫齡與歷史入庫量都不是效期批次餘量。</p>
+        <p>全品號清完天數採可取得且一致的 7／30／60／90 天最快平均銷速；缺漏期間不補零。超過 180 天標示銷售偏慢，與庫齡超過 180 天無關。預估清完晚於最早申報效期只提示核對，不會據此計算過期件數或加入行事曆。</p>
         <p>庫存報表日期超過 2 天，或資料讀取超過 48 小時，需重新健檢。庫存、報表日期、銷量或來源資料改變時，舊餘量確認會清除；需要重新核對。人工確認只儲存在這台 Notebook Key，不修改 Amazon。</p>
       </details>
     </>}

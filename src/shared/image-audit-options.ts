@@ -2,5 +2,5 @@
 export const IMAGE_AUDIT_MINIMUM_IMAGES = 8;
 
 export function isImageAuditMinimum(value: unknown): value is number {
-  return typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= 9;
+  return typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= 10;
 }

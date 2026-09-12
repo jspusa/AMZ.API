@@ -51,7 +51,7 @@ function normalizedUrls(value: unknown): string[] {
       .filter((item): item is string => typeof item === "string")
       .map((item) => item.trim())
       .filter(Boolean),
-  )].slice(0, 9);
+  )].slice(0, 10);
 }
 
 export function summarizeImageAudit(

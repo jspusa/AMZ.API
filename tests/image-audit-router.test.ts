@@ -126,19 +126,19 @@ describe("FBA image audit snapshot export route", () => {
     const report = await startReadyReport(router);
     const base = { marketplaceId: MARKETPLACE_ID, ...report, imageAudit: "1" };
     const first = await router.handle(request({ ...base, minimumImages: "5" }));
-    const second = await router.handle(request({ ...base, minimumImages: "9" }));
+    const second = await router.handle(request({ ...base, minimumImages: "10" }));
     expect(first.status).toBe(200);
     expect(second.status).toBe(200);
     if (first.body.kind !== "json" || second.body.kind !== "json") throw new Error("Expected snapshots");
     const a = first.body.value as { minimumImages: number; exportId: string };
     const b = second.body.value as { minimumImages: number; exportId: string };
     expect(a.minimumImages).toBe(5);
-    expect(b.minimumImages).toBe(9);
+    expect(b.minimumImages).toBe(10);
     expect(a.exportId).not.toBe(b.exportId);
     const download = await router.handle(request({ marketplaceId: MARKETPLACE_ID, imageAudit: "1", download: "1", exportId: a.exportId }));
     if (download.body.kind !== "bytes") throw new Error("Expected workbook");
     expect(strFromU8(unzipSync(download.body.value)["xl/worksheets/sheet2.xml"]!)).toContain("至少 5 張圖片");
-    for (const minimumImages of ["0", "10", "2.5", "08", "NaN"]) {
+    for (const minimumImages of ["0", "11", "2.5", "08", "NaN"]) {
       expect((await router.handle(request({ ...base, minimumImages }))).status).toBe(400);
     }
   });
@@ -146,12 +146,12 @@ describe("FBA image audit snapshot export route", () => {
   it("carries the chosen threshold through the standalone main job to its canonical snapshot", async () => {
     const start = await router.handle({
       requestId: crypto.randomUUID(), method: "POST", path: "/api/sp-api/standalone-audit", query: {}, headers: {},
-      body: { kind: "json", value: { kind: "image", marketplaceId: MARKETPLACE_ID, mode: "demo", options: { minimumImages: 9 } } },
+      body: { kind: "json", value: { kind: "image", marketplaceId: MARKETPLACE_ID, mode: "demo", options: { minimumImages: 10 } } },
     });
     expect(start.status).toBe(202);
     if (start.body.kind !== "json") throw new Error("Expected job");
     const started = start.body.value as { jobId: string; contextId: string; options: unknown };
-    expect(started.options).toEqual({ minimumImages: 9 });
+    expect(started.options).toEqual({ minimumImages: 10 });
     const deadline = Date.now() + 5000;
     while (Date.now() < deadline) {
       const read = await router.handle({ requestId: crypto.randomUUID(), method: "GET", path: "/api/sp-api/standalone-audit", headers: {}, query: {
@@ -160,7 +160,7 @@ describe("FBA image audit snapshot export route", () => {
       if (read.status === 202) { await new Promise(resolve => setTimeout(resolve, 1)); continue; }
       expect(read.status).toBe(200);
       if (read.body.kind !== "json") throw new Error("Expected snapshot");
-      expect(read.body.value).toMatchObject({ ready: true, status: "completed", options: { minimumImages: 9 }, snapshot: { minimumImages: 9 } });
+      expect(read.body.value).toMatchObject({ ready: true, status: "completed", options: { minimumImages: 10 }, snapshot: { minimumImages: 10 } });
       return;
     }
     throw new Error("Image audit did not complete");

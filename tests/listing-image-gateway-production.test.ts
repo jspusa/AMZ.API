@@ -56,6 +56,7 @@ function contentSnapshot(
     "other_product_image_locator_6",
     "other_product_image_locator_7",
     "other_product_image_locator_8",
+    "other_product_image_locator_9",
   ];
   const field = {
     supported: true,
@@ -176,7 +177,7 @@ function harness() {
 }
 
 function urlVector(values: readonly (string | null)[]): ListingImageUrlVector {
-  return Array.from({ length: 9 }, (_, index) => values[index] ?? null) as
+  return Array.from({ length: 10 }, (_, index) => values[index] ?? null) as
     unknown as ListingImageUrlVector;
 }
 
@@ -191,7 +192,7 @@ function descriptor(
     requestedUrl === previousUrls[index]
       ? []
       : [{
-          slot: index as 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8,
+          slot: index as 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9,
           previousUrl: previousUrls[index] ?? null,
           requestedUrl,
         }]
@@ -246,7 +247,27 @@ describe("Listing Image production gateway", () => {
       null,
       null,
       null,
+      null,
     ]);
+  });
+
+  it("projects and prepares exactly the tenth locator without sending a commit", async () => {
+    const state = harness();
+    state.setMode("live");
+    state.setPayload(livePayload({
+      ...livePayload().attributes,
+      other_product_image_locator_9: [{ marketplace_id: MARKETPLACE_ID, media_location: "https://images.example.test/old-tenth.jpg" }],
+    }));
+    const observation = await state.runtime.gateway.read(IDENTITY, "mutation");
+    expect(observation.snapshot.images[9]).toMatchObject({ attributeName: "other_product_image_locator_9", url: "https://images.example.test/old-tenth.jpg" });
+    const requested = urlVector(observation.snapshot.images.map(image => image.url));
+    const patch = descriptor(observation, urlVector([...requested.slice(0, 9), "https://images.example.test/new-tenth.jpg"]));
+    await state.runtime.gateway.validationPreview(patch);
+    expect(state.previewCommands).toEqual([{
+      ...IDENTITY,
+      patchBody: { productType: "PET_FOOD", patches: [{ op: "replace", path: "/attributes/other_product_image_locator_9", value: [{ marketplace_id: MARKETPLACE_ID, media_location: "https://images.example.test/new-tenth.jpg" }] }] },
+    }]);
+    expect(state.commitCommands).toEqual([]);
   });
 
   it("fails closed on ambiguous or non-canonical locator evidence", async () => {
@@ -388,6 +409,7 @@ describe("Listing Image production gateway", () => {
     )).snapshot.images.map((image) => image.url)).toEqual([
       "https://images.example.test/demo-main.jpg",
       "https://images.example.test/demo-alt.jpg",
+      null,
       null,
       null,
       null,

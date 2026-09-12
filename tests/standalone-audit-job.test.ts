@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { SpApiError } from "../src/main/amazon/sp-api-error";
 import {
   StandaloneAuditJobCoordinator,
   StandaloneAuditJobCoordinatorError,
@@ -47,6 +48,26 @@ function gateway(
 describe("standalone audit background job coordinator", () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
+
+  it("retains a sanitized report failure through the real background job receipt", async () => {
+    const coordinator = new StandaloneAuditJobCoordinator({ gateway: gateway({ run: async () => {
+      throw new SpApiError("Amazon 庫存健康報表缺少 SKU 欄位。", { status: 502, code: "REPORT_FORMAT_UNSUPPORTED" });
+    } }) });
+    const started = await coordinator.start({ kind: "agedInventory", marketplaceId: MARKETPLACE_ID, mode: "live" });
+    await vi.advanceTimersByTimeAsync(0); await flushBackgroundJob();
+    expect(await coordinator.get({ jobId: started.jobId, contextId: started.contextId, kind: "agedInventory", marketplaceId: MARKETPLACE_ID, mode: "live" }))
+      .toMatchObject({ status: "failed", error: { status: 502, code: "REPORT_FORMAT_UNSUPPORTED", message: "Amazon 庫存健康報表缺少 SKU 欄位。" } });
+  });
+  it("does not expose a typed upstream error containing a private report URL", async () => {
+    const coordinator = new StandaloneAuditJobCoordinator({ gateway: gateway({ run: async () => {
+      throw new SpApiError("reportId=123456789012 https://signed.example.test/private", { status: 502, code: "REPORT_FORMAT_UNSUPPORTED" });
+    } }) });
+    const started = await coordinator.start({ kind: "agedInventory", marketplaceId: MARKETPLACE_ID, mode: "live" });
+    await vi.advanceTimersByTimeAsync(0); await flushBackgroundJob();
+    const value = JSON.stringify(await coordinator.get({ jobId: started.jobId, contextId: started.contextId, kind: "agedInventory", marketplaceId: MARKETPLACE_ID, mode: "live" }));
+    expect(value).toContain("REPORT_FORMAT_UNSUPPORTED");
+    expect(value).not.toContain("123456789012"); expect(value).not.toContain("signed.example.test");
+  });
 
   it("keeps the main-owned audit running after its drawer observer disappears", async () => {
     let finish!: () => void;
@@ -110,11 +131,11 @@ describe("standalone audit background job coordinator", () => {
     const identity = { kind: "image" as const, marketplaceId: MARKETPLACE_ID, mode: "live" as const };
     const byDefault = await coordinator.start(identity);
     const eight = await coordinator.start({ ...identity, options: { minimumImages: 8 } });
-    const six = await coordinator.start({ ...identity, options: { minimumImages: 6 } });
+    const ten = await coordinator.start({ ...identity, options: { minimumImages: 10 } });
     expect(byDefault.options).toEqual({ minimumImages: 8 });
     expect(byDefault.jobId).toBe(eight.jobId);
-    expect(six.jobId).not.toBe(eight.jobId);
-    for (const minimumImages of [0, 10, 2.5, NaN]) {
+    expect(ten.jobId).not.toBe(eight.jobId);
+    for (const minimumImages of [0, 11, 2.5, NaN]) {
       await expect(coordinator.start({ ...identity, options: { minimumImages } })).rejects.toThrow();
     }
     coordinator.clear();

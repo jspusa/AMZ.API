@@ -59,6 +59,8 @@ import {
   parseOperationsBoardPublisherDraft,
 } from "./operations-board-publisher";
 import { SupplyBossOperationsBoard } from "./supply-boss-operations-board";
+import { HostedListingImages } from "./hosted-listing-images";
+import { ListingImageLogin } from "./listing-image-login";
 import { DesktopInstallGate, DesktopUpdater } from "./desktop-updater";
 import { LocalStore, LocalStoreCorruptionError } from "./local-store";
 import { sellerCentralInventoryUrl } from "./seller-central-inventory";
@@ -126,6 +128,8 @@ let displayPreferences: DisplayPreferencesStore | null = null;
 let credentialVault: CredentialVault | null = null;
 let advertisingCredentialVault: AdvertisingCredentialVault | null = null;
 let operationsBoard: SupplyBossOperationsBoard | null = null;
+let hostedImages: HostedListingImages | null = null;
+let listingImageLogin: ListingImageLogin | null = null;
 let advertisingApi: AdvertisingApiClient | null = null;
 let desktopUpdater: DesktopUpdater | null = null;
 let updateStatus: UpdateStatus = { state: "idle" };
@@ -1141,6 +1145,15 @@ if (!hasSingleInstanceLock) {
       resolve(userData, "ads-credentials.enc"),
     );
     operationsBoard = new SupplyBossOperationsBoard();
+    hostedImages = new HostedListingImages({ requestLogin: () => {
+      if (!listingImageLogin) throw new Error("圖片登入尚未就緒。");
+      return listingImageLogin.request();
+    } });
+    listingImageLogin = new ListingImageLogin({
+      parent: () => mainWindow,
+      preload: fileURLToPath(new URL("../preload/credentialEditor.cjs", import.meta.url)),
+      service: hostedImages,
+    });
     advertisingApi = new AdvertisingApiClient(
       advertisingCredentialVault,
       fetch,
@@ -1155,7 +1168,11 @@ if (!hasSingleInstanceLock) {
     await initializeStoreWithRecovery(localStore);
     apiRouter = new ApiRouter({
       store: localStore,
-      onContextInvalidated: () => mainWindow?.webContents.send("fba:context-invalidated"),
+      onContextInvalidated: () => {
+        listingImageLogin?.close();
+        hostedImages?.clear();
+        mainWindow?.webContents.send("fba:context-invalidated");
+      },
       vineStore: new PrivateLocalJsonStore({
         path: resolve(userData, "vine-progress.encrypted"),
         codec: { isAvailable: () => safeStorage.isAsyncEncryptionAvailable(), encrypt: value => safeStorage.encryptStringAsync(value), decrypt: async bytes => (await safeStorage.decryptStringAsync(bytes)).result },
@@ -1169,6 +1186,7 @@ if (!hasSingleInstanceLock) {
       advertising: advertisingApi,
       reportsAdapter: reportsRuntimeProductionAdapter,
       operationsBoard,
+      hostedImages,
     });
     configureMainSession();
     registerIpc();

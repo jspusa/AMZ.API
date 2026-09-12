@@ -1,3 +1,5 @@
+import { isImageAuditMinimum } from "./image-audit-options";
+
 /** Non-sensitive display choices only; no account or operational data. */
 export type DisplayPreferences = Readonly<{
   fontSize: "small" | "standard" | "large";
@@ -18,8 +20,7 @@ export function parseDisplayPreferencesPatch(value: unknown): DisplayPreferences
     ("fontSize" in input && !["small", "standard", "large"].includes(input.fontSize as string)) ||
     ("accent" in input && !["default", "pink"].includes(input.accent as string)) ||
     ("mode" in input && !["light", "dark"].includes(input.mode as string)) ||
-    ("imageAuditMinimumImages" in input && (!Number.isInteger(input.imageAuditMinimumImages) ||
-      Number(input.imageAuditMinimumImages) < 1 || Number(input.imageAuditMinimumImages) > 9))) {
+    ("imageAuditMinimumImages" in input && !isImageAuditMinimum(input.imageAuditMinimumImages))) {
     throw new TypeError("INVALID_DISPLAY_PREFERENCES");
   }
   return Object.freeze({ ...input }) as DisplayPreferencesPatch;

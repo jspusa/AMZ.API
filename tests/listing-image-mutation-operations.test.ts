@@ -26,6 +26,7 @@ const CURRENT_URLS: ListingImageUrlVector = [
   null,
   null,
   null,
+  null,
 ];
 
 function imageSnapshot(): ListingImageSnapshot {
@@ -61,6 +62,28 @@ function imageSnapshot(): ListingImageSnapshot {
 }
 
 describe("Listing Image mutation operations", () => {
+  it("previews the tenth image only when its exact PTD capability permits editing", async () => {
+    const snapshot = imageSnapshot();
+    const validationPreview = vi.fn<ListingImageGateway["validationPreview"]>(async () => ({
+      ok: true, status: 200, requestId: "tenth-image-preview", retryAfter: null,
+      payload: { status: "VALID", issues: [] },
+    }));
+    const commitOnce = vi.fn<ListingImageGateway["commitOnce"]>();
+    const operations = createListingImageMutationOperations({
+      mode: () => "live", read: async () => ({ snapshot, sourceEvidence: SOURCE_EVIDENCE, fulfillment: "FBA" }),
+      validationPreview, commitOnce, replaceDemoImages: vi.fn(),
+    });
+    const input = { ...IDENTITY, expectedUrls: [...CURRENT_URLS], urls: [...CURRENT_URLS.slice(0, 9), "https://images.example.test/tenth.jpg"] };
+    expect(await operations.preview(input)).toMatchObject({ status: "VALID", changedSlots: [9] });
+    expect(validationPreview).toHaveBeenCalledWith(expect.objectContaining({
+      changes: [{ slot: 9, previousUrl: null, requestedUrl: "https://images.example.test/tenth.jpg" }],
+    }));
+    snapshot.images[9].capability.editable = false;
+    await expect(operations.preview(input)).rejects.toMatchObject({ code: "IMAGE_FIELD_READ_ONLY" });
+    expect(validationPreview).toHaveBeenCalledTimes(1);
+    expect(commitOnce).not.toHaveBeenCalled();
+  });
+
   it("rejects a stale expected image vector before Validation Preview or commit", async () => {
     const validationPreview =
       vi.fn<ListingImageGateway["validationPreview"]>();

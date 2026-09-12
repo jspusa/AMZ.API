@@ -29,7 +29,7 @@ function snapshot(): ListingImageSnapshot {
     productType: "PET_FOOD",
     title: "Turkey Tendon",
     attributesPresent: true,
-    images: URLS.map((url, index) => ({
+    images: [...URLS, null].map((url, index) => ({
       attributeName: index === 0
         ? "main_product_image_locator"
         : `other_product_image_locator_${index}`,
@@ -55,8 +55,9 @@ function snapshot(): ListingImageSnapshot {
 
 function durableResult(
   requestedUrls = [...URLS],
+  version: 1 | 2 = 1,
 ): ListingImageUpdateResult {
-  const previousUrls = [...URLS];
+  const previousUrls = version === 1 ? [...URLS] : [...URLS, null];
   const changedSlots = requestedUrls.flatMap((url, index) =>
     url === previousUrls[index] ? [] : [index]
   );
@@ -74,7 +75,7 @@ function durableResult(
     issues: [],
     notice: "accepted",
     imageWriteEvidence: {
-      version: 1,
+      version,
       asin: "B09S5VY2JS",
       productType: "PET_FOOD",
       fulfillment: "FBA",
@@ -89,6 +90,34 @@ function durableResult(
 }
 
 describe("Listing Image canonical write readback", () => {
+  it("reconciles a preserved nine-slot receipt from a complete ten-slot GET without claiming the new slot", () => {
+    const requested = [...URLS];
+    requested[1] = "https://images.example.test/replacement-1.jpg";
+    const canonical = snapshot();
+    canonical.images[1].url = requested[1];
+    canonical.images[9].url = "https://images.example.test/untouched-tenth.jpg";
+    const receipt = durableResult(requested);
+    const before = JSON.stringify(receipt);
+    expect(imageReadbackDecision(receipt, { snapshot: canonical, sourceEvidence: {} as never, fulfillment: "FBA" })).toBe("verified");
+    expect(JSON.stringify(receipt)).toBe(before);
+    canonical.images[1].url = "https://images.example.test/different.jpg";
+    expect(imageReadbackDecision(receipt, { snapshot: canonical, sourceEvidence: {} as never, fulfillment: "FBA" })).toBe("pending");
+  });
+
+  it("binds a new receipt to all ten images including the tenth canonical target", () => {
+    const requested = [...URLS, "https://images.example.test/tenth.jpg"];
+    const receipt = durableResult(requested, 2);
+    const canonical = snapshot();
+    const observation = { snapshot: canonical, sourceEvidence: {} as never, fulfillment: "FBA" as const };
+    expect(imageReadbackDecision(receipt, observation)).toBe("pending");
+    canonical.images[9].url = requested[9];
+    expect(imageReadbackDecision(receipt, observation)).toBe("verified");
+    const malformed = durableResult(requested, 1);
+    expect(imageReadbackDecision(malformed, observation)).toBe("pending");
+    canonical.images[0].url = "https://images.example.test/drift.jpg";
+    expect(imageReadbackDecision(receipt, observation)).toBe("pending");
+  });
+
   it("never verifies a response with an empty changed-slot vector", () => {
     const result: ListingImageUpdateResult = {
       mode: "live",
@@ -112,7 +141,7 @@ describe("Listing Image canonical write readback", () => {
     })).toBe("pending");
   });
 
-  it("verifies only a complete nine-slot canonical target", () => {
+  it("verifies a legacy receipt only from a complete current canonical target", () => {
     const requested = [...URLS];
     requested[1] = "https://images.example.test/replacement-1.jpg";
     const canonical = snapshot();

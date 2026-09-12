@@ -25,12 +25,12 @@ export function auditListingImageRows(input: {
 }) {
   const minimumImages = input.minimumImages ?? IMAGE_AUDIT_MINIMUM_IMAGES;
   if (!isImageAuditMinimum(minimumImages)) {
-    throw new Error("圖片健檢最低張數只能選 1–9 張。");
+    throw new Error("圖片健檢最低張數只能選 1–10 張。");
   }
   const rows = input.rows.map((row) => {
     const imageUrls = [...new Set(
       row.imageUrls.map((url) => url.trim()).filter(Boolean),
-    )].slice(0, 9);
+    )].slice(0, 10);
     const readErrors = row.readErrors.map((error) => ({ ...error }));
     const readStatus = row.readStatus === "complete" && readErrors.length === 0
       ? "complete" as const

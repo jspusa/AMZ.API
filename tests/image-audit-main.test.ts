@@ -58,7 +58,16 @@ describe("image audit backend snapshot", () => {
     });
   });
 
-  it("rejects a threshold outside the one-to-nine range", () => {
+  it("evaluates a ten-image threshold from fresh counts while keeping eight as the default", () => {
+    const input = { marketplaceId: "ATVPDKIKX0DER", fetchedAt: "2026-09-12T12:00:00.000Z", rows: [9, 10].map(count => ({ sellerSku: `IMAGES-${count}`, asin: "B012345678", productType: "PET_FOOD", title: "Fixture", imageUrls: Array.from({ length: count }, (_, index) => `https://images.example/${index}.jpg`), readStatus: "complete" as const, readErrors: [] })) };
+    const ten = auditListingImageRows({ ...input, minimumImages: 10 });
+    expect(ten.minimumImages).toBe(10);
+    expect(ten.summary.underMinimum).toBe(1);
+    expect(auditListingImageRows(input).minimumImages).toBe(8);
+    expect(auditListingImageRows(input).summary.underMinimum).toBe(0);
+  });
+
+  it("rejects a threshold outside the one-to-ten range", () => {
     expect(() =>
       auditListingImageRows({
         marketplaceId: "ATVPDKIKX0DER",
@@ -66,6 +75,6 @@ describe("image audit backend snapshot", () => {
         minimumImages: 0,
         rows: [],
       }),
-    ).toThrow(/最低張數只能選 1–9 張/);
+    ).toThrow(/最低張數只能選 1–10 張/);
   });
 });

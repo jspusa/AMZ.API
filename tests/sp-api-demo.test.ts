@@ -267,7 +267,7 @@ describe("SP-API demo safety boundary", () => {
     ).rejects.toMatchObject({ code: "INVALID_SALE_PRICE" });
   });
 
-  it("provides content and nine ordered image slots", async () => {
+  it("provides content and ten ordered image slots", async () => {
     const identity = {
       marketplaceId: "ATVPDKIKX0DER" as const,
       sellerSku: "AFA-TRKY-4OZ",
@@ -282,7 +282,7 @@ describe("SP-API demo safety boundary", () => {
     expect(content.productDescription).not.toBe("");
     expect(content.capabilities.itemHighlight.maxLength).toBe(125);
     expect(content.capabilities.productDescription.supported).toBe(true);
-    expect(images.images).toHaveLength(9);
+    expect(images.images).toHaveLength(10);
     expect(images.images[0].attributeName).toBe("main_product_image_locator");
   });
 

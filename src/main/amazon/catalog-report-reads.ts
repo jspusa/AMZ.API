@@ -49,6 +49,7 @@ const IMAGE_ATTRIBUTE_NAMES = [
   "other_product_image_locator_6",
   "other_product_image_locator_7",
   "other_product_image_locator_8",
+  "other_product_image_locator_9",
 ] as const;
 const LISTINGS_BATCH_SIZE = 20;
 const LISTINGS_PACE_MILLISECONDS = 220;

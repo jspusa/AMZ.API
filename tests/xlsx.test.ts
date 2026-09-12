@@ -171,6 +171,19 @@ describe("FBA aged inventory Excel export", () => {
 });
 
 describe("FBA image audit Excel export", () => {
+  it("exports all ten image URLs and the selected ten-image threshold", () => {
+    const workbook = createImageAuditWorkbook({
+      marketplaceId: "ATVPDKIKX0DER", marketplaceLabel: "US · Amazon.com", fetchedAt: "2026-09-12T12:00:00.000Z", minimumImages: 10,
+      rows: [{ sellerSku: "TEN-IMAGES", asin: "B000000001", productType: "PET_FOOD", title: "Ten images", imageUrls: Array.from({ length: 10 }, (_, index) => `https://images.example/${index + 1}.jpg`), imageCount: 10, readStatus: "complete", readErrors: [] }],
+    });
+    const archive = unzipSync(workbook);
+    const sheet = new TextDecoder().decode(archive["xl/worksheets/sheet1.xml"]);
+    expect(sheet).toContain("圖片 URL 10");
+    expect(sheet).toContain("https://images.example/10.jpg");
+    expect(sheet).not.toContain("圖片不足");
+    expect(new TextDecoder().decode(archive["xl/worksheets/sheet2.xml"])).toContain("至少 10 張圖片");
+  });
+
   it("keeps complete, under-minimum and incomplete rows honest in one snapshot", () => {
     const workbook = createImageAuditWorkbook({
       marketplaceId: "ATVPDKIKX0DER",

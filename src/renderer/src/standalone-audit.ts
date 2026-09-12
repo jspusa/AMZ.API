@@ -49,7 +49,7 @@ export type StandaloneAuditCompletedJob = JobBase & Readonly<{
 export type StandaloneAuditFailedJob = JobBase & Readonly<{
   ready: true;
   status: "failed" | "aborted";
-  error: Readonly<{ code: string; message: string }>;
+  error: Readonly<{ code: string; message: string; status?: number }>;
 }>;
 
 export type StandaloneAuditJob =
@@ -135,6 +135,13 @@ async function requestJson(input: Readonly<{
         typeof (payload as { message?: unknown }).message === "string"
       ? String((payload as { message: string }).message)
       : "目前無法讀取單項健檢工作。";
+    const selectedImageMinimum = (input.body?.options as StandaloneAuditOptions | undefined)?.minimumImages;
+    if (response.status === 400 && input.body?.kind === "image" && selectedImageMinimum === 10 && message.includes("1–9")) {
+      throw new StandaloneAuditRequestError(
+        "請先更新 AMZ.API App；目前 Notebook Key 尚未支援最低 10 張圖片的健檢。",
+        false,
+      );
+    }
     throw new StandaloneAuditRequestError(
       message,
       isTransientStatus(response.status),
@@ -230,7 +237,7 @@ function parseOptions(
   if (kind === "image") {
     const minimumImages = source.minimumImages === undefined ? IMAGE_AUDIT_MINIMUM_IMAGES : source.minimumImages;
     if (Object.keys(source).some(key => key !== "minimumImages") || !isImageAuditMinimum(minimumImages)) {
-      throw new Error("圖片健檢最低張數只能選 1–9 張。");
+      throw new Error("圖片健檢最低張數只能選 1–10 張。");
     }
     return { minimumImages };
   }
@@ -379,14 +386,19 @@ export function parseStandaloneAuditJob(
       "error",
     ], "單項健檢工作");
     const error = record(source.error, "單項健檢錯誤");
-    exactKeys(error, ["code", "message"], "單項健檢錯誤");
+    const hasStatus = Object.prototype.hasOwnProperty.call(error, "status");
+    exactKeys(error, hasStatus ? ["code", "message", "status"] : ["code", "message"], "單項健檢錯誤");
+    if (hasStatus && (typeof error.status !== "number" || !Number.isInteger(error.status) || error.status < 400 || error.status > 599)) {
+      throw new Error("單項健檢錯誤狀態無效。");
+    }
     return {
       ...base,
       ready: true,
       status: source.status,
       error: {
-        code: exactText(error.code, "錯誤碼", 80),
-        message: exactText(error.message, "錯誤訊息", 200),
+        code: exactText(error.code, "錯誤碼", 128),
+        message: exactText(error.message, "錯誤訊息", 2_048),
+        ...(hasStatus ? { status: error.status as number } : {}),
       },
     };
   }
