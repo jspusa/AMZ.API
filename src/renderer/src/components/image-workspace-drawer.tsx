@@ -153,7 +153,7 @@ export default function ImageWorkspaceDrawer({
   const [snapshot, setSnapshot] = useState<ImageSnapshot | null>(null);
   const [assets, setAssets] = useState<Asset[]>([]);
   const [snapshotRevision, setSnapshotRevision] = useState(-1);
-  const [isolatedBatches, setIsolatedBatches] = useState<Array<{ marketplaceId: string; sellerSku: string; files: File[] }>>([]);
+  const [isolatedBatches, setIsolatedBatches] = useState<Array<{ marketplaceId: string; sellerSku: string; files: File[]; positions: Array<{ file: File; index: number }> }>>([]);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [manualUrl, setManualUrl] = useState("");
   const [loading, setLoading] = useState(false);
@@ -167,11 +167,12 @@ export default function ImageWorkspaceDrawer({
   const [error, setError] = useState<string | null>(null);
   const [draggingIndex, setDraggingIndex] = useState<number | null>(null);
   const [batchFiles, setBatchFiles] = useState<File[]>([]);
+  const [batchPositions, setBatchPositions] = useState<Array<{ file: File; index: number }>>([]);
   const [batchId, setBatchId] = useState(0);
   const [batchProcessing, setBatchProcessing] = useState(false);
   const uploadContextRef = useRef(0);
   const uploadBusyRef = useRef(false);
-  const activeUploadRef = useRef<{ file: File; controller: AbortController } | null>(null);
+  const activeUploadRef = useRef<{ file: File; index: number; controller: AbortController } | null>(null);
   const busy = actionLoading || batchProcessing || assets.some(asset => asset.uploading);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const fileTargetRef = useRef<number | undefined>(undefined);
@@ -193,9 +194,12 @@ export default function ImageWorkspaceDrawer({
     const activeFile = activeUploadRef.current?.file;
     if (snapshot) {
       const files = [...new Set([...batchFiles, ...assets.flatMap(asset => asset.sourceFile ? [asset.sourceFile] : []), ...(activeFile ? [activeFile] : [])])];
+      const positions = [...batchPositions, ...assets.flatMap((asset, index) => asset.sourceFile ? [{ file: asset.sourceFile, index }] : [])];
+      if (activeUploadRef.current) positions.push({ file: activeUploadRef.current.file, index: activeUploadRef.current.index });
       if (files.length) setIsolatedBatches(previous => {
         const matching = previous.find(batch => batch.marketplaceId === snapshot.marketplaceId && batch.sellerSku === snapshot.sellerSku);
-        return [...previous.filter(batch => batch !== matching), { marketplaceId: snapshot.marketplaceId, sellerSku: snapshot.sellerSku, files: [...new Set([...(matching?.files ?? []), ...files])] }];
+        const retainedPositions = new Map([...(matching?.positions ?? []), ...positions].map(position => [position.file, position]));
+        return [...previous.filter(batch => batch !== matching), { marketplaceId: snapshot.marketplaceId, sellerSku: snapshot.sellerSku, files: [...new Set([...(matching?.files ?? []), ...files])], positions: [...retainedPositions.values()] }];
       });
     }
     activeUploadRef.current?.controller.abort();
@@ -207,6 +211,7 @@ export default function ImageWorkspaceDrawer({
     setSnapshot(null);
     setAssets([]);
     setBatchFiles([]);
+    setBatchPositions([]);
     setManualUrl("");
     setDraggingIndex(null);
     setPreview(null);
@@ -216,7 +221,7 @@ export default function ImageWorkspaceDrawer({
     setConfirmationSku("");
     setPhase("edit");
     setError("帳號或安全環境已更新，圖片草稿已停止；請重新查詢商品後再準備保留圖片。");
-  }), [assets, batchFiles, snapshot]);
+  }), [assets, batchFiles, batchPositions, snapshot]);
 
   const marketplace = marketplaceById(marketplaceId) ?? MARKETPLACES[0];
   const supportedIndexes = useMemo(
@@ -241,7 +246,7 @@ export default function ImageWorkspaceDrawer({
     [expectedUrls, requestedUrls],
   );
   const hasPrivateDraft = assets.some(
-    (asset) => asset.previewUrl && !asset.readyForAmazon,
+    (asset) => (asset.previewUrl || asset.sourceFile) && !asset.readyForAmazon,
   );
   const hasDuplicateUrls = useMemo(() => {
     const urls = requestedUrls.filter((item): item is string => Boolean(item));
@@ -269,6 +274,7 @@ export default function ImageWorkspaceDrawer({
     if (busy) return;
     uploadContextRef.current += 1;
     setBatchFiles([]);
+    setBatchPositions([]);
     setEditorQueue([]);
     setMarketplaceId(nextMarketplaceId);
     setSkuInput("");
@@ -284,6 +290,7 @@ export default function ImageWorkspaceDrawer({
     if (uploadBusyRef.current) return;
     const loadContext = ++uploadContextRef.current;
     setBatchFiles([]);
+    setBatchPositions([]);
     setSnapshot(null);
     setAssets([]);
     const sellerSku = exact ? requestedSku : requestedSku.trim();
@@ -369,7 +376,7 @@ export default function ImageWorkspaceDrawer({
     const context = uploadContextRef.current;
     uploadBusyRef.current = true;
     const controller = new AbortController();
-    activeUploadRef.current = { file, controller };
+    activeUploadRef.current = { file, index, controller };
     let stopBatch = true;
     setAssets((items) =>
       items.map((item, itemIndex) =>
@@ -444,13 +451,24 @@ export default function ImageWorkspaceDrawer({
 
   const uploadFiles = async (files: File[], preferredIndex?: number) => {
     if (!snapshot || !files.length || busy || uploadBusyRef.current) return;
-    if (preferredIndex !== undefined && files.length === 1 && !/_\d+_/u.test(files[0].name)) {
-      await uploadFile(files[0], preferredIndex);
+    if (preferredIndex !== undefined && files.length === 1 && !/_\d+(?:_|\.(?:png|jpe?g)$)/iu.test(files[0].name)) {
+      const context = uploadContextRef.current;
+      const result = await uploadFile(files[0], preferredIndex);
+      if (!result.ok && context === uploadContextRef.current) {
+        // Keep the selected file and position without replacing the current
+        // image URL; explicit preparation resumes through the same batch UI.
+        setAssets(items => items.map((item, index) => index === preferredIndex ? { ...item, sourceFile: files[0], readyForAmazon: false } : item));
+        setSelectedIndex(preferredIndex);
+        setBatchFiles(files);
+        setBatchPositions([{ file: files[0], index: preferredIndex }]);
+        setBatchId(value => value + 1);
+      }
       return;
     }
     if (files.length > 100) { setError("一次最多選擇 100 個檔案；一個商品最多對應 10 個圖片位置。"); return; }
     setError(null);
     setBatchFiles(files);
+    setBatchPositions([]);
     setBatchId(value => value + 1);
   };
 
@@ -730,7 +748,14 @@ export default function ImageWorkspaceDrawer({
               <strong>{batch.sellerSku} · 已保留 {batch.files.length} 個原檔</strong>
               <p>先重新查詢相同站點與 Seller SKU，再核對檔名位置；保留檔案不會自動上傳。</p>
               <button type="button" disabled={busy || loading || snapshot?.marketplaceId !== batch.marketplaceId || snapshot?.sellerSku !== batch.sellerSku} onClick={() => {
+                const retainedByIndex = new Map(batch.positions.map(position => [position.index, position.file]));
+                setAssets(items => items.map((item, index) => {
+                  const file = retainedByIndex.get(index);
+                  const capability = snapshot?.images[index]?.capability;
+                  return file && capability?.supported && capability.editable ? { ...item, sourceFile: file, readyForAmazon: false } : item;
+                }));
                 setBatchFiles(batch.files);
+                setBatchPositions(batch.positions);
                 setBatchId(value => value + 1);
                 setIsolatedBatches(current => current.filter(item => item !== batch));
               }}>重新準備保留圖片</button>
@@ -755,11 +780,11 @@ export default function ImageWorkspaceDrawer({
                     event.target.value = "";
                   }} />
                   <span className="image-drop-icon">＋</span>
-                  <div><strong>把整組 JPEG／PNG 拉到這裡</strong><small>依「品號_01–10_說明」依數字排序 · 最多第 1–10 張 · 每張 10 MB · 至少 500 × 500px</small></div>
+                  <div><strong>把整組 JPEG／PNG 拉到這裡</strong><small>依「品號_01–10」排序，可加說明 · 最多第 1–10 張 · 每張 10 MB · 至少 500 × 500px</small></div>
                 </section>
 
                 {batchFiles.length > 0 && <ImageBatchImport key={`${snapshot.marketplaceId}:${snapshot.sellerSku}:${batchId}`}
-                  files={batchFiles} sellerSku={snapshot.sellerSku}
+                  files={batchFiles} positions={batchPositions} sellerSku={snapshot.sellerSku}
                   slots={snapshot.images.map((slot, index) => ({ label: slot.label, editable: slot.capability.supported && slot.capability.editable, reason: slot.capability.reason, occupied: Boolean(assets[index]?.previewUrl), sourceFile: assets[index]?.sourceFile ?? null, readyForAmazon: assets[index]?.readyForAmazon ?? false }))}
                   disabled={busy || loading} upload={uploadFile} onBusyChange={value => { if (snapshotRevision === uploadContextRef.current) setBatchProcessing(value); }} onDismiss={() => setBatchFiles([])} onSelectSlot={setSelectedIndex} />}
 
@@ -782,7 +807,7 @@ export default function ImageWorkspaceDrawer({
                         <div className="image-preview">
                           {asset.uploading ? <span className="image-loading">上傳中…</span> : asset.previewUrl ? <img src={asset.previewUrl} alt={`${snapshot.title} ${slot.label}`} /> : <button type="button" disabled={busy || !slot.capability.editable} onClick={(event) => { event.stopPropagation(); setSelectedIndex(index); fileTargetRef.current = index; inputRef.current?.click(); }}>＋</button>}
                         </div>
-                        {asset.previewUrl && (
+                        {(asset.previewUrl || asset.sourceFile) && (
                           <div className="image-slot-actions">
                             {index > 0 && <button type="button" disabled={busy || !slot.capability.editable} onClick={(event) => { event.stopPropagation(); swapAssets(index, 0); }}>設主圖</button>}
                             <button type="button" disabled={busy || !slot.capability.editable || index === supportedIndexes[0]} onClick={(event) => { event.stopPropagation(); const position = supportedIndexes.indexOf(index); swapAssets(index, supportedIndexes[position - 1]); }}>←</button>

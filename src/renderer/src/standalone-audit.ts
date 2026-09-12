@@ -237,7 +237,7 @@ function parseOptions(
   if (kind === "image") {
     const minimumImages = source.minimumImages === undefined ? IMAGE_AUDIT_MINIMUM_IMAGES : source.minimumImages;
     if (Object.keys(source).some(key => key !== "minimumImages") || !isImageAuditMinimum(minimumImages)) {
-      throw new Error("圖片健檢最低張數只能選 1–9 張。");
+      throw new Error("圖片健檢最低張數只能選 1–10 張。");
     }
     return { minimumImages };
   }

@@ -278,7 +278,9 @@ export class LocalImageUpload implements LocalImageUploadPort {
       try {
         hosted = await this.hostedImages.prepare({
           bytes: file.bytes, contentType, ...dimensions,
-          contextKey: JSON.stringify([context, sellerSku]),
+          // Security generations fence replies; they must not create a new
+          // upload identity when an earlier PUT still has an unknown outcome.
+          contextKey: JSON.stringify([context.accountScope, context.mode, context.region, context.marketplaceId, sellerSku]),
           assertCurrent: () => this.context.assertCurrent(context),
         });
       } catch {

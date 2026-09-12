@@ -16,13 +16,20 @@ Spec: [direct images, expiry and Vine](../specs/2026-09-direct-images-expiry-vin
 
 ## Evidence boundaries
 
-- Local `npm run check` passed on 2026-09-12: 320 test files, 3,681 tests,
+- Local `npm run check` passed on 2026-09-12: 320 test files, 3,690 tests,
   typecheck, production build and composed stylesheet verification. Production
   `npm audit --omit=dev` reports zero vulnerabilities; `git diff --check` passed.
   The Vine disk-read/save races, interrupted health observation, image login
   cancellation, context invalidation and old nine-slot receipt recovery have
   focused regression coverage. Independent final review, exact-main Actions,
   Pages and desktop artifacts are pending.
+- Independent review reproduced an upload identity that changed after lock,
+  missing support for bare numeric filenames, and lost original files after a
+  single-slot preparation failure. The fixes keep account/mode/region/marketplace/
+  SKU identity stable across security generations, align numeric slot detection,
+  and retain explicit file positions for preparation. Fresh unsupported slots
+  remain visible and allow correction or skipping. Each case has a public-owner
+  or UI regression, including recovery after a changed PTD capability.
 - Supply Boss image service published successfully as Site version 7 on
   2026-09-12, source `1a0853bbde02e05fd95616892654e0764dc9121f`.
   Project: `appgprj_6a7719308ad8819186b46adcafcc87a6`.

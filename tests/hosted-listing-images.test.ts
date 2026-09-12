@@ -107,4 +107,30 @@ describe("dedicated hosted image preparation",()=>{
     await expect(f.service.prepare(data())).rejects.toThrow();
     expect(puts).toBe(1);
   });
+  it("keeps unknown local uploads GET-only after lock while preserving account isolation", async () => {
+    const f = fixture();
+    const normal = f.transport.getMockImplementation()!;
+    let puts = 0;
+    f.transport.mockImplementation(async (input, init) => {
+      const path = new URL(String(input)).pathname;
+      if (init?.method === "PUT") { puts++; throw new Error("unknown transport outcome"); }
+      if (path.startsWith("/api/") && !path.endsWith("/login")) return Response.json({}, { status: 404 });
+      return normal(input, init);
+    });
+    let accountScope = "fixture-account-one";
+    const context = createScriptedSpExecutionContextAdapter(marketplaceId => ({ marketplaceId, mode: "live", accountScope }));
+    const route = new LocalImageUpload({ context: createRouterRequestContextAdapter(context), vault: { getImageStorage: async () => null }, hostedImages: f.service });
+    const prepare = () => route.uploadImage({ requestId: "retained-image-test", method: "POST", path: "/api/uploads/listing-images", headers: {}, query: {}, body: { kind: "multipart", fields: { marketplaceId: "ATVPDKIKX0DER", sellerSku: "TEST-IMAGE-SKU" }, file: { name: "TEST-IMAGE-SKU_01.png", type: "image/png", bytes } } });
+    expect((await prepare()).status).toBe(503);
+    context.invalidate("lock-screen");
+    f.service.clear();
+    expect((await prepare()).status).toBe(503);
+    expect(puts).toBe(1);
+    expect(f.requestLogin).toHaveBeenCalledTimes(2);
+    accountScope = "fixture-account-two";
+    context.invalidate("account-changed");
+    f.service.clear();
+    expect((await prepare()).status).toBe(503);
+    expect(puts).toBe(2);
+  });
 });

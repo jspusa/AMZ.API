@@ -20,9 +20,9 @@ function importRow(file: File, sellerSku: string): ImportRow {
     return { ...row, issue: "品號與目前 Seller SKU 不一致，請核對商品與檔名。" };
   }
   const suffix = file.name.slice(sellerSku.length);
-  const parsed = /^_(\d+)_[^/\\\u0000-\u001f\u007f]+\.(?:png|jpe?g)$/iu.exec(suffix);
+  const parsed = /^_(\d+)(?:_[^/\\\u0000-\u001f\u007f]+)?\.(?:png|jpe?g)$/iu.exec(suffix);
   if (!parsed || !Number.isSafeInteger(Number(parsed[1])) || Number(parsed[1]) < 1) {
-    return { ...row, issue: "檔名需為「目前品號_數字_說明.jpg／png」，請修正檔名後重選。" };
+    return { ...row, issue: "檔名需為「目前品號_數字.jpg／png」，數字後可加「_說明」；請修正檔名後重選。" };
   }
   if (file.size <= 0 || file.size > 10 * 1024 * 1024) {
     return { ...row, issue: "圖片需有內容且不超過 10 MB。" };
@@ -34,10 +34,11 @@ function importRow(file: File, sellerSku: string): ImportRow {
 }
 
 /** Reviews one exact SKU's filename mapping before preparing image assets. */
-export default function ImageBatchImport({ files, sellerSku, slots, disabled, upload, onBusyChange, onDismiss, onSelectSlot }: {
+export default function ImageBatchImport({ files, sellerSku, slots, positions = [], disabled, upload, onBusyChange, onDismiss, onSelectSlot }: {
   files: readonly File[];
   sellerSku: string;
   slots: readonly Slot[];
+  positions?: readonly { file: File; index: number }[];
   disabled: boolean;
   upload: (file: File, slot: number) => Promise<ImageUploadOutcome>;
   onBusyChange: (busy: boolean) => void;
@@ -49,7 +50,8 @@ export default function ImageBatchImport({ files, sellerSku, slots, disabled, up
     // A retained File belongs to the current draft, including an explicitly
     // chosen position for an unnumbered single image. Do not remap it on reopen.
     const targetSlot = slots.findIndex(slot => slot.sourceFile === file);
-    return targetSlot < 0 ? row : {
+    const retainedPosition = positions.find(position => position.file === file);
+    return targetSlot < 0 ? retainedPosition ? { ...row, targetSlot: retainedPosition.index, issue: null } : row : {
       ...row, targetSlot, issue: null,
       status: slots[targetSlot].readyForAmazon ? "applied" as const : "private" as const,
     };
@@ -125,7 +127,7 @@ export default function ImageBatchImport({ files, sellerSku, slots, disabled, up
         </select>{(row.status === "pending" || row.status === "private") && row.targetSlot !== null && !issueFor(row) && <small>{slots[row.targetSlot]?.occupied ? "取代目前圖片" : "新增圖片"}</small>}</td>
         <td role="status">{row.status === "pending" ? (issueFor(row) ? `⚠ ${issueFor(row)}` : "★ 已對應，待套用")
           : row.status === "applied" ? "★ 已套用至草稿"
-          : row.status === "private" ? "★ 已暫存，待提供公開網址"
+          : row.status === "private" ? "★ 原檔已保留，待準備圖片"
           : row.status === "uploading" ? "檢查與上傳中…"
           : row.status === "skipped" ? "已略過"
           : `⚠ ${row.result}`}</td>

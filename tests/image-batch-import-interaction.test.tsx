@@ -48,6 +48,20 @@ async function drop(names: string[]) {
 afterEach(async () => { if (renderer) await act(async () => renderer!.unmount()); renderer = null; vi.unstubAllGlobals(); });
 
 describe("image batch import through the image workspace", () => {
+  it("sorts numeric filenames with optional descriptions while keeping invalid names out of preparation", async () => {
+    await mount();
+    const accepted = [`${sellerSku}_01.png`, `${sellerSku}_02.png`, `${sellerSku}_03_說明.png`, `${sellerSku}_10.png`];
+    const rejected = ["WRONG_PRODUCT_04.png", `${sellerSku}_04_非法/路徑.png`];
+    await drop([accepted[3], accepted[1], ...rejected, accepted[2], accepted[0]]);
+    expect(renderer!.root.findAllByType("select").filter(node => String(node.props["aria-label"]).startsWith("圖片位置：")).slice(0, 4).map(node => node.props["aria-label"]))
+      .toEqual(accepted.map(name => `圖片位置：${name}`));
+    expect(button("檢查並套用 4 張").props.disabled).toBe(false);
+    for (const name of rejected) expect(renderer!.root.findByProps({ "aria-label": `圖片位置：${name}` }).props.disabled).toBe(true);
+    await act(async () => { await button("檢查並套用 4 張").props.onClick(); });
+    expect(uploadNames).toEqual(accepted);
+    expect(mutations).toEqual([]);
+  });
+
   it.each(["between files", "late response"])("quarantines files when security context changes %s and requires a fresh lookup", async timing => {
     let finish!: (response: Response) => void;
     const pending = new Promise<Response>(resolve => { finish = resolve; });
@@ -129,7 +143,7 @@ describe("image batch import through the image workspace", () => {
     expect(renderer!.root.findByProps({ "aria-label": `圖片位置：${name}` }).props.value).toBe(7);
     await act(async () => { renderer!.root.findByProps({ className: "image-url-panel" }).findByType("input").props.onChange({ target: { value: "https://images.example/manual-ready.jpg" } }); });
     await act(async () => { await button("檢查並套用").props.onClick(); });
-    expect(output()).not.toContain("已暫存，待提供公開網址");
+    expect(output()).not.toContain("原檔已保留，待準備圖片");
     expect(output()).toContain("已套用至草稿");
     expect(button("安全預檢圖片").props.disabled).toBe(false);
     expect(uploadNames).toEqual([name]);
@@ -147,14 +161,14 @@ describe("image batch import through the image workspace", () => {
     await drop([`${sellerSku}_07_成分GA_模板.png`]);
     await act(async () => { await button("檢查並套用 1 張").props.onClick(); });
     expect(renderer!.root.findByProps({ className: "image-url-panel" }).findByType("strong").children.join("")).toContain("副圖 6");
-    expect(output()).toContain("已暫存，待提供公開網址");
+    expect(output()).toContain("原檔已保留，待準備圖片");
     expect(button("檢查並套用 1 張").props.disabled).toBe(false);
     expect(button("安全預檢圖片").props.disabled).toBe(true);
     hostingReady = true;
     await act(async () => { await button("檢查並套用 1 張").props.onClick(); });
     expect(uploadNames).toEqual([`${sellerSku}_07_成分GA_模板.png`, `${sellerSku}_07_成分GA_模板.png`]);
     expect(slots()[6].findByType("img").props.src).toBe("data:image/png;base64,ZmFrZQ==");
-    expect(output()).not.toContain("已暫存，待提供公開網址");
+    expect(output()).not.toContain("原檔已保留，待準備圖片");
     expect(button("安全預檢圖片").props.disabled).toBe(false);
     expect(mutations).toEqual([]);
   });
@@ -254,10 +268,10 @@ describe("image batch import through the image workspace", () => {
     expect(mutations).toEqual([]);
   });
 
-  it.each(["01", "100"])("does not bypass product validation by dropping numbered image %s on one slot", async order => {
+  it.each(["01_主圖", "100_主圖", "01", "100"])("does not bypass product validation by dropping numbered image %s on one slot", async order => {
     await mount();
     const slot = renderer!.root.findAll(node => node.type === "article" && String(node.props.className).startsWith("image-slot "))[0];
-    await act(async () => { slot.props.onDrop({ preventDefault() {}, dataTransfer: { files: [new File(["fixture"], `WRONG_PRODUCT_${order}_主圖.png`, { type: "image/png" })] } }); });
+    await act(async () => { slot.props.onDrop({ preventDefault() {}, dataTransfer: { files: [new File(["fixture"], `WRONG_PRODUCT_${order}.png`, { type: "image/png" })] } }); });
     expect(uploadNames).toEqual([]);
     expect(output()).toContain("品號與目前 Seller SKU 不一致");
   });
@@ -285,6 +299,72 @@ describe("image batch import through the image workspace", () => {
     const slot = renderer!.root.findAll(node => node.type === "article" && String(node.props.className).startsWith("image-slot "))[1];
     await act(async () => { slot.props.onDrop({ preventDefault() {}, dataTransfer: { files: [new File(["fixture"], "new-lifestyle.png", { type: "image/png" })] } }); });
     expect(uploadNames).toEqual(["new-lifestyle.png"]);
+    expect(mutations).toEqual([]);
+  });
+
+  it("uses the number of a bare filename even when dropped onto a different slot", async () => {
+    await mount();
+    const name = `${sellerSku}_10.png`;
+    const first = renderer!.root.findAll(node => node.type === "article" && String(node.props.className).startsWith("image-slot "))[0];
+    await act(async () => { first.props.onDrop({ preventDefault() {}, dataTransfer: { files: [new File(["fixture"], name, { type: "image/png" })] } }); });
+    expect(uploadNames).toEqual([]);
+    expect(renderer!.root.findByProps({ "aria-label": `圖片位置：${name}` }).props.value).toBe(9);
+    await act(async () => { await button("檢查並套用 1 張").props.onClick(); });
+    const slots = renderer!.root.findAll(node => node.type === "article" && String(node.props.className).startsWith("image-slot "));
+    expect(slots[0].findByType("img").props.src).toBe(oldUrls[0]);
+    expect(slots[9].findByType("img").props.src).toContain(name);
+  });
+
+  it.each(["cancelled login", "network failure"])("retains an unnumbered file at its chosen slot after %s", async failure => {
+    let first = true;
+    await mount(async file => {
+      if (first) {
+        first = false;
+        if (failure === "network failure") throw new TypeError("Network failed");
+        return Response.json({ code: "IMAGE_PREPARATION_INCOMPLETE", message: "圖片準備尚未完成，檔案仍保留在工作台。" }, { status: 503 });
+      }
+      return Response.json({ previewUrl: `https://images.example/${file.name}`, amazonUrl: `https://images.example/${file.name}`, readyForAmazon: true });
+    });
+    const slot = renderer!.root.findAll(node => node.type === "article" && String(node.props.className).startsWith("image-slot "))[1];
+    await act(async () => { slot.props.onDrop({ preventDefault() {}, dataTransfer: { files: [new File(["fixture"], "photo.png", { type: "image/png" })] } }); });
+    expect(uploadNames).toEqual(["photo.png"]);
+    expect(renderer!.root.findByProps({ "aria-label": "圖片位置：photo.png" }).props.value).toBe(1);
+    expect(button("安全預檢圖片").props.disabled).toBe(true);
+    expect(slot.findByType("img").props.src).toBe(oldUrls[1]);
+    await act(async () => { await button("檢查並套用 1 張").props.onClick(); });
+    expect(uploadNames).toEqual(["photo.png", "photo.png"]);
+    expect(slot.findByType("img").props.src).toContain("photo.png");
+    expect(mutations).toEqual([]);
+  });
+
+  it.each([false, true])("retains the chosen slot across lock and lets a changed capability be corrected (drift=%s)", async drift => {
+    let finish!: (response: Response) => void;
+    const pending = new Promise<Response>(resolve => { finish = resolve; });
+    let first = true;
+    const unavailable: number[] = [];
+    await mount(async file => {
+      if (first) { first = false; return pending; }
+      return Response.json({ previewUrl: `https://images.example/${file.name}`, amazonUrl: `https://images.example/${file.name}`, readyForAmazon: true });
+    }, unavailable);
+    const slot = renderer!.root.findAll(node => node.type === "article" && String(node.props.className).startsWith("image-slot "))[2];
+    await act(async () => { slot.props.onDrop({ preventDefault() {}, dataTransfer: { files: [new File(["fixture"], "photo.png", { type: "image/png" })] } }); });
+    await act(async () => { invalidateContext(); });
+    if (drift) unavailable.push(2);
+    await act(async () => { finish(Response.json({ message: "cancelled" }, { status: 503 })); });
+    expect(button("重新準備保留圖片").props.disabled).toBe(true);
+    await act(async () => { await renderer!.root.findByProps({ className: "price-search image-search" }).props.onSubmit({ preventDefault() {} }); });
+    await act(async () => { button("重新準備保留圖片").props.onClick(); });
+    expect(uploadNames).toEqual(["photo.png"]);
+    expect(renderer!.root.findByProps({ "aria-label": "圖片位置：photo.png" }).props.value).toBe(2);
+    if (drift) {
+      expect(output()).toContain("Amazon 商品規格未提供第 3 張");
+      const select = renderer!.root.findByProps({ "aria-label": "圖片位置：photo.png" });
+      expect(select.props.disabled).toBe(false);
+      expect(renderer!.root.findByProps({ "aria-label": "略過：photo.png" })).toBeDefined();
+      await act(async () => { select.props.onChange({ target: { value: "3" } }); });
+    }
+    await act(async () => { await button("檢查並套用 1 張").props.onClick(); });
+    expect(uploadNames).toEqual(["photo.png", "photo.png"]);
     expect(mutations).toEqual([]);
   });
 
