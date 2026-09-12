@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { InventoryHealthCoordinator } from "../src/main/inventory-health-coordinator";
 import { createScriptedSpExecutionContextAdapter } from "../src/main/amazon/sp-execution-context";
-import type { AgedInventorySnapshot } from "../src/main/amazon/aged-inventory-reads";
+import { AgedInventoryReads, type AgedInventorySnapshot } from "../src/main/amazon/aged-inventory-reads";
 import type { ApiRequest } from "../src/shared/contracts";
 import { isInventoryHealthSnapshot, type InventoryHealthSnapshot } from "../src/shared/inventory-health";
 
@@ -29,6 +29,38 @@ function harness() {
 function payload(response: { body: { value: unknown } }) { return response.body.value as { snapshot: InventoryHealthSnapshot | null }; }
 
 describe("inventory health local evidence lifecycle", () => {
+  it.each([undefined, "", "2026-06-01"])("cannot borrow a current inventory-age date for stock freshness when snapshot-date is %s", async (stockDate) => {
+    const h = harness();
+    const fields: Array<[string, string | number]> = [
+      ["sku", "FBA-ONE"], ["asin", "B000000001"], ["product-name", "Test"],
+      ["available", 1000], ["inv-age-0-to-90-days", 1000],
+      ["inv-age-91-to-180-days", 0], ["inv-age-181-to-270-days", 0],
+      ["inv-age-271-to-365-days", 0], ["inv-age-366-to-455-days", 0],
+      ["inv-age-456-plus-days", 0], ["units-shipped-t7", 70],
+      ["units-shipped-t30", 300], ["units-shipped-t60", 600],
+      ["units-shipped-t90", 900], ["Inventory age snapshot date", "2026-07-01"],
+      ...(stockDate === undefined ? [] : [["snapshot-date", stockDate] as [string, string]]),
+    ];
+    const document = [fields.map(([key]) => key).join("\t"), fields.map(([, value]) => value).join("\t")].join("\n");
+    const receipt = { mode: "live" as const, ready: true, reportId: "report-lease.freshness", documentId: "report-document.freshness", status: "DONE" as const, notice: "ready" };
+    const reads = new AgedInventoryReads({
+      context: h.context, now: () => now,
+      reports: {
+        start: async () => receipt, status: async () => receipt, read: async () => receipt,
+        readDocument: async () => ({ mode: "live", text: document }),
+      },
+    });
+    const parsed = await reads.read({ marketplaceId: US, reportId: receipt.reportId, documentId: receipt.documentId });
+
+    await h.refresh(h.owner, parsed);
+    expect(payload(await h.owner.read(h.get)).snapshot!.rows[0]).toMatchObject({
+      snapshotDate: stockDate || null, calendarEligible: false, projectedShortfall: null,
+    });
+    const response = await h.owner.confirm(h.confirm());
+    expect(response.status).toBe(409);
+    expect(response.body.value).toMatchObject({ code: "INVENTORY_HEALTH_STALE" });
+  });
+
   it("keeps saved evidence review-only after reopen and restores unchanged confirmations after a fresh capture", async () => {
     const h = harness();
     expect(payload(await h.owner.read(h.get)).snapshot).toBeNull(); expect(h.expiry.read).not.toHaveBeenCalled();

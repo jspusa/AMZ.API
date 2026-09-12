@@ -148,6 +148,105 @@ async function readLive(
 }
 
 describe("AgedInventoryReads", () => {
+  it.each([false, true])("keeps stock supply separate from inbound-inclusive supply (reversed: %s)", async (reversed) => {
+    const supplyHeaders = [
+      "days-of-supply",
+      "Total Days of Supply (including units from open shipments)",
+    ];
+    if (reversed) supplyHeaders.reverse();
+    const { snapshot } = await readLive(reportText(
+      [...GLOBAL_AGE_HEADERS, ...supplyHeaders],
+      [globalAgeRecord("SUPPLY-EVIDENCE", {
+        "days-of-supply": 12.5,
+        "Total Days of Supply (including units from open shipments)": 84,
+      })],
+    ));
+
+    expect(snapshot.rows[0]?.daysOfSupply).toBe(12.5);
+  });
+
+  it.each([false, true])("keeps stock snapshot freshness separate from the inventory age date (reversed: %s)", async (reversed) => {
+    const snapshotHeaders = ["snapshot-date", "Inventory age snapshot date"];
+    if (reversed) snapshotHeaders.reverse();
+    const { snapshot } = await readLive(reportText(
+      [...GLOBAL_AGE_HEADERS, ...snapshotHeaders],
+      [globalAgeRecord("DATED-EVIDENCE", {
+        "snapshot-date": "2026-08-24",
+        "Inventory age snapshot date": "2026-08-25",
+      })],
+    ));
+
+    expect(snapshot.rows[0]?.snapshotDate).toBe("2026-08-24");
+  });
+
+  it.each([
+    { label: "primary only", primary: true, supplemental: false, blank: false, daysOfSupply: 12.5, snapshotDate: "2026-08-24" },
+    { label: "both official fields", primary: true, supplemental: true, blank: false, daysOfSupply: 12.5, snapshotDate: "2026-08-24" },
+    { label: "supplemental only", primary: false, supplemental: true, blank: false, daysOfSupply: null, snapshotDate: null },
+    { label: "blank primary with supplemental", primary: true, supplemental: true, blank: true, daysOfSupply: null, snapshotDate: null },
+    { label: "neither field", primary: false, supplemental: false, blank: false, daysOfSupply: null, snapshotDate: null },
+  ])("preserves canonical stock evidence or unknown values with $label", async ({ primary, supplemental, blank, daysOfSupply, snapshotDate }) => {
+    const headers = [
+      ...GLOBAL_AGE_HEADERS,
+      ...(primary ? ["days-of-supply", "snapshot-date"] : []),
+      ...(supplemental ? ["Total Days of Supply (including units from open shipments)", "Inventory age snapshot date"] : []),
+    ];
+    const { snapshot } = await readLive(reportText(headers, [
+      globalAgeRecord("PRIMARY-EVIDENCE", {
+        "days-of-supply": blank ? "" : 12.5,
+        "snapshot-date": blank ? "" : "2026-08-24",
+        "Total Days of Supply (including units from open shipments)": 84,
+        "Inventory age snapshot date": "2026-08-25",
+      }),
+    ]));
+
+    expect(snapshot.rows[0]).toMatchObject({ daysOfSupply, snapshotDate });
+  });
+
+  it.each([
+    ["days-of-supply", "Days_of_supply"],
+    ["snapshot-date", "Snapshot_date"],
+    ["Inventory age snapshot date", "inventory_age_snapshot_date"],
+    ["Total Days of Supply (including units from open shipments)", "total_days_of_supply_(including_units_from_open_shipments)"],
+  ])("still rejects duplicate normalized official columns %s / %s", async (first, second) => {
+    const document = reportText(
+      [...GLOBAL_AGE_HEADERS, first, second],
+      [globalAgeRecord("DUPLICATE-EVIDENCE", { [first]: "1", [second]: "2" })],
+    );
+
+    await expect(readLive(document)).rejects.toMatchObject({
+      code: "REPORT_FORMAT_UNSUPPORTED",
+      message: expect.stringContaining("重複或衝突欄位"),
+    });
+  });
+
+  it.each(["EXACT-SKU", "OTHER-SKU"])("still rejects ambiguous Seller SKU alias columns even with %s", async (alias) => {
+    const document = reportText(
+      [...GLOBAL_AGE_HEADERS, "seller-sku"],
+      [globalAgeRecord("EXACT-SKU", { "seller-sku": alias })],
+    );
+
+    await expect(readLive(document)).rejects.toMatchObject({
+      code: "REPORT_FORMAT_UNSUPPORTED",
+      message: expect.stringContaining("重複或衝突欄位"),
+    });
+  });
+
+  it("does not replace malformed canonical supply with a valid inbound-inclusive value", async () => {
+    const document = reportText(
+      [...GLOBAL_AGE_HEADERS, "days-of-supply", "Total Days of Supply (including units from open shipments)"],
+      [globalAgeRecord("INVALID-SUPPLY", {
+        "days-of-supply": "1e2",
+        "Total Days of Supply (including units from open shipments)": 100,
+      })],
+    );
+
+    await expect(readLive(document)).rejects.toMatchObject({
+      code: "REPORT_FORMAT_UNSUPPORTED",
+      message: expect.stringContaining("「可售天數」不是有效數字"),
+    });
+  });
+
   it("selects one complete non-overlapping regional schema", async () => {
     const headers = [
       "seller-sku",

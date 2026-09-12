@@ -3,13 +3,51 @@ import {
   PriceListAmazon,
   downloadPriceListImage,
 } from "../src/main/price-list-amazon";
-import { createScriptedSpExecutionContextAdapter } from "../src/main/amazon/sp-execution-context";
+import { createScriptedSpExecutionContextAdapter, SpExecutionContextError } from "../src/main/amazon/sp-execution-context";
 import type { ApiRequest } from "../src/shared/contracts";
-import type { PriceListProductRow } from "../src/shared/price-list";
-import type { PriceListListingFacts } from "../src/main/amazon/price-list-reads";
+import type { PriceListAmazonSnapshot, PriceListProductRow } from "../src/shared/price-list";
+import { readPriceListListing, type PriceListListingFacts } from "../src/main/amazon/price-list-reads";
+import { createScriptedListingsReadAdapter, type ScriptedListingsReadStep } from "../src/main/amazon/listings-reads";
 import { SpApiError } from "../src/main/amazon/sp-api-error";
 import { parsePriceListWorkbook } from "../src/main/price-list-workbook";
 const US = "ATVPDKIKX0DER" as const;
+const generatedIdentities = [
+  { sellerSku: "SKU-ONE", asin: "B000000001" },
+  { sellerSku: "SKU-TWO", asin: "B000000002" },
+  { sellerSku: "SKU-THREE", asin: "B000000003" },
+];
+function listingStep(
+  index: number,
+  summary: Record<string, unknown> = {},
+): Extract<ScriptedListingsReadStep, { operation: "item" }> {
+  const identity = generatedIdentities[index]!;
+  const amount = (value: number) => [{ schedule: [{ value_with_tax: value }] }];
+  return {
+    operation: "item",
+    result: {
+      status: 200, requestId: null, retryAfter: null, rateLimit: null, profile: "full",
+      envelope: {
+        sku: identity.sellerSku,
+        summaries: [{
+          marketplaceId: US, asin: identity.asin, productType: "PET_FOOD",
+          itemName: index === 1 ? "Rejected fixture title" : "Verified fixture title",
+          ...summary,
+        }],
+        attributes: {
+          purchasable_offer: [{
+            marketplace_id: US, currency: "USD", audience: "ALL",
+            our_price: amount(index === 1 ? 777.77 : 19.99),
+            minimum_seller_allowed_price: amount(index === 1 ? 666.66 : 12.99),
+          }],
+          main_product_image_locator: index === 1 ? [{
+            marketplace_id: US,
+            media_location: "https://m.media-amazon.com/images/I/rejected-fixture.jpg",
+          }] : [],
+        },
+      },
+    },
+  };
+}
 const row = (
   key: string,
   asin: string | null,
@@ -46,13 +84,14 @@ function fixture(
   image?: typeof downloadPriceListImage,
 ) {
   let accountScope = "fixture-account-a";
+  let mode: "live" | "demo" = "live";
   const context = createScriptedSpExecutionContextAdapter(() => ({
     marketplaceId: US,
-    mode: "live",
+    mode,
     accountScope,
   }));
   const fba = vi.fn(async () => [{ sellerSku: "SKU-ONE", asin: "B000000001" }]);
-  const listing = vi.fn(async (): Promise<PriceListListingFacts> => ({
+  const listing = vi.fn(async (_input: Parameters<typeof readPriceListListing>[1]): Promise<PriceListListingFacts> => ({
     standardPrice: 19.99,
     minimumPrice: 12.99,
     minimumPriceStatus: "set" as const,
@@ -77,6 +116,9 @@ function fixture(
     changeAccount: () => {
       accountScope = "fixture-account-b";
     },
+    changeMode: () => {
+      mode = "demo";
+    },
   };
 }
 async function complete(owner: PriceListAmazon, id = "fixture") {
@@ -86,14 +128,7 @@ async function complete(owner: PriceListAmazon, id = "fixture") {
       response.body.kind === "json" &&
       (response.body.value as { state: string }).state !== "running"
     )
-      return response.body.value as {
-        state: string;
-        rows: {
-          status: string;
-          standardPrice: number | null;
-          minimumPrice: number | null;
-        }[];
-      };
+      return response.body.value as PriceListAmazonSnapshot;
     await new Promise((resolve) => setTimeout(resolve, 1));
   }
   throw new Error("fixture did not complete");
@@ -134,6 +169,144 @@ describe("price list Amazon observation", () => {
     expect(cells.find((cell) => cell.reference === "F3")?.value).toBe("未設定");
     expect(app.exportWorkbook).not.toHaveBeenCalled();
     expect(JSON.stringify(started)).not.toContain("fixture-account");
+  });
+  it.each([
+    ["missing product type", { productType: undefined }],
+    ["missing ASIN", { asin: undefined }],
+    ["foreign response marketplace", { marketplaceId: "A2EUQ1WTGCTBG2" }],
+  ])("exports good/bad/good FBA rows while rejecting all facts from a Listing with %s", async (_reason, summary) => {
+    const image = vi.fn<typeof downloadPriceListImage>();
+    const app = fixture([], image);
+    app.fba.mockResolvedValue(generatedIdentities);
+    const adapter = createScriptedListingsReadAdapter([
+      listingStep(0), listingStep(1, summary), listingStep(2),
+    ]);
+    app.listing.mockImplementation((input) => readPriceListListing(adapter, input));
+    const started = await app.owner.generate(req("POST", {}));
+    const id = (started.body as { kind: "json"; value: { workbookId: string } }).value.workbookId;
+    const result = await complete(app.owner, id);
+    expect(result).toMatchObject({ state: "complete", source: "amazon", completed: 3, total: 3 });
+    expect(result.rows[1]).toMatchObject({
+      sellerSku: "SKU-TWO", asin: "B000000002", status: "incomplete",
+      standardPrice: null, minimumPrice: null, minimumPriceStatus: "unavailable",
+      imageUrl: null, issueCode: "LISTING_IDENTITY_MISMATCH",
+    });
+    expect(result.rows[1]!.title).toBeUndefined();
+    expect(result.rows.map((item) => item.standardPrice)).toEqual([19.99, null, 19.99]);
+    expect(JSON.stringify(result)).not.toContain("Rejected fixture title");
+    expect(JSON.stringify(result)).not.toContain("rejected-fixture.jpg");
+    const exported = await app.owner.export(req("POST", { id, replaceImages: true }));
+    expect(exported.status).toBe(200);
+    expect(exported.headers["Content-Disposition"]).toContain("AMZ_US_Price_List.xlsx");
+    if (exported.body.kind !== "bytes") throw new Error("Expected generated workbook bytes");
+    const book = parsePriceListWorkbook({ bytes: exported.body.value, fileName: "generated.xlsx" });
+    expect(book.view.sheets.map((sheet) => sheet.name)).toEqual(["US 價目表", "欄位說明"]);
+    const cells = book.view.sheets[0]!.cells;
+    const value = (reference: string) => cells.find((cell) => cell.reference === reference)?.value;
+    expect([value("A3"), value("D3")]).toEqual(["SKU-TWO", "B000000002"]);
+    expect([value("B3"), value("C3"), value("E3"), value("F3")]).toEqual([
+      "未回報", "品名未回報", "未回報", "未回報",
+    ]);
+    expect([value("E2"), value("E4")]).toEqual([19.99, 19.99]);
+    expect(value("H3")).toContain("身分不完整");
+    expect(book.view.imageCount).toBe(0);
+    expect(image).not.toHaveBeenCalled();
+    expect(app.exportWorkbook).not.toHaveBeenCalled();
+  });
+  it.each([
+    ["account scope", new SpExecutionContextError("ACCOUNT_SCOPE_CHANGED", "Fixture account changed.")],
+    ["mode", new SpExecutionContextError("REPORT_MODE_CHANGED", "Fixture mode changed.")],
+    ["generation", new SpExecutionContextError("SP_CONTEXT_INVALIDATED", "Fixture context changed.")],
+    ["report identity", new SpApiError("Fixture report mismatch.", { status: 409, code: "REPORT_IDENTITY_MISMATCH" })],
+    ["required Listing data", new SpApiError("Fixture required data missing.", { status: 409, code: "LISTINGS_REQUIRED_DATA_UNAVAILABLE" })],
+    ["unknown conflict", new SpApiError("Fixture conflict.", { status: 409, code: "FIXTURE_CONFLICT" })],
+    ["authentication", new SpApiError("Fixture authentication failure.", { status: 401, code: "UNAUTHORIZED" })],
+    ["authorization", new SpApiError("Fixture authorization failure.", { status: 403, code: "UNAUTHORIZED" })],
+    ["throttling", new SpApiError("Fixture throttling.", { status: 429, code: "RATE_LIMITED" })],
+    ["server", new SpApiError("Fixture server failure.", { status: 500, code: "UPSTREAM_UNAVAILABLE" })],
+    ["identity code with wrong status", new SpApiError("Fixture unauthorized identity.", { status: 401, code: "LISTING_IDENTITY_MISMATCH" })],
+    ["network", new TypeError("Fixture network failure.")],
+  ])("blocks generated export and later Listing reads after a global %s error", async (_reason, failure) => {
+    const app = fixture([]);
+    app.fba.mockResolvedValue(generatedIdentities);
+    const scripted = createScriptedListingsReadAdapter([listingStep(0), listingStep(1), listingStep(2)]);
+    const reads: string[] = [];
+    app.listing.mockImplementation((input) => readPriceListListing({
+      async readItem(plan) {
+        reads.push(plan.sellerSku);
+        if (plan.sellerSku === "SKU-TWO") throw failure;
+        return scripted.readItem(plan);
+      },
+    }, input));
+    const started = await app.owner.generate(req("POST", {}));
+    const id = (started.body as { kind: "json"; value: { workbookId: string } }).value.workbookId;
+    const result = await complete(app.owner, id);
+    expect(result).toMatchObject({ state: "failed", completed: 1, total: 3 });
+    expect(result.rows.map((item) => item.standardPrice)).toEqual([19.99, null, null]);
+    expect(reads).toEqual(["SKU-ONE", "SKU-TWO"]);
+    const exported = await app.owner.export(req("POST", { id, replaceImages: false }));
+    expect(exported.status).toBe(409);
+    expect(exported.body.kind).toBe("json");
+  });
+  it("keeps adapter request identity mismatch global even when its row envelope is also incomplete", async () => {
+    const app = fixture([]);
+    app.fba.mockResolvedValue(generatedIdentities);
+    const mismatched = listingStep(1, { productType: undefined });
+    mismatched.result.identity = {
+      operation: "item", intent: "listing", sellerSku: "SKU-TWO", marketplaceId: "A2EUQ1WTGCTBG2",
+    };
+    const adapter = createScriptedListingsReadAdapter([listingStep(0), mismatched, listingStep(2)]);
+    app.listing.mockImplementation((input) => readPriceListListing(adapter, input));
+    const started = await app.owner.generate(req("POST", {}));
+    const id = (started.body as { kind: "json"; value: { workbookId: string } }).value.workbookId;
+    expect(await complete(app.owner, id)).toMatchObject({
+      state: "failed", completed: 1, errorCode: "UPSTREAM_UNAVAILABLE",
+    });
+    expect(adapter.requests).toHaveLength(2);
+    expect((await app.owner.export(req("POST", { id, replaceImages: false }))).status).toBe(409);
+  });
+  it.each(["REPORT_IDENTITY_MISMATCH", "LISTING_IDENTITY_MISMATCH"])("does not apply Listing row isolation to FBA source error %s", async (code) => {
+    const app = fixture([]);
+    app.fba.mockRejectedValue(new SpApiError("Fixture FBA source conflict.", { status: 409, code }));
+    const started = await app.owner.generate(req("POST", {}));
+    const id = (started.body as { kind: "json"; value: { workbookId: string } }).value.workbookId;
+    expect(await complete(app.owner, id)).toMatchObject({ state: "failed", stage: "identifying", errorCode: code });
+    expect(app.listing).not.toHaveBeenCalled();
+    expect((await app.owner.export(req("POST", { id, replaceImages: false }))).status).toBe(409);
+  });
+  it.each(["account", "mode", "generation"])("invalidates a late incomplete Listing after %s changes before row isolation", async (change) => {
+    const app = fixture([]);
+    app.fba.mockResolvedValue(generatedIdentities);
+    const scripted = createScriptedListingsReadAdapter([
+      listingStep(0), listingStep(1, { productType: undefined }), listingStep(2),
+    ]);
+    let markStarted!: () => void;
+    let release!: () => void;
+    const startedReading = new Promise<void>((resolve) => { markStarted = resolve; });
+    const readingReleased = new Promise<void>((resolve) => { release = resolve; });
+    const reads: string[] = [];
+    app.listing.mockImplementation((input) => readPriceListListing({
+      async readItem(plan) {
+        reads.push(plan.sellerSku);
+        if (plan.sellerSku === "SKU-TWO") {
+          markStarted();
+          await readingReleased;
+        }
+        return scripted.readItem(plan);
+      },
+    }, input));
+    const started = await app.owner.generate(req("POST", {}));
+    const id = (started.body as { kind: "json"; value: { workbookId: string } }).value.workbookId;
+    await startedReading;
+    if (change === "account") app.changeAccount();
+    else if (change === "mode") app.changeMode();
+    else app.context.invalidate("lock-screen");
+    release();
+    await vi.waitFor(async () => {
+      await expect(app.owner.observe({ ...req("GET"), query: { id } })).rejects.toMatchObject({ code: "PRICE_LIST_AMAZON_EXPIRED" });
+    });
+    await expect(app.owner.export(req("POST", { id, replaceImages: false }))).rejects.toMatchObject({ code: "PRICE_LIST_AMAZON_EXPIRED" });
+    expect(reads).toEqual(["SKU-ONE", "SKU-TWO"]);
   });
   it.each(["network", "invalid dimensions"])("embeds available generated main images and keeps the price list on %s failure", async (failure) => {
     const png = Uint8Array.from(Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/a9sAAAAASUVORK5CYII=", "base64"));

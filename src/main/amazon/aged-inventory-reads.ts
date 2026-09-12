@@ -732,10 +732,8 @@ function parseAgedInventoryReportData(
   const removalIndex = reportColumn(headerIndexes, [
     "recommended-removal-quantity",
   ]);
-  const daysOfSupplyIndex = reportColumn(headerIndexes, [
-    "days-of-supply",
-    "total-days-of-supply-(including-units-from-open-shipments)",
-  ]);
+  // Inbound-inclusive supply is a separate metric, not stock supply evidence.
+  const daysOfSupplyIndex = reportColumn(headerIndexes, ["days-of-supply"]);
   const currencyIndex = reportColumn(headerIndexes, [
     "currency",
     "currency-code",
@@ -748,10 +746,8 @@ function parseAgedInventoryReportData(
   const recommendedActionIndex = reportColumn(headerIndexes, [
     "recommended-action",
   ]);
-  const snapshotDateIndex = reportColumn(headerIndexes, [
-    "inventory-age-snapshot-date",
-    "snapshot-date",
-  ]);
+  // An inventory-age date cannot establish stock and sales snapshot freshness.
+  const snapshotDateIndex = reportColumn(headerIndexes, ["snapshot-date"]);
 
   const result: AgedInventoryRow[] = [];
   const storageCostCents: Array<number | null> = [];

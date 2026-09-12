@@ -11,6 +11,8 @@
 
 ## 目前狀態
 
+- Issue #258 正在修正 0.1.66 原生驗收發現的兩個唯讀錯誤：免原表價目表遇單列 Listing 身分缺漏中止整批，以及效期健檢拒絕 Amazon 官方可並存但意義不同的供應天數／日期欄。0.1.66 啟動授權已由原生首頁與 Amazon 已連線畫面證明解除；兩項首次工作都已失敗，未重試。0.1.67 的 source、檢查、發布與後續實機證據見 [修正 spec](specs/2026-09-health-price-live-compat.md) 及 [帳本](releases/2026-09-health-price-live-compat.md)。完整原始目標及未完成驗收繼續保留。
+
 - Issue #254 已由 PR #255／main `afbffdd85a2685992dc2c3341f79dbdd3a86c2fc` 合併 0.1.66：圖片服務首次設定後以 Touch ID／Windows Hello 解鎖 OS 加密登入，圖片最終確認移除重打 SKU，並綁定 exact 查詢身分，鎖定清除短效憑據。3,754 tests、production audit 0、Standards／Spec 各 0 open、四條 exact main CI、Pages HTML／11 個 JS／CSS、Mac／Windows 可信產物均通過。兩張下載卡已依 Mac→Windows 更新至 0.1.66；員工登入後實際下載 bytes 尚待驗。Mac 已正常退出舊版、完成 0700 userData 備份並安裝可信 0.1.66 universal，ASAR 與 artifact 相符，0.1.65 App 保留且換版期間 vault／ledger bytes 一致。新版程序已啟動，但原生畫面讀取逾時且系統授權程序仍在執行；已請使用者完成 macOS 授權，0.1.66 UI、圖片登入及生物辨識仍待驗。需求及每層證據見 [spec](specs/2026-09-image-biometric-confirmation.md) 與 [0.1.66 帳本](releases/2026-09-image-biometric-confirmation.md)。0.1.65 的偏好重開、Vine 11 筆進行中及九張直接圖片準備已驗；全部 FBA 效期／銷速、免原表價目表、健檢→變體、圖片門檻結果及完整原始實機範圍仍須接續。
 
 - Issue #250 已由 PR #251／main `3584b3bb775ceb0e645fa2e4a403314016bac037` 合併 0.1.65：圖片改用專用代管並支援 01–10 排序、效期／銷速有全部 FBA 的獨立同步入口、Vine 直接貼整頁且只顯示未結束登記。3,690 tests、兩軸 final review、四條 exact main CI、Pages HTML 與全部 11 個 JS／CSS、Mac／Windows 可信 artifact 均通過；Supply Boss 圖片服務 version 7 已成功發布。Mac 已安裝 0.1.65 universal，ASAR 與可信 artifact 相符，0.1.64 App 與 0700 userData 備份保留，換版期間 vault／ledger bytes 一致。Keychain 授權已完成；原生 UI 已核對偏好重啟保存並還原、Vine 全頁匯入與九張圖片直接代管準備。完整 FBA 效期／銷速結果、免原表價目表、健檢→變體及圖片門檻結果仍待完成。Mac→Windows 下載卡上傳完成；使用者重新登入後已核對兩卡版本／hash 並先後啟動下載，但本機驗證仍缺本次 Mac 新檔，實際下載 bytes 尚未驗收。新需求、待恢復的驗收用外觀設定及各層證據見 [補充 spec](specs/2026-09-direct-images-expiry-vine.md) 及 [0.1.65 帳本](releases/2026-09-direct-images-expiry-vine.md)。
