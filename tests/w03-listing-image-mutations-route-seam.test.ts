@@ -26,7 +26,7 @@ describe("W03 listing image mutation public route seam", () => {
     const handle = vi.fn(
       async (_command: ListingImageMutationCommand) => sentinel,
     );
-    const listingImageMutations = { handle };
+    const listingImageMutations = { handle, read: vi.fn(), clear: vi.fn() };
     const router = new ApiRouter({
       store: {} as LocalStore,
       vault: {} as CredentialVault,
@@ -59,7 +59,7 @@ describe("W03 listing image mutation public route seam", () => {
     const handle = vi.fn(
       async (_command: ListingImageMutationCommand) => sentinel,
     );
-    const listingImageMutations = { handle };
+    const listingImageMutations = { handle, read: vi.fn(), clear: vi.fn() };
     const router = new ApiRouter({
       store: {} as LocalStore,
       vault: {} as CredentialVault,
@@ -92,7 +92,7 @@ describe("W03 listing image mutation public route seam", () => {
     const handle = vi.fn(
       async (_command: ListingImageMutationCommand) => sentinel,
     );
-    const listingImageMutations = { handle };
+    const listingImageMutations = { handle, read: vi.fn(), clear: vi.fn() };
     const router = new ApiRouter({
       store: {} as LocalStore,
       vault: {} as CredentialVault,

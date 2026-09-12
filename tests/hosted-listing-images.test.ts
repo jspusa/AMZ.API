@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import { HostedListingImages, LISTING_IMAGE_SERVICE_ORIGIN as ORIGIN } from "../src/main/hosted-listing-images";
+import { ListingImageLoginError, HostedListingImages, LISTING_IMAGE_SERVICE_ORIGIN as ORIGIN } from "../src/main/hosted-listing-images";
+import { NATIVE_BIOMETRIC_REQUIRED_MESSAGE, NATIVE_CONFIRMATION_CANCELLED_MESSAGE, WINDOWS_HELLO_REQUIRED_MESSAGE } from "../src/main/native-confirmation";
+import { LISTING_IMAGE_VAULT_ERROR, LISTING_IMAGE_VAULT_UNAVAILABLE } from "../src/main/listing-image-credential-vault";
 import { LocalImageUpload } from "../src/main/local-image-upload";
 import { createScriptedSpExecutionContextAdapter } from "../src/main/amazon/sp-execution-context";
 import { createRouterRequestContextAdapter } from "../src/main/router-request-context";
@@ -132,5 +134,47 @@ describe("dedicated hosted image preparation",()=>{
     f.service.clear();
     expect((await prepare()).status).toBe(503);
     expect(puts).toBe(2);
+  });
+});
+
+describe("image login response evidence", () => {
+  it.each([401, 429, 503])("distinguishes only an exact 401 rejection from transient %i failure", async status => {
+    const transport = vi.fn(async () => Response.json({message:"fixture private server detail"}, {status}));
+    const service = new HostedListingImages({requestLogin:async()=>{}, fetch:transport, now:()=>NOW});
+    await expect(service.login("fixture-password")).rejects.toMatchObject({code: status === 401 ? "invalid-password" : "unavailable"});
+    expect(transport).toHaveBeenCalledOnce();
+    expect(service.authenticated()).toBe(false);
+  });
+  it("checks the caller context before password dispatch and before retaining the session", async () => {
+    const f = fixture();
+    await expect(f.service.login("fixture-password", async () => {throw new Error("context changed");})).rejects.toThrow("context changed");
+    expect(f.transport).not.toHaveBeenCalled();
+    const normal = f.transport.getMockImplementation()!;
+    f.transport.mockImplementation(async (input, init) => { const result = await normal(input, init); f.service.clear(); return result; });
+    await expect(f.service.login("fixture-password")).rejects.toThrow();
+    expect(f.service.authenticated()).toBe(false);
+  });
+});
+
+describe("public local image preparation diagnostics", () => {
+  it.each([
+    [new Error(NATIVE_CONFIRMATION_CANCELLED_MESSAGE), "IMAGE_LOGIN_CANCELLED", "身分驗證已取消"],
+    [new Error(NATIVE_BIOMETRIC_REQUIRED_MESSAGE), "IMAGE_BIOMETRIC_REQUIRED", "需要可用的 Touch ID"],
+    [new Error(WINDOWS_HELLO_REQUIRED_MESSAGE), "IMAGE_WINDOWS_HELLO_REQUIRED", "Windows Hello"],
+    [new Error(LISTING_IMAGE_VAULT_UNAVAILABLE), "IMAGE_VAULT_UNAVAILABLE", "不會用明文"],
+    [new Error(LISTING_IMAGE_VAULT_ERROR), "IMAGE_VAULT_ERROR", "無法確認"],
+    [new ListingImageLoginError("unavailable"), "IMAGE_LOGIN_UNAVAILABLE", "已保留登入設定"],
+    [new Error("fixture private request details password=canary"), "IMAGE_PREPARATION_INCOMPLETE", "圖片準備尚未完成"],
+  ])("returns only an allowlisted diagnostic for %s", async (error, code, message) => {
+    const route=new LocalImageUpload({
+      context:createRouterRequestContextAdapter(createScriptedSpExecutionContextAdapter(marketplaceId=>({marketplaceId,mode:"demo",accountScope:"fixture-account"}))),
+      vault:{getImageStorage:async()=>null},
+      hostedImages:{prepare:async()=>{throw error;}},
+    });
+    const response=await route.uploadImage({requestId:"image-diagnostic-test",method:"POST",path:"/api/uploads/listing-images",headers:{},query:{},body:{kind:"multipart",fields:{marketplaceId:"ATVPDKIKX0DER",sellerSku:"TEST-IMAGE-SKU"},file:{name:"fixture.png",type:"image/png",bytes}}});
+    expect(response.body.kind).toBe("json");
+    expect(JSON.stringify(response.body)).toContain(String(code));
+    expect(JSON.stringify(response.body)).toContain(String(message));
+    expect(JSON.stringify(response.body)).not.toMatch(/canary|private request|完成圖片服務登入/u);
   });
 });

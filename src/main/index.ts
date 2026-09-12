@@ -61,6 +61,7 @@ import {
 import { SupplyBossOperationsBoard } from "./supply-boss-operations-board";
 import { HostedListingImages } from "./hosted-listing-images";
 import { ListingImageLogin } from "./listing-image-login";
+import { ListingImageCredentialVault } from "./listing-image-credential-vault";
 import { DesktopInstallGate, DesktopUpdater } from "./desktop-updater";
 import { LocalStore, LocalStoreCorruptionError } from "./local-store";
 import { sellerCentralInventoryUrl } from "./seller-central-inventory";
@@ -212,16 +213,21 @@ function assertTrustedFrame(event: IpcMainInvokeEvent | IpcMainEvent): void {
   desktopInstallGate.assertOperationAllowed();
 }
 
-async function confirmSensitiveAction(reason: string): Promise<void> {
+async function confirmSensitiveAction(
+  reason: string,
+  options: Readonly<{ requireBiometric?: boolean }> = {},
+): Promise<void> {
   await nativeConfirmationGate.run(async () => {
     const confirmationWindow =
-      operationsBoardEditorWindow && !operationsBoardEditorWindow.isDestroyed()
-        ? operationsBoardEditorWindow
-        : credentialEditorWindow && !credentialEditorWindow.isDestroyed()
-        ? credentialEditorWindow
-        : advertisingCredentialEditorWindow && !advertisingCredentialEditorWindow.isDestroyed()
-          ? advertisingCredentialEditorWindow
-          : mainWindow;
+      listingImageLogin?.confirmationWindow() ?? (
+        operationsBoardEditorWindow && !operationsBoardEditorWindow.isDestroyed()
+          ? operationsBoardEditorWindow
+          : credentialEditorWindow && !credentialEditorWindow.isDestroyed()
+          ? credentialEditorWindow
+          : advertisingCredentialEditorWindow && !advertisingCredentialEditorWindow.isDestroyed()
+            ? advertisingCredentialEditorWindow
+            : mainWindow
+      );
     await requestNativeConfirmation(reason, {
       biometricMethod: () => {
         if (process.platform === "darwin" && systemPreferences.canPromptTouchID()) {
@@ -267,7 +273,7 @@ async function confirmSensitiveAction(reason: string): Promise<void> {
             : await dialog.showMessageBox(options);
         return result.response === 1;
       },
-    });
+    }, options);
   });
 }
 
@@ -1145,14 +1151,23 @@ if (!hasSingleInstanceLock) {
       resolve(userData, "ads-credentials.enc"),
     );
     operationsBoard = new SupplyBossOperationsBoard();
-    hostedImages = new HostedListingImages({ requestLogin: () => {
+    hostedImages = new HostedListingImages({ requestLogin: (assertCurrent) => {
       if (!listingImageLogin) throw new Error("圖片登入尚未就緒。");
-      return listingImageLogin.request();
+      return listingImageLogin.request(assertCurrent);
     } });
     listingImageLogin = new ListingImageLogin({
       parent: () => mainWindow,
       preload: fileURLToPath(new URL("../preload/credentialEditor.cjs", import.meta.url)),
       service: hostedImages,
+      vault: new ListingImageCredentialVault({
+        path: resolve(userData, "listing-image-credentials.enc"),
+        codec: {
+          isAvailable: () => safeStorage.isAsyncEncryptionAvailable(),
+          encrypt: value => safeStorage.encryptStringAsync(value),
+          decrypt: async bytes => (await safeStorage.decryptStringAsync(bytes)).result,
+        },
+      }),
+      approve: reason => confirmSensitiveAction(reason, { requireBiometric: true }),
     });
     advertisingApi = new AdvertisingApiClient(
       advertisingCredentialVault,

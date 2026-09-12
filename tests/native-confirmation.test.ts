@@ -107,4 +107,28 @@ describe("native sensitive-action confirmation", () => {
     ).rejects.toThrow(WINDOWS_HELLO_REQUIRED_MESSAGE);
     expect(showMessageFallback).not.toHaveBeenCalled();
   });
+
+  it.each([null, "touch-id"] as const)("never substitutes a button for required image-service biometrics (%s)", async (method) => {
+    const decryptCredential = vi.fn();
+    const showMessageFallback = vi.fn(async () => true);
+    const action = async () => {
+      await requestNativeConfirmation("解鎖圖片服務登入", adapter({
+        biometricMethod: () => method,
+        promptBiometric: vi.fn(async () => "unavailable" as const),
+        showMessageFallback,
+      }), { requireBiometric: true });
+      decryptCredential();
+    };
+    await expect(action()).rejects.toThrow("Touch ID");
+    expect(decryptCredential).not.toHaveBeenCalled();
+    expect(showMessageFallback).not.toHaveBeenCalled();
+  });
+
+  it("allows required image-service access after verified biometrics", async () => {
+    const showMessageFallback = vi.fn(async () => true);
+    await expect(requestNativeConfirmation("解鎖圖片服務登入", adapter({ showMessageFallback }), {
+      requireBiometric: true,
+    })).resolves.toBeUndefined();
+    expect(showMessageFallback).not.toHaveBeenCalled();
+  });
 });

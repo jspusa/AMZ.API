@@ -40,6 +40,8 @@ type ImageCapability = {
 };
 
 type ImageSnapshot = {
+  confirmationMode?: "native";
+  snapshotToken?: string;
   mode: "live" | "demo";
   marketplaceId: string;
   sellerSku: string;
@@ -162,7 +164,6 @@ export default function ImageWorkspaceDrawer({
   const [preview, setPreview] = useState<UpdateResult | null>(null);
   const [result, setResult] = useState<UpdateResult | null>(null);
   const [verified, setVerified] = useState(false);
-  const [confirmationSku, setConfirmationSku] = useState("");
   const [idempotencyKey, setIdempotencyKey] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [draggingIndex, setDraggingIndex] = useState<number | null>(null);
@@ -218,12 +219,12 @@ export default function ImageWorkspaceDrawer({
     setResult(null);
     setVerified(false);
     setIdempotencyKey("");
-    setConfirmationSku("");
     setPhase("edit");
     setError("帳號或安全環境已更新，圖片草稿已停止；請重新查詢商品後再準備保留圖片。");
   }), [assets, batchFiles, batchPositions, snapshot]);
 
   const marketplace = marketplaceById(marketplaceId) ?? MARKETPLACES[0];
+  const nativeConfirmationAvailable = snapshot?.confirmationMode === "native" && Boolean(snapshot.snapshotToken);
   const supportedIndexes = useMemo(
     () =>
       snapshot?.images.flatMap((item, index) =>
@@ -541,12 +542,12 @@ export default function ImageWorkspaceDrawer({
     sellerSku: snapshot?.sellerSku,
     expectedUrls,
     urls: requestedUrls,
-    confirmationSku,
+    snapshotToken: snapshot?.snapshotToken,
     idempotencyKey,
   });
 
   const previewChange = async () => {
-    if (busy || uploadBusyRef.current || !snapshot || !hasChanges || hasPrivateDraft) return;
+    if (busy || uploadBusyRef.current || !snapshot || !nativeConfirmationAvailable || !hasChanges || hasPrivateDraft) return;
     const context = uploadContextRef.current;
     setActionLoading(true);
     setError(null);
@@ -564,7 +565,6 @@ export default function ImageWorkspaceDrawer({
       }
       setPreview(payload as UpdateResult);
       setIdempotencyKey(key);
-      setConfirmationSku("");
       setPhase("confirm");
     } catch (requestError) {
       if (context !== uploadContextRef.current) return;
@@ -575,7 +575,7 @@ export default function ImageWorkspaceDrawer({
   };
 
   const submit = async () => {
-    if (!snapshot || !preview || confirmationSku !== snapshot.sellerSku) return;
+    if (busy || !snapshot || !preview || !nativeConfirmationAvailable) return;
     const context = uploadContextRef.current;
     setActionLoading(true);
     setError(null);
@@ -771,6 +771,8 @@ export default function ImageWorkspaceDrawer({
                   <span className={`listing-mode ${snapshot.mode}`}>{snapshot.mode === "live" ? "Live" : "Demo"}</span>
                 </section>
 
+                {!nativeConfirmationAvailable && <div className="price-warning compact" role="status"><strong>請更新 AMZ.API Notebook Key</strong><p>目前安裝版本尚不支援直接以 Touch ID／Windows Hello 確認圖片更新。更新後重新查詢商品，即可預檢與送出。</p></div>}
+
                 <section className="image-drop-zone" onDragOver={(event) => event.preventDefault()} onDrop={(event) => onDrop(event)} role="button" tabIndex={busy ? -1 : 0} aria-disabled={busy}
                   onKeyDown={event => { if (!busy && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); fileTargetRef.current = undefined; inputRef.current?.click(); } }}
                   onClick={(event) => { if (busy || event.target === inputRef.current) return; fileTargetRef.current = undefined; inputRef.current?.click(); }}>
@@ -833,7 +835,7 @@ export default function ImageWorkspaceDrawer({
 
                 <div className="image-submit-row">
                   <span>{supportedIndexes.filter(index => assets[index]?.previewUrl).length} / {supportedIndexes.length} 張</span>
-                  <button className="price-primary-button" type="button" onClick={previewChange} disabled={!hasChanges || hasPrivateDraft || hasDuplicateUrls || actionLoading || assets.some((asset) => asset.uploading)}>{actionLoading ? "Amazon 預檢中…" : "安全預檢圖片"}</button>
+                  <button className="price-primary-button" type="button" onClick={previewChange} disabled={!nativeConfirmationAvailable || !hasChanges || hasPrivateDraft || hasDuplicateUrls || actionLoading || assets.some((asset) => asset.uploading)}>{actionLoading ? "Amazon 預檢中…" : "安全預檢圖片"}</button>
                 </div>
               </>
             )}
@@ -877,14 +879,19 @@ export default function ImageWorkspaceDrawer({
 
         {phase === "confirm" && snapshot && preview && (
           <section className="image-confirmation">
-            <button className="back-link" type="button" onClick={() => setPhase("edit")}>← 返回排序</button>
+            <button className="back-link" type="button" onClick={() => setPhase("edit")} disabled={actionLoading}>← 返回排序</button>
             <p className="eyebrow">FINAL CONFIRMATION</p>
             <h3>Amazon 預檢已通過</h3>
+            <section className="image-product-bar" aria-label="即將更新的商品">
+              <div><strong>SKU {snapshot.sellerSku}</strong><p>ASIN {snapshot.asin ?? "無 ASIN"} · {marketplaceSelectLabel(marketplace)}</p></div>
+              <span className={`listing-mode ${snapshot.mode}`}>{snapshot.mode === "live" ? "Live" : "Demo"}</span>
+            </section>
+            <p><strong>變更位置：{preview.changedSlots.map(index => index + 1).join("、")}</strong></p>
             <p>將更新 {preview.changedSlots.length} 個圖片位置。送出後 Amazon 仍需下載與審核圖片。</p>
+            <p>送出時使用 Touch ID／Windows Hello 確認這次圖片更新。</p>
             {preview.issues.length > 0 && <div className="price-warning compact"><strong>Amazon 警告</strong><p>{preview.issues.map((item) => item.message).join("；")}</p></div>}
-            <label className="confirmation-field"><span>重新輸入完整 SKU 確認</span><input value={confirmationSku} onChange={(event) => setConfirmationSku(event.target.value)} placeholder={snapshot.sellerSku} autoFocus autoComplete="off" spellCheck={false} /></label>
             {error && <div className="price-error" role="alert">{error}</div>}
-            <button className="price-primary-button" type="button" onClick={submit} disabled={actionLoading || confirmationSku !== snapshot.sellerSku}>{actionLoading ? "送出中…" : "送出圖片更新"}</button>
+            <button className="price-primary-button" type="button" onClick={submit} disabled={actionLoading || !nativeConfirmationAvailable}>{actionLoading ? "送出中…" : "送出圖片更新"}</button>
           </section>
         )}
 

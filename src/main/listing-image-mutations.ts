@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { ApiRequest, ApiResponse } from "../shared/contracts";
 import {
   marketplaceById,
@@ -52,6 +52,7 @@ export type ListingImageMutationCommand = Readonly<{
 }>;
 
 export interface ListingImageMutationsPort {
+  clear(): void;
   handle(command: ListingImageMutationCommand): Promise<ApiResponse>;
   read(
     input: ListingImageIdentity,
@@ -61,12 +62,18 @@ export interface ListingImageMutationsPort {
 
 export interface ListingImageMutationOperations {
   read(input: ListingImageIdentity): Promise<ListingImageGatewayRead>;
-  preview(input: UpdateListingImagesInput): Promise<ListingImageUpdateResult>;
+  preview(input: BoundListingImageInput): Promise<ListingImageUpdateResult>;
   commit(
-    input: UpdateListingImagesInput,
+    input: BoundListingImageInput,
     fence: ListingWriteExecutionFence,
   ): Promise<ListingImageUpdateResult>;
 }
+
+type ImageTargetIdentity = Readonly<{ asin: string; productType: string }>;
+type BoundListingImageInput = UpdateListingImagesInput & Readonly<{
+  // Only the main-owned snapshot registry supplies this constraint.
+  expectedImageIdentity?: ImageTargetIdentity;
+}>;
 
 const IMAGE_ATTRIBUTE_NAMES = [
   "main_product_image_locator",
@@ -185,10 +192,18 @@ function assertImageUrl(value: string, label: string): void {
 
 function preparePatch(
   observation: ListingImageGatewayRead,
-  input: UpdateListingImagesInput,
+  input: BoundListingImageInput,
   mode: "live" | "demo",
 ): ListingImagePatchDescriptor {
   const snapshot = assertCanonicalObservation(observation, input, mode);
+  if (input.expectedImageIdentity &&
+      (snapshot.asin !== input.expectedImageIdentity.asin ||
+        snapshot.productType !== input.expectedImageIdentity.productType)) {
+    throw new SpApiError(
+      "商品的 ASIN 或商品類型已變更，請重新查詢商品並核對圖片。",
+      { status: 409, code: "LISTING_IDENTITY_MISMATCH" },
+    );
+  }
   if (!snapshot.attributesPresent) {
     throw new SpApiError(
       "Amazon Listing 圖片欄位無法完整確認，已停止寫入。",
@@ -304,7 +319,7 @@ function throwUnknownImageCommit(
 
 async function prepareLivePreview(
   gateway: ListingImageGateway,
-  input: UpdateListingImagesInput,
+  input: BoundListingImageInput,
 ): Promise<Readonly<{
   patch: ListingImagePatchDescriptor;
   issues: ListingIssue[];
@@ -682,8 +697,18 @@ export function createListingImageMutationOperations(
 }
 
 type ListingImageRouteInput = UpdateListingImagesInput & Readonly<{
-  confirmationSku: string;
   idempotencyKey: string;
+  snapshotToken: string;
+}>;
+
+type ImageSnapshotBinding = Readonly<{
+  context: SpExecutionContext;
+  sellerSku: string;
+  identity: ImageTargetIdentity;
+  expectedOldHash: string;
+}>;
+type BoundListingImageRouteInput = ListingImageRouteInput & Readonly<{
+  expectedImageIdentity: ImageTargetIdentity;
 }>;
 
 function parseUrls(value: unknown): Array<string | null> | null {
@@ -714,12 +739,15 @@ function marketplaceCode(marketplaceId: ListingImageIdentity["marketplaceId"]): 
   return code === "UK" ? "GB" : code;
 }
 
-function proposalFingerprint(input: UpdateListingImagesInput): string {
+function proposalFingerprint(input: BoundListingImageRouteInput): string {
   return createHash("sha256").update(JSON.stringify([
     input.marketplaceId,
     input.sellerSku,
     input.expectedUrls,
     input.urls,
+    input.snapshotToken,
+    input.expectedImageIdentity.asin,
+    input.expectedImageIdentity.productType,
   ])).digest("hex");
 }
 
@@ -745,6 +773,8 @@ export class ListingImageMutations implements ListingImageMutationsPort {
   private readonly context: SpExecutionContextAdapter;
   private readonly writeGate: MainWriteGatePort;
   private readonly operations: ListingImageMutationOperations;
+  private readonly snapshots = new Map<string, ImageSnapshotBinding>();
+  private snapshotRevision = 0;
 
   constructor(input: Readonly<{
     context: SpExecutionContextAdapter;
@@ -754,6 +784,18 @@ export class ListingImageMutations implements ListingImageMutationsPort {
     this.context = input.context;
     this.writeGate = input.writeGate;
     this.operations = input.operations;
+  }
+
+  clear(): void {
+    this.snapshotRevision += 1;
+    this.snapshots.clear();
+  }
+
+  private assertSnapshotRevision(expected: number): void {
+    if (expected === this.snapshotRevision) return;
+    throw new SpApiError("Amazon 執行環境已更新；請重新查詢商品圖片。", {
+      status: 409, code: "SP_CONTEXT_INVALIDATED",
+    });
   }
 
   async handle(command: ListingImageMutationCommand): Promise<ApiResponse> {
@@ -768,6 +810,7 @@ export class ListingImageMutations implements ListingImageMutationsPort {
     input: ListingImageIdentity,
     context: SpExecutionContext,
   ): Promise<ListingImageSnapshot> {
+    const snapshotRevision = this.snapshotRevision;
     const observation = await this.operations.read(input);
     if (observation.snapshot.mode !== context.mode ||
         observation.snapshot.marketplaceId !== context.marketplaceId) {
@@ -777,6 +820,7 @@ export class ListingImageMutations implements ListingImageMutationsPort {
       );
     }
     await this.context.assertCurrent(context);
+    this.assertSnapshotRevision(snapshotRevision);
     await this.writeGate.reconcile({
       context,
       marketplaceId: input.marketplaceId,
@@ -786,7 +830,26 @@ export class ListingImageMutations implements ListingImageMutationsPort {
       project: (response, _operation, canonical) =>
         reconcileImageWrite(response, canonical),
     });
-    return publicImageResult(observation.snapshot);
+    await this.context.assertCurrent(context);
+    this.assertSnapshotRevision(snapshotRevision);
+    const snapshot = assertCanonicalObservation(observation, input, context.mode);
+    // A new lookup supersedes earlier views of the same target. Keep the
+    // registry bounded; an evicted view must perform another explicit lookup.
+    for (const [token, binding] of this.snapshots) {
+      if (binding.context.accountScope === context.accountScope &&
+          binding.context.marketplaceId === context.marketplaceId &&
+          binding.context.mode === context.mode && binding.sellerSku === input.sellerSku) {
+        this.snapshots.delete(token);
+      }
+    }
+    while (this.snapshots.size >= 128) this.snapshots.delete(this.snapshots.keys().next().value!);
+    const snapshotToken = `image-snapshot.${randomUUID()}`;
+    this.snapshots.set(snapshotToken, {
+      context, sellerSku: input.sellerSku,
+      identity: { asin: snapshot.asin!, productType: snapshot.productType },
+      expectedOldHash: expectedOldHash(normalizeImageUrls(snapshot.images.map(image => image.url))),
+    });
+    return publicImageResult({ ...snapshot, confirmationMode: "native", snapshotToken });
   }
 
   private async readRoute(request: ApiRequest): Promise<ApiResponse> {
@@ -819,6 +882,9 @@ export class ListingImageMutations implements ListingImageMutationsPort {
     if (!marketplaceId || !sellerSku || !expectedUrls || !urls) {
       return invalid("請提供有效的站點、SKU 與最多十個圖片 URL。");
     }
+    if (typeof body.snapshotToken !== "string" || !/^image-snapshot\.[0-9a-f-]{36}$/u.test(body.snapshotToken)) {
+      return invalid("圖片確認流程已更新，請重新載入 AMZ.API 控制台並重新查詢商品。", 409, "IMAGE_SNAPSHOT_REQUIRED");
+    }
     const populated = urls.filter((value): value is string => Boolean(value));
     if (new Set(populated).size !== populated.length) {
       return invalid(
@@ -832,9 +898,9 @@ export class ListingImageMutations implements ListingImageMutationsPort {
       sellerSku,
       expectedUrls,
       urls,
-      confirmationSku: typeof body.confirmationSku === "string"
-        ? body.confirmationSku
-        : "",
+      snapshotToken: body.snapshotToken,
+      // Legacy confirmationSku is intentionally ignored; exact identity and
+      // native authorization remain owned by the preview binding and Write Gate.
       idempotencyKey: typeof body.idempotencyKey === "string"
         ? body.idempotencyKey
         : "",
@@ -842,7 +908,7 @@ export class ListingImageMutations implements ListingImageMutationsPort {
   }
 
   private binding(
-    input: ListingImageRouteInput,
+    input: BoundListingImageRouteInput,
     context: SpExecutionContext,
     key: string,
   ): WriteBinding {
@@ -861,16 +927,34 @@ export class ListingImageMutations implements ListingImageMutationsPort {
     };
   }
 
+  private async bindSnapshot(input: ListingImageRouteInput, context: SpExecutionContext): Promise<BoundListingImageRouteInput> {
+    const binding = this.snapshots.get(input.snapshotToken);
+    if (!binding) throw new SpApiError("圖片查詢已更新或過期，請重新查詢商品並預檢。", { status: 409, code: "IMAGE_SNAPSHOT_CHANGED" });
+    await this.context.assertCurrent(binding.context);
+    if (binding.context.accountScope !== context.accountScope || binding.context.mode !== context.mode ||
+        binding.context.generation !== context.generation || binding.context.marketplaceId !== input.marketplaceId ||
+        binding.sellerSku !== input.sellerSku) {
+      throw new SpApiError("商品圖片查詢不屬於目前的商品或帳號環境，請重新查詢。", { status: 409, code: "LISTING_IDENTITY_MISMATCH" });
+    }
+    if (binding.expectedOldHash !== expectedOldHash(normalizeImageUrls(input.expectedUrls))) {
+      throw new SpApiError("原圖片與本次查詢不一致，請重新查詢商品。", { status: 409, code: "STALE_LISTING" });
+    }
+    if (this.snapshots.get(input.snapshotToken) !== binding) throw new SpApiError("圖片查詢已更新，請重新查詢商品並預檢。", { status: 409, code: "IMAGE_SNAPSHOT_CHANGED" });
+    return { ...input, expectedImageIdentity: binding.identity };
+  }
+
   private async previewRoute(request: ApiRequest): Promise<ApiResponse> {
     const input = this.imageInput(request);
     if ("status" in input) return input;
     try {
       const context = await this.context.capture(input.marketplaceId);
-      const result = await this.operations.preview(input);
+      const bound = await this.bindSnapshot(input, context);
+      const result = await this.operations.preview(bound);
       await this.context.assertCurrent(context);
+      await this.bindSnapshot(input, context);
       const key = validIdempotencyKey(input.idempotencyKey);
       if (key) {
-        await this.writeGate.stagePreview(this.binding(input, context, key));
+        await this.writeGate.stagePreview(this.binding(bound, context, key));
       }
       return json(publicImageResult(result));
     } catch (error) {
@@ -885,27 +969,30 @@ export class ListingImageMutations implements ListingImageMutationsPort {
     if ("status" in input) return input;
     const key = validIdempotencyKey(input.idempotencyKey);
     if (!key) return invalid("這次預檢已失效，請重新預檢。");
-    if (input.confirmationSku !== input.sellerSku) {
-      return invalid(
-        "送出圖片前，請重新輸入完整 SKU。",
-        400,
-        "CONFIRMATION_REQUIRED",
-      );
-    }
-    const context = await this.context.capture(input.marketplaceId);
     const changedSlots = normalizeImageUrls(input.urls).flatMap((value, index) =>
       value === normalizeImageUrls(input.expectedUrls)[index] ? [] : [index + 1]
     );
     try {
+      const context = await this.context.capture(input.marketplaceId);
+      const bound = await this.bindSnapshot(input, context);
       const result = await this.writeGate.execute({
-        binding: this.binding(input, context, key),
+        binding: this.binding(bound, context, key),
         approvalReason: (verificationCode) =>
           `確認圖片｜${marketplaceCode(input.marketplaceId)} ${input.sellerSku}｜位置 ${changedSlots.join("、")}｜驗證碼 ${verificationCode}`,
-        run: (session) => session.attempt({
+        beforeApproval: async () => { await this.bindSnapshot(input, context); },
+        run: async (session) => {
+          await this.bindSnapshot(input, context);
+          return session.attempt({
           intentId: "primary",
           execute: ({ recordAccepted, assertCurrent }) =>
             commitWithCanonicalReadback({
-              commit: () => this.operations.commit(input, { assertCurrent }),
+              commit: async () => {
+                await prepareImageCommit(() => this.bindSnapshot(input, context));
+                return this.operations.commit(bound, { assertCurrent: async () => {
+                  await assertCurrent();
+                  await this.bindSnapshot(input, context);
+                } });
+              },
               onAccepted: recordAccepted,
               assertCurrent,
               read: () => this.operations.read({
@@ -914,7 +1001,8 @@ export class ListingImageMutations implements ListingImageMutationsPort {
               }),
               decide: imageReadbackDecision,
             }),
-        }),
+          });
+        },
       });
       return json(publicImageResult(result));
     } catch (error) {

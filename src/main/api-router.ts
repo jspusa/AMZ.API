@@ -840,6 +840,7 @@ export class ApiRouter {
     this.aPlusAuditCoordinator.clear();
     this.listingsExportOwner.clear();
     this.standaloneAuditCoordinator.clear();
+    this.listingImageMutations.clear();
     this.writeGate.clearEphemeral();
     this.listingContentBatchMutations.clear();
     this.fbaInboundCoordinator.clear();

@@ -6,6 +6,8 @@ export const WINDOWS_HELLO_REQUIRED_MESSAGE =
   "這台 Windows 電腦尚未設定可用的 Windows Hello。請先在「設定 → 帳戶 → 登入選項」設定指紋、臉部或 PIN；Amazon 沒有收到任何變更。";
 export const NATIVE_CONFIRMATION_BUSY_MESSAGE =
   "另一個本機身分驗證正在進行；Amazon 尚未收到這次操作。";
+export const NATIVE_BIOMETRIC_REQUIRED_MESSAGE =
+  "此操作需要可用的 Touch ID／Windows Hello；本機登入資料尚未解鎖。";
 
 export type NativeBiometricMethod = "touch-id" | "windows-hello" | null;
 
@@ -35,6 +37,7 @@ export class NativeConfirmationGate {
 export async function requestNativeConfirmation(
   reason: string,
   adapter: NativeConfirmationAdapter,
+  options: Readonly<{ requireBiometric?: boolean }> = {},
 ): Promise<void> {
   const method = adapter.biometricMethod();
   if (method) {
@@ -51,6 +54,10 @@ export async function requestNativeConfirmation(
     if (method === "windows-hello") {
       throw new Error(WINDOWS_HELLO_REQUIRED_MESSAGE);
     }
+  }
+
+  if (options.requireBiometric) {
+    throw new Error(NATIVE_BIOMETRIC_REQUIRED_MESSAGE);
   }
 
   if (!(await adapter.showMessageFallback(reason))) {

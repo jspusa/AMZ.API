@@ -8,7 +8,7 @@ import type {
 import type { RouterRequestContextAdapter } from "./router-request-context";
 import { parseMarketplace, parseSellerSku } from "./route-input";
 import { invalid, json } from "./route-response";
-import type { HostedListingImagePort } from "./hosted-listing-images";
+import { publicListingImagePreparationError, type HostedListingImagePort } from "./hosted-listing-images";
 
 type ImageContentType = "image/png" | "image/jpeg";
 
@@ -283,9 +283,10 @@ export class LocalImageUpload implements LocalImageUploadPort {
           contextKey: JSON.stringify([context.accountScope, context.mode, context.region, context.marketplaceId, sellerSku]),
           assertCurrent: () => this.context.assertCurrent(context),
         });
-      } catch {
+      } catch (error) {
         await this.context.assertCurrent(context);
-        return invalid("圖片準備尚未完成，檔案仍保留在工作台。請重新準備圖片，並完成圖片服務登入。", 503, "IMAGE_PREPARATION_INCOMPLETE");
+        const failure = publicListingImagePreparationError(error);
+        return invalid(failure.message, failure.status, failure.code);
       }
       await this.context.assertCurrent(context);
       amazonUrl = hosted.url;

@@ -21,5 +21,8 @@ describe("packaged listing image login boundary", () => {
     expect(LISTING_IMAGE_LOGIN_HTML).not.toMatch(/https?:\/\//u);
     expect(LISTING_IMAGE_LOGIN_HTML).toContain("const password=p.value;p.value='';try{await window.fbaListingImageEditor.login(password)");
     expect(LISTING_IMAGE_LOGIN_HTML).not.toMatch(/localStorage|sessionStorage|document\.cookie/u);
+    expect(LISTING_IMAGE_LOGIN_HTML).toContain("在這台電腦加密保存已驗證的密碼");
+    expect(LISTING_IMAGE_LOGIN_HTML).toContain("Windows Hello（指紋、臉部或 PIN）");
+    expect(decodeURIComponent(listingImageLoginDataUrl(true))).toContain("先前保存的密碼已被圖片服務拒絕");
   });
 });

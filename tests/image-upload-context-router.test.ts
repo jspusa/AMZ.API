@@ -18,6 +18,7 @@ vi.mock("@aws-sdk/client-s3", () => ({
 import { createScriptedSpExecutionContextAdapter } from
   "../src/main/amazon/sp-execution-context";
 import { ApiRouter } from "../src/main/api-router";
+import { NATIVE_CONFIRMATION_CANCELLED_MESSAGE } from "../src/main/native-confirmation";
 import { HostedListingImages } from "../src/main/hosted-listing-images";
 import type { CredentialVault } from "../src/main/credential-vault";
 import type { LocalStore } from "../src/main/local-store";
@@ -40,11 +41,13 @@ describe("listing image upload execution context", () => {
     const transport = vi.fn<typeof fetch>(async () => { throw new Error("No network is expected after cancelling the login sheet"); });
     const mutation = vi.fn(async () => { throw new Error("Image preparation must not enter Amazon mutations"); });
     const read = vi.fn(async () => { throw new Error("Image preparation must not read Amazon listings"); });
+    const clear = vi.fn();
     const approveWrite = vi.fn(async () => undefined);
     let router!: ApiRouter;
     const requestLogin = vi.fn(async () => {
-      // Closing the native sheet resolves without creating a session.
+      // Cancelling native approval rejects without creating a session.
       if (drift) router.invalidateContext("lock-screen");
+      throw new Error(NATIVE_CONFIRMATION_CANCELLED_MESSAGE);
     });
     const service = new HostedListingImages({ requestLogin, fetch: transport });
     router = new ApiRouter({
@@ -52,7 +55,7 @@ describe("listing image upload execution context", () => {
       vault: { getImageStorage: async () => null } as unknown as CredentialVault,
       approveWrite,
       hostedImages: service,
-      listingImageMutations: { handle: mutation, read },
+      listingImageMutations: { handle: mutation, read, clear },
       spExecutionContext: createScriptedSpExecutionContextAdapter(marketplaceId => ({
         marketplaceId, mode: "live", accountScope: "opaque-image-upload-account",
       })),
@@ -63,13 +66,13 @@ describe("listing image upload execution context", () => {
         method: "POST", path: "/api/uploads/listing-images", query: {}, headers: {},
         body: { kind: "multipart", fields: { marketplaceId: US, sellerSku: "IMAGE-CONTEXT-SKU" }, file: { name: "IMAGE-CONTEXT-SKU_01_主圖.png", type: "image/png", bytes: validPng() } },
       });
-      expect(response.status).toBe(drift ? 409 : 503);
+      expect(response.status).toBe(409);
       expect(response.body.kind).toBe("json");
       if (response.body.kind !== "json") throw new Error("Expected public JSON response");
       if (drift) expect(response.body.value).toMatchObject({ code: "SP_CONTEXT_INVALIDATED" });
       else expect(response.body.value).toEqual({
-        code: "IMAGE_PREPARATION_INCOMPLETE",
-        message: "圖片準備尚未完成，檔案仍保留在工作台。請重新準備圖片，並完成圖片服務登入。",
+        code: "IMAGE_LOGIN_CANCELLED",
+        message: "圖片服務身分驗證已取消或未通過；檔案仍保留在工作台。",
       });
       expect(requestLogin).toHaveBeenCalledOnce();
       expect(service.authenticated()).toBe(false);
@@ -78,7 +81,9 @@ describe("listing image upload execution context", () => {
       expect(read).not.toHaveBeenCalled();
       expect(approveWrite).not.toHaveBeenCalled();
       expect(s3Spies.send).not.toHaveBeenCalled();
+      expect(clear).toHaveBeenCalledTimes(drift ? 1 : 0);
     } finally { router.dispose(); }
+    expect(clear).toHaveBeenCalledTimes(drift ? 2 : 1);
   });
 
   it("does not write to object storage after lock invalidates a pending storage lookup", async () => {
