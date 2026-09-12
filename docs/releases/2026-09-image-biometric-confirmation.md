@@ -15,8 +15,8 @@ Source base：`147a14a2afbe19a06adc1ee8192038f2fc58b78e`。開發分支：`codex
 | 範圍 | 證據／狀態 |
 | --- | --- |
 | ★ Source | 已完成圖片登入 OS 加密保存、Touch ID／Windows Hello 解鎖，以及免重打 SKU 確認；保留原 main Write Gate、idempotency 與 native confirmation |
-| ★ Check／audit | `npm run check`：323 files／3,738 tests、型別與 build 通過；`npm audit --omit=dev`：0 vulnerabilities；`git diff --check` 通過。首輪兩個版號斷言已更新；三個既有大量 durable I/O 測試曾逾時，完整重跑原 5 秒門檻已通過 |
-| ☆ 兩軸 review | 待最終 diff 審查 |
+| ★ Check／audit | 最終 `VITEST_MAX_WORKERS=4 npm run check`：323 files／3,754 tests、型別與 build 通過；`npm audit --omit=dev`：0 vulnerabilities；`git diff --check` 通過。降低本機同時測試數以避免既有 durable I/O 測試受磁碟競爭而逾時，原 5 秒門檻未改。Windows CI 首輪指出 POSIX mode 不適用，僅對 Windows 略過該斷言，仍執行加密與重新開啟檢查 |
+| ★ 兩軸 review | Standards／Spec 均核對 `147a14a…33af1149acf050a7770cdacf1a5254d5a7027c1b`，各 0 open。Spec 所見 ASIN／Product Type 漂移與 Standards 所見 context cache 清除缺口已修復；main 查詢憑據綁定、失效清除與遲到結果拒絕均有 public seam 測試 |
 | ☆ 同 source CI／Pages／兩平台 artifact | 尚未發布 |
 | ☆ 0.1.66 Mac 安裝與圖片登入 | 尚未安裝；不以 0.1.65 的登入成功替代 |
 | ☆ 員工下載實體檔 | 必須核對新完成檔案大小與 hash，下載開始訊息不代表完成 |
