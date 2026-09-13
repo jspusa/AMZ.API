@@ -1,0 +1,19 @@
+# 效期來源讀取診斷交付紀錄
+
+Issue #281；[規格](../specs/2026-09-expiry-source-read-diagnostics.md)。開始來源為 `20580a9615b01166950db46abbe617df67d99bee`，實際安裝仍為 0.1.74／runtime `8352a502aefe8eae61912c26496cd749490bcdc5`。
+
+## 最新實機證據
+
+使用者解除原生啟動等待後，0.1.74 首頁與 Amazon 連線已確認。首次且唯一效期同步於 2026-09-13 23:12:14（Asia/Taipei）顯示終態 partial：284 個 FBA 品號、33 個銷售偏慢／待核對品號，36 個入庫計畫不可讀。這是不可讀數，不是所有計畫數，也不證明同一 operation 或 HTTP 狀態。
+
+本機重新讀取保留相同時間、計數與 partial 狀態。人工公告 4 項、既有人工效期及促銷月曆保留，圖片門檻 8，八欄與捲動提示仍可見。未重送同步，沒有 native 最終寫入批准或 Amazon mutation。聚合證據：`/tmp/amz-api-v0174-verified/native-acceptance-resumed-20260913.json`。
+
+員工下載頁仍顯示登入表單；已另行指出精確的下載頁登入需求，無須再要求 Mac 解鎖。0.1.74 的安裝、CI、Pages、兩平台可信產物及伺服器上傳已驗，員工實際下載 bytes 尚待。原已驗圖片、Vine、偏好、價目表、變體及表格流程不重做。
+
+## 本輪狀態
+
+0.1.75 診斷補強已完成本機檢查：326 files／4,061 tests、typecheck、build、stylesheet composition 與 `git diff --check` 通過，production audit 0。最初完整檢查只在兩項仍固定 .74 的版本測試失敗，將預期版本明確更新為 .75 後重新通過，未放寬功能 assertion。stylesheet fingerprint 保持 `ff016e1e974b03b58bdf23378722b9416f78285c8052bf82581df8d686637926`。
+
+Public seam 先重現診斷丟失，之後驗證 production adapter → reader → coordinator → 保存 → 重開／GET 的操作分類；21 項來源診斷測試包含舊 schema 2 的 36 筆歷史分類、超過 cursor 時限的純本機讀取、未知／型別／合計／context／sentinel 保護及零額外上游請求。Renderer 新增兩項先紅後綠，15 項流程測試通過；synthetic CUA 檢查預設收折、歷史／未記錄文案與 390px 無溢出，暫時 viewport／tab／server 已恢復或結束。八欄樣式沒有修改。
+
+本機證據：`/tmp/amz-expiry-source-diagnostics-final-check.log`、`/tmp/amz-expiry-source-diagnostics-audit.log`、`/tmp/inventory-expiry-source-summary-evidence/verification.json`。尚未有 final commit／兩軸審查／CI／產物／安裝證據。完整 #263 仍未完成；真正效期來源與多日期尚無實機驗收。

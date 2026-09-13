@@ -32,6 +32,39 @@ async function mount(handler: (url: string, init?: RequestInit) => Promise<Respo
 afterEach(async () => { if (renderer) await act(async () => renderer!.unmount()); renderer = null; vi.useRealTimers(); vi.unstubAllGlobals(); });
 
 describe("inventory health local workflow", () => {
+  it("reads historical source failure counts locally without starting another synchronization, and clears them on context change", async () => {
+    const calls: Array<{ url: string; method?: string }> = [];
+    const historical = { ...snapshot({ sourceComplete: false, stale: true, rows: [] }), expirySourceDiagnostics: {
+      status: "available", recordedAt: "2026-09-12T09:00:00.000Z", stale: true, traversal: "complete",
+      listedPlanCount: 42, cachedPlanCount: 6, unavailablePlanCount: 36, pendingPlanCount: 0,
+      statusCounts: { "400": 36, "404": 0, "422": 0 },
+      failures: [{ operation: "unknown", page: "unknown", status: 400, reason: "unknown", count: 36 }],
+    } };
+    const listeners = await mount(async (url, init) => {
+      calls.push({ url, method: init?.method }); return Response.json({ snapshot: historical });
+    });
+    expect(output()).toContain("來源讀取摘要");
+    expect(output()).toContain("舊同步紀錄");
+    expect(output()).toContain("HTTP 400：36 個計畫");
+    expect(output()).toContain("舊版紀錄未保存失敗步驟");
+    expect(output()).not.toContain("★ 列入行事曆");
+    await act(async () => { button("重新讀取本機資料").props.onClick(); });
+    expect(calls).toHaveLength(2);
+    expect(calls.every(call => call.url === `/api/inventory-health?marketplaceId=${marketplaceId}` && call.method !== "POST")).toBe(true);
+    await act(async () => { listeners.get("context")!(); });
+    expect(output()).not.toContain("HTTP 400：36 個計畫");
+    expect(output()).not.toContain("來源讀取摘要");
+  });
+
+  it("shows an unknown source diagnostic without inventing zero failures", async () => {
+    await mount(async () => Response.json({ snapshot: { ...snapshot({ sourceComplete: false, rows: [] }),
+      expirySourceDiagnostics: { status: "unknown", reason: "legacy-checkpoint" },
+    } }));
+    expect(output()).toContain("舊版同步紀錄沒有可核對的來源摘要");
+    expect(output()).not.toContain("HTTP 400：0 個計畫");
+    expect(output()).not.toContain("來源全部可讀");
+  });
+
   it("shows all FBA stock first and keeps unknown quantities distinct in the review group", async () => {
     const calls: string[] = [];
     await mount(async url => { calls.push(url); return Response.json({ snapshot: snapshot() }); });

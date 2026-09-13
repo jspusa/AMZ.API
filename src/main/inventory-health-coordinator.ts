@@ -6,7 +6,7 @@ import { bodyRecord, isPlainRecord, parseMarketplace } from "./route-input";
 import { invalid, json, routeError } from "./route-response";
 import type { PrivateLocalJsonPort } from "./private-local-json";
 import type { InventoryHealthReportSnapshot } from "./amazon/aged-inventory-reads";
-import { parseFbaExpiryCheckpoint, type FbaExpiryCheckpoint, type FbaExpiryEvidence } from "./amazon/fba-expiry-reads";
+import { parseFbaExpiryCheckpoint, projectFbaExpirySourceDiagnostics, type FbaExpiryCheckpoint, type FbaExpiryEvidence } from "./amazon/fba-expiry-reads";
 import { assessInventoryHealth, type InventoryHealthEvidence, type InventoryExpiryRecord } from "./amazon/inventory-health";
 import { isDateOnly, marketplaceCalendar } from "./amazon/marketplace-calendar";
 import { SpExecutionContextError, type SpExecutionContext, type SpExecutionContextAdapter } from "./amazon/sp-execution-context";
@@ -100,8 +100,12 @@ export class InventoryHealthCoordinator {
     await this.fence(context, revision);
     this.saved = validated;
   }
-  private project(profile: Profile, key: string): InventoryHealthSnapshot {
-    const snapshot = assessInventoryHealth({ ...profile, now: this.input.now?.() ?? new Date() });
+  private project(profile: Profile, context: SpExecutionContext): InventoryHealthSnapshot {
+    const key = scopeKey(context), now = this.input.now?.() ?? new Date();
+    const assessed = assessInventoryHealth({ ...profile, now });
+    const snapshot = { ...assessed, expirySourceDiagnostics: profile.marketplaceId === context.marketplaceId && profile.mode === context.mode
+      ? projectFbaExpirySourceDiagnostics(profile.expiryCheckpoint, context, now)
+      : { status: "unknown" as const, reason: "context-mismatch" as const } };
     if (this.verifiedStockScopes.has(key)) return snapshot;
     const notice = "本次開啟尚未核對目前庫存，請同步全部 FBA 效期與銷速；原批次資料與確認仍保留，核對完成前暫停清售預估。";
     return {
@@ -215,7 +219,7 @@ export class InventoryHealthCoordinator {
         const saved = await this.load();
         const profile = saved.profiles[scopeKey(context)];
         await this.fence(context, revision);
-        return json({ snapshot: profile ? this.project(profile, scopeKey(context)) : null });
+        return json({ snapshot: profile ? this.project(profile, context) : null });
       });
     } catch (error) { return routeError(error, "無法讀取本機庫存健康資料。請確認 Notebook Key 儲存空間及解鎖狀態。"); }
   }
@@ -247,7 +251,7 @@ export class InventoryHealthCoordinator {
           confirmedRemaining: body.confirmedRemaining as number | null, confirmedForSnapshot: body.confirmedRemaining === null ? null : row.snapshotDate };
         saved.profiles[key] = { ...profile, lots: [...profile.lots.filter(l => l.id !== row.id), next] };
         await this.save(saved, context, revision);
-        return json({ snapshot: this.project(saved.profiles[key]!, key) });
+        return json({ snapshot: this.project(saved.profiles[key]!, context) });
       });
     } catch (error) { return routeError(error, "無法儲存本機批次確認。請確認 Notebook Key 儲存空間及解鎖狀態。"); }
   }

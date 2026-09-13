@@ -1,4 +1,6 @@
 import { marketplaceById, type MarketplaceId } from "./marketplaces";
+import { isInventoryExpirySourceDiagnostics, type InventoryExpirySourceDiagnostics } from "./inventory-expiry-source-diagnostics";
+export type { InventoryExpirySourceDiagnostics } from "./inventory-expiry-source-diagnostics";
 
 export type InventoryHealthStatus = "clearance-risk" | "on-track" | "needs-review";
 export type InventoryHealthRow = Readonly<{
@@ -42,6 +44,7 @@ export type InventoryHealthSnapshot = Readonly<{
   stale: boolean;
   rows: readonly InventoryHealthRow[];
   notice: string;
+  expirySourceDiagnostics?: InventoryExpirySourceDiagnostics;
 }>;
 
 function dateOnly(value: unknown): value is string {
@@ -58,6 +61,7 @@ export function isInventoryHealthSnapshot(value: unknown): value is InventoryHea
     (v.mode !== "live" && v.mode !== "demo") || typeof v.fetchedAt !== "string" || !Number.isFinite(Date.parse(v.fetchedAt)) ||
     typeof v.sourceComplete !== "boolean" || typeof v.stale !== "boolean" || typeof v.notice !== "string" ||
     !Array.isArray(v.rows) || v.rows.length > 10000) return false;
+  if (v.expirySourceDiagnostics !== undefined && !isInventoryExpirySourceDiagnostics(v.expirySourceDiagnostics)) return false;
   const ids = new Set<string>();
   return v.rows.every((row: unknown) => {
     if (!row || typeof row !== "object") return false;

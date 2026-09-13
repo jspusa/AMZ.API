@@ -96,7 +96,8 @@ describe("shipment-based declared expiry source", () => {
     expect(result).toMatchObject({ complete: false, traversalComplete: true, unavailablePlanCount: 1 });
     expect(result.records).toHaveLength(2);
     expect(h.calls.filter(request => request.kind === "plan")).toHaveLength(3);
-    expect(result.checkpoint?.unavailablePlans).toEqual([{ inboundPlanId: id(position), name: `Restock ${position}`, lastUpdatedAt: plans[position]!.lastUpdatedAt, status: "SHIPPED", reason: "upstream-unavailable", upstreamStatus: status }]);
+    expect(result.checkpoint?.unavailablePlans).toEqual([{ inboundPlanId: id(position), name: `Restock ${position}`, lastUpdatedAt: plans[position]!.lastUpdatedAt, status: "SHIPPED", reason: "upstream-unavailable", upstreamStatus: status,
+      diagnostic: { operation: "plan", page: "first", reason: "unknown" } }]);
     expect(JSON.stringify(result.checkpoint)).not.toMatch(/Synthetic upstream|synthetic-private-request|requestId/);
   });
 
