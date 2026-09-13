@@ -364,14 +364,25 @@ export function projectFbaExpirySourceDiagnostics(value: unknown, context: SpExe
   catch { return { status: "unknown", reason: "invalid-checkpoint" }; }
   if (!checkpoint || checkpoint.scopeFingerprint !== scopeFingerprint(context)) return { status: "unknown", reason: "context-mismatch" };
   if (isPlainRecord(value) && value.schemaVersion === 1) return { status: "unknown", reason: "legacy-checkpoint" };
+  let startedAt: bigint;
+  try { startedAt = revisionInstant(checkpoint.startedAt); }
+  catch { return { status: "unknown", reason: "invalid-checkpoint" }; }
   const age = now.getTime() - Date.parse(checkpoint.startedAt);
-  if (!Number.isFinite(age) || age < 0) return { status: "unknown", reason: "stale-checkpoint" };
+  if (!Number.isFinite(age) || age < 0 || startedAt > BigInt(now.getTime()) * 1000000n) return { status: "unknown", reason: "stale-checkpoint" };
   for (const plan of [...checkpoint.cachedPlans, ...(checkpoint.currentPlan ? [checkpoint.currentPlan] : [])]) {
     if (plan.records.some(record => record.sourceRef !== sourceRef(context, plan.inboundPlanId))) return { status: "unknown", reason: "context-mismatch" };
   }
+  // Continuations retain prior caches and rejection tombstones. Only sources
+  // already processed in this listing pass belong in its completed counts.
+  const listed = new Set(checkpoint.seenPlanIds);
+  const pending = new Set([...checkpoint.pendingPlans.map(plan => plan.inboundPlanId), ...(checkpoint.currentPlan ? [checkpoint.currentPlan.inboundPlanId] : [])]);
+  const processed = (id: string) => listed.has(id) && !pending.has(id);
+  const unavailable = checkpoint.unavailablePlans.filter(plan => processed(plan.inboundPlanId));
+  const unavailableIds = new Set(unavailable.map(plan => plan.inboundPlanId));
+  const cachedPlanCount = checkpoint.cachedPlans.filter(plan => processed(plan.inboundPlanId) && !unavailableIds.has(plan.inboundPlanId)).length;
   const statusCounts = { "400": 0, "404": 0, "422": 0 };
   const failures = new Map<string, InventoryExpirySourceFailure>();
-  for (const plan of checkpoint.unavailablePlans) {
+  for (const plan of unavailable) {
     statusCounts[plan.upstreamStatus] += 1;
     const failure: InventoryExpirySourceFailure = { ...(plan.diagnostic ?? { operation: "unknown", page: "unknown", reason: "unknown" }), status: plan.upstreamStatus, count: 1 };
     const key = JSON.stringify([failure.operation, failure.page, failure.status, failure.reason]);
@@ -379,8 +390,7 @@ export function projectFbaExpirySourceDiagnostics(value: unknown, context: SpExe
   }
   return { status: "available", recordedAt: new Date(checkpoint.startedAt).toISOString(), stale: age > 30 * 60 * 1000,
     traversal: checkpoint.phase, listedPlanCount: checkpoint.seenPlanIds.length,
-    pendingPlanCount: checkpoint.pendingPlans.length + (checkpoint.currentPlan ? 1 : 0),
-    cachedPlanCount: checkpoint.cachedPlans.length, unavailablePlanCount: checkpoint.unavailablePlans.length,
+    pendingPlanCount: pending.size, cachedPlanCount, unavailablePlanCount: unavailable.length,
     statusCounts, failures: [...failures.values()] };
 }
 

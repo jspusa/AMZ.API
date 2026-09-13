@@ -45,6 +45,7 @@ describe("inventory health local workflow", () => {
     });
     expect(output()).toContain("來源讀取摘要");
     expect(output()).toContain("舊同步紀錄");
+    expect(output()).toContain("本輪已讀完 6 個");
     expect(output()).toContain("HTTP 400：36 個計畫");
     expect(output()).toContain("舊版紀錄未保存失敗步驟");
     expect(output()).not.toContain("★ 列入行事曆");

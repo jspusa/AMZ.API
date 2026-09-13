@@ -52,6 +52,6 @@ export function isInventoryExpirySourceDiagnostics(value: unknown): value is Inv
   }
   return totals[400] === value.statusCounts[400] && totals[404] === value.statusCounts[404] && totals[422] === value.statusCounts[422] &&
     totals[400] + totals[404] + totals[422] === value.unavailablePlanCount &&
-    Number(value.pendingPlanCount) <= Number(value.listedPlanCount) &&
-    (value.traversal !== "complete" || (value.pendingPlanCount === 0 && Number(value.cachedPlanCount) + Number(value.unavailablePlanCount) <= Number(value.listedPlanCount)));
+    Number(value.cachedPlanCount) + Number(value.unavailablePlanCount) + Number(value.pendingPlanCount) <= Number(value.listedPlanCount) &&
+    (value.traversal !== "complete" || value.pendingPlanCount === 0);
 }

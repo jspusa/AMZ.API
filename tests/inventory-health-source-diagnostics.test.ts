@@ -53,6 +53,98 @@ async function snapshot(owner: InventoryHealthCoordinator) {
 }
 
 describe("saved expiry source diagnostics through the health GET", () => {
+  it.each([120, 150])("counts only this traversal's completed plans after reusing a %s-plan cache", async planCount => {
+    const selected = Array.from({ length: planCount }, (_, index) => ({ ...PLAN,
+      inboundPlanId: `wf${String(index).padStart(8, "0")}-1234-abcd-5678-1234abcd5678` }));
+    const read = vi.fn<FbaInboundExternalReadAdapter["read"]>(async request => {
+      if (request.source !== "modern") throw new Error("Unexpected source");
+      const operation = request.request;
+      let envelope: unknown;
+      if (operation.kind === "plans") {
+        const offset = Number(operation.paginationToken ?? "0");
+        envelope = { inboundPlans: selected.slice(offset, offset + 30),
+          ...(offset + 30 < selected.length ? { pagination: { nextToken: String(offset + 30) } } : {}) };
+      } else if (operation.kind === "plan") envelope = { ...selected.find(plan => plan.inboundPlanId === operation.inboundPlanId), shipments: [] };
+      else if (operation.kind === "plan-items") envelope = { items: [] };
+      else throw new Error("Unexpected source operation");
+      return { identity: fbaInboundExternalReadIdentity(request), requestId: null, envelope };
+    });
+    const seed = harness(null, { read }); await seed.refresh();
+    const saved = seed.disk();
+    read.mockClear();
+    const partial = await new FbaExpiryReads({ context: seed.context, adapter: { read }, now: () => NOW }).read({
+      context: await seed.context.capture(US), signal: new AbortController().signal, checkpoint: profile(saved).expiryCheckpoint,
+    });
+    expect(read).toHaveBeenCalledTimes(100);
+    expect(partial.traversalComplete).toBe(false);
+    profile(saved).expiryCheckpoint = partial.checkpoint;
+    Object.assign(profile(saved), { sourceComplete: false });
+    const local = harness(saved), current = await snapshot(local.owner);
+    expect(current.expirySourceDiagnostics).toMatchObject({ status: "available", traversal: "partial", listedPlanCount: 120,
+      cachedPlanCount: 96, pendingPlanCount: 24, unavailablePlanCount: 0 });
+    expect(current.sourceComplete).toBe(false); expect(inventoryHealthCalendarRows(current)).toEqual([]);
+    expect(local.upstream).not.toHaveBeenCalled(); expect(local.store.write).not.toHaveBeenCalled();
+    expect(read).toHaveBeenCalledTimes(100);
+  });
+
+  it.each(["2026-02-30T00:00:00Z", "2025-02-29T00:00:00Z", "2026-09-12T24:00:00Z"])("does not normalize an illegal saved start date %s into available evidence", async startedAt => {
+    const seed = harness(); await seed.refresh(); const saved = seed.disk();
+    profile(saved).expiryCheckpoint!.startedAt = startedAt;
+    const local = harness(saved);
+    expect((await snapshot(local.owner)).expirySourceDiagnostics).toEqual({ status: "unknown", reason: "invalid-checkpoint" });
+    expect(local.upstream).not.toHaveBeenCalled(); expect(local.store.write).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { startedAt: "2024-02-29T23:59:59Z", recordedAt: "2024-02-29T23:59:59.000Z", stale: true },
+    { startedAt: "2026-09-13T23:12:14+08:00", recordedAt: NOW.toISOString(), stale: false },
+  ])("accepts a valid saved RFC3339 start time $startedAt without losing its instant", async expected => {
+    const seed = harness(); await seed.refresh(); const saved = seed.disk();
+    profile(saved).expiryCheckpoint!.startedAt = expected.startedAt;
+    const local = harness(saved);
+    expect((await snapshot(local.owner)).expirySourceDiagnostics).toMatchObject({ status: "available", recordedAt: expected.recordedAt, stale: expected.stale });
+    expect(local.upstream).not.toHaveBeenCalled(); expect(local.store.write).not.toHaveBeenCalled();
+  });
+
+  it("keeps a future fractional instant unknown instead of truncating it into the current millisecond", async () => {
+    const seed = harness(); await seed.refresh(); const saved = seed.disk();
+    profile(saved).expiryCheckpoint!.startedAt = "2026-09-13T15:12:14.000000001Z";
+    const local = harness(saved);
+    expect((await snapshot(local.owner)).expirySourceDiagnostics).toEqual({ status: "unknown", reason: "stale-checkpoint" });
+    expect(local.upstream).not.toHaveBeenCalled(); expect(local.store.write).not.toHaveBeenCalled();
+  });
+
+  it("excludes pending and unlisted rejection tombstones after an expired partial traversal restarts", async () => {
+    const seed = harness(); await seed.refresh(); const saved = seed.disk(), checkpoint = profile(saved).expiryCheckpoint!;
+    Object.assign(checkpoint, { phase: "partial", planPagesComplete: false, planCursor: "old-synthetic-cursor", seenPlanTokens: ["old-synthetic-cursor"] });
+    const selected = Array.from({ length: 150 }, (_, index) => ({ ...PLAN,
+      inboundPlanId: `wf${String(index).padStart(8, "0")}-1234-abcd-5678-1234abcd5678` }));
+    selected[0] = plans[0]!; selected[55] = plans[1]!; selected[149] = plans[2]!;
+    const read = vi.fn<FbaInboundExternalReadAdapter["read"]>(async request => {
+      if (request.source !== "modern") throw new Error("Unexpected source");
+      const operation = request.request;
+      const offset = operation.kind === "plans" ? Number(operation.paginationToken ?? "0") : 0;
+      const envelope = operation.kind === "plans" ? { inboundPlans: selected.slice(offset, offset + 30), pagination: { nextToken: String(offset + 30) } }
+        : operation.kind === "plan" ? { ...selected.find(plan => plan.inboundPlanId === operation.inboundPlanId), shipments: [] }
+          : { items: [] };
+      return { identity: fbaInboundExternalReadIdentity(request), requestId: null, envelope };
+    });
+    const now = new Date(NOW.getTime() + 31 * 60000);
+    const partial = await new FbaExpiryReads({ context: seed.context, adapter: { read }, now: () => now }).read({
+      context: await seed.context.capture(US), signal: new AbortController().signal, checkpoint,
+    });
+    expect(read).toHaveBeenCalledTimes(100);
+    expect(partial.unavailablePlanCount).toBe(3);
+    profile(saved).expiryCheckpoint = partial.checkpoint;
+    const local = harness(saved); local.setNow(now);
+    const current = await snapshot(local.owner);
+    expect(current.expirySourceDiagnostics).toMatchObject({ status: "available", traversal: "partial", listedPlanCount: 60,
+      cachedPlanCount: 49, pendingPlanCount: 10, unavailablePlanCount: 1,
+      statusCounts: { "400": 1, "404": 0, "422": 0 }, failures: [{ operation: "plan", page: "first", status: 400, reason: "unknown", count: 1 }] });
+    expect(local.upstream).not.toHaveBeenCalled(); expect(local.store.write).not.toHaveBeenCalled();
+    expect(partial.checkpoint!.unavailablePlans).toHaveLength(3);
+  });
+
   it("preserves fixed operation, physical page and allowlisted cause from production adapter through saved GET", async () => {
     const selected = Array.from({ length: 4 }, (_, index) => ({ ...PLAN, inboundPlanId: `wf${index + 1}234abcd-1234-abcd-5678-1234abcd5678` }));
     const shipment = "sh1234abcd-1234-abcd-5678-1234abcd5678";
@@ -224,6 +316,7 @@ describe("saved expiry source diagnostics through the health GET", () => {
       { ...diagnostic, recordedAt: "SYNTHETIC-PRIVATE" },
       { ...diagnostic, listedPlanCount: 6001 },
       { ...diagnostic, unavailablePlanCount: 2 },
+      { ...diagnostic, traversal: "partial", pendingPlanCount: 1 },
       { ...diagnostic, statusCounts: { "400": 1, "404": 1, "422": 2 } },
       { ...diagnostic, statusCounts: { "400": 1, "404": 1, "422": 1, other: 0 } },
       { ...diagnostic, failures: [diagnostic.failures[0], diagnostic.failures[0], diagnostic.failures[2]] },

@@ -12,8 +12,10 @@ Issue #281；[規格](../specs/2026-09-expiry-source-read-diagnostics.md)。開�
 
 ## 本輪狀態
 
-0.1.75 診斷補強已完成本機檢查：326 files／4,061 tests、typecheck、build、stylesheet composition 與 `git diff --check` 通過，production audit 0。最初完整檢查只在兩項仍固定 .74 的版本測試失敗，將預期版本明確更新為 .75 後重新通過，未放寬功能 assertion。stylesheet fingerprint 保持 `ff016e1e974b03b58bdf23378722b9416f78285c8052bf82581df8d686637926`。
+0.1.75 診斷補強已完成本機檢查：326 files／4,070 tests、typecheck、build、stylesheet composition 與 `git diff --check` 通過，production audit 0。最初完整檢查只在兩項仍固定 .74 的版本測試失敗，將預期版本明確更新為 .75 後重新通過，未放寬功能 assertion。stylesheet fingerprint 保持 `ff016e1e974b03b58bdf23378722b9416f78285c8052bf82581df8d686637926`。
 
-Public seam 先重現診斷丟失，之後驗證 production adapter → reader → coordinator → 保存 → 重開／GET 的操作分類；21 項來源診斷測試包含舊 schema 2 的 36 筆歷史分類、超過 cursor 時限的純本機讀取、未知／型別／合計／context／sentinel 保護及零額外上游請求。Renderer 新增兩項先紅後綠，15 項流程測試通過；synthetic CUA 檢查預設收折、歷史／未記錄文案與 390px 無溢出，暫時 viewport／tab／server 已恢復或結束。八欄樣式沒有修改。
+Public seam 先重現診斷丟失，之後驗證 production adapter → reader → coordinator → 保存 → 重開／GET 的操作分類；30 項來源診斷測試包含舊 schema 2 的 36 筆歷史分類、超過 cursor 時限的純本機讀取、未知／型別／合計／context／sentinel 保護及零額外上游請求。Renderer 新增兩項先紅後綠，15 項流程測試通過；synthetic CUA 檢查預設收折、歷史／未記錄文案與 390px 無溢出，暫時 viewport／tab／server 已恢復或結束。八欄樣式沒有修改。
 
-本機證據：`/tmp/amz-expiry-source-diagnostics-final-check.log`、`/tmp/amz-expiry-source-diagnostics-audit.log`、`/tmp/inventory-expiry-source-summary-evidence/verification.json`。尚未有 final commit／兩軸審查／CI／產物／安裝證據。完整 #263 仍未完成；真正效期來源與多日期尚無實機驗收。
+第一次獨立 Spec 審查找到兩項 P2：部分遍歷保留快取重複計入本輪完成，以及不存在的日期被正規化為有效時間。兩項已在 public GET 先重現，再修正投影與 DTO 一致性；120／150 個舊 cache、過期部分遍歷 tombstone、非法日期、合法閏日／offset 及微秒未來邊界皆已驗，底層快取／遍歷／request 未改。複查中既有 B2B recent-work 的 65 筆磁碟 fixture 曾超過 5 秒，原測試未改，單檔 9 tests 與第二次完整檢查通過。
+
+本機證據：`/tmp/amz-expiry-source-diagnostics-revised-check-r2.log`、`/tmp/amz-expiry-source-diagnostics-recent-work-focused.log`、`/tmp/amz-expiry-source-diagnostics-audit.log`、`/tmp/inventory-expiry-source-summary-evidence/verification.json`。修訂後 exact candidate 複審及 CI／產物／安裝證據尚待。完整 #263 仍未完成；真正效期來源與多日期尚無實機驗收。
