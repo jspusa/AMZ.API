@@ -11,6 +11,8 @@
 
 ## 目前狀態
 
+- 0.1.74 原生首頁與 Amazon 連線已恢復，首次且唯一效期同步於 2026-09-13 23:12:14（台北）完成遍歷，結果仍 partial：284 FBA 品號、33 偏慢／待核對，36 個計畫不可讀。本機重讀、人工公告 4 項、門檻 8 與八欄版面保留；未重試。合計無法證明總計畫數或同一失敗原因，現有紀錄也沒保存操作／頁次。官方 request 契約未找到具體差異。Issue #281 的 0.1.75 接續補強純本機來源摘要與未來固定診斷，完整保存固定錯誤代碼／回應狀態並精確分類官方兩種來源錯誤，不更改讀取策略、不新增 Amazon 呼叫入口；見[規格](specs/2026-09-expiry-source-read-diagnostics.md)與[帳本](releases/2026-09-expiry-source-read-diagnostics.md)。實際安裝仍 .74，完整 #263 未完成。員工下載頁仍需登入，已明確指出下載頁而非 Mac 解鎖。
+
 - 0.1.74 已由 PR #279／main `8352a502aefe8eae61912c26496cd749490bcdc5` 發布並正常備份安裝：4,029 tests、audit 0、兩軸 exact-head review 0 open、四條 exact-source CI、Pages 12 檔 bytes、Mac／Windows 可信產物與 Mac→Windows 下載卡上傳均已核對。安裝 ASAR 相符、vault／ledger 未變且 .73 App 保留。新程式已在執行，但 CUA 啟動／AX 讀取連續逾時；不是已證明 Mac 鎖定或登入失效。已留一次畫面狀態詢問，等使用者確認首頁或系統授權視窗，不強制結束、不重裝、不繞過保護。員工下載頁仍明示登入過期，登入請求已留；.74 尚未有原生首頁／Amazon 首次效期同步或員工實際下載 bytes 證據。接續 `/tmp/amz-api-v0174-verified/active-release.json` 與[交付帳本](releases/2026-09-shipment-expiry-source.md)；完整 #263 仍未結案，先前已驗功能不重做。
 
 - .73 原生啟動與 Amazon 連線已恢復，第一次且唯一全效期同步更新 284 個 FBA 核心品號／33 個偏慢品號，但某計畫商品首頁回 HTTP 400／BadRequest／other-input；不能推定 legacy 或登入原因，未重試。本機重读保留快照，人工公告 4 項、門檻 8 與八欄版面已核對。Issue #278 接續 .74：改讀計畫已選貨件的申報效期，同計畫跨貨件聚合保持既有批次 ID，個別 400／404／422 留為來源不可讀並接續其他計畫，遍歷完成與来源完整分開；不是把未知當成功。實作／檢查／發布／安裝／native 各層以[本輪帳本](releases/2026-09-shipment-expiry-source.md)為準，完整 #263 仍未結案。員工下載頁目前登入過期，一次登入請求已留，不能重複要求解鎖 Mac。

@@ -16,6 +16,13 @@ import {
 import type { FbaInboundTransportRequest } from "./fba-inbound-shipments";
 import type { ModernFbaInboundTransportRequest } from "./fba-inbound-modern";
 import { SpApiError } from "./sp-api-error";
+import {
+  FbaInboundRequestError,
+  type FbaInboundRequestDiagnostic as RequestErrorDetails,
+  type FbaInboundRequestErrorBodyState as ErrorBodyState,
+  type FbaInboundRequestErrorCode as RequestErrorCode,
+  type FbaInboundRequestErrorReason as RequestErrorReason,
+} from "./fba-inbound-request-error";
 import { spApiUserAgent } from "./sp-api-runtime";
 
 const REGION_ENDPOINTS: Record<MarketplaceRegion, string> = {
@@ -173,22 +180,20 @@ function retryDelayMs(
 
 const REQUEST_ERROR_BODY_LIMIT = 128 * 1024;
 const REQUEST_ERROR_BODY_TIMEOUT_MS = 2_000;
-type ErrorBodyState = "parsed" | "empty" | "malformed" | "oversize" | "timed-out" | "unavailable";
-type RequestErrorCode = "BadRequest" | "InvalidInput" | "unknown";
-type RequestErrorReason = "legacy-v0-plan-unsupported" | "inbound-plan-unavailable" | "invalid-status" | "other-input" | "unknown";
-type RequestErrorDetails = { state: ErrorBodyState; code: RequestErrorCode; reason: RequestErrorReason };
-type DiagnosticOperation = "plans" | "plan-items";
+type DiagnosticOperation = "plans" | "plan" | "plan-items" | "shipment-items";
+type RequestErrorDiagnostic = Readonly<{ message: string; details: RequestErrorDetails }>;
 const LEGACY_ITEMS_UNSUPPORTED = "Operation ListInboundPlanItems is not supported for Fulfillment Inbound API V0 shipments that have been converted to Send-to-Amazon inbound plans.";
 const REQUEST_ERROR_REASONS: Record<RequestErrorReason, string> = {
   "legacy-v0-plan-unsupported": "舊版入庫計畫不支援商品讀取",
   "inbound-plan-unavailable": "指定入庫計畫不存在",
+  "inbound-plan-id-malformed": "入庫計畫識別碼格式遭拒",
   "invalid-status": "計畫狀態條件遭拒",
   "other-input": "其他請求條件遭拒",
   unknown: "尚無可辨識原因",
 };
 const REQUEST_ERROR_BODY_STATES: Record<ErrorBodyState, string> = {
   parsed: "已讀取", empty: "空白", malformed: "格式無法辨識",
-  oversize: "超過讀取上限", "timed-out": "讀取逾時", unavailable: "無法讀取",
+  oversize: "超過讀取上限", "timed-out": "讀取逾時", unavailable: "無法讀取", "not-read": "未讀取",
 };
 const unknownRequestError = (state: ErrorBodyState): RequestErrorDetails => ({ state, code: "unknown", reason: "unknown" });
 
@@ -207,7 +212,8 @@ function requestErrorDetails(value: unknown, operation: DiagnosticOperation, sta
     // partial keyword match, or an arbitrary upstream code/message/details.
     if (status === 400 && code === "BadRequest") {
       if (operation === "plan-items" && (error.message === LEGACY_ITEMS_UNSUPPORTED || error.message === `ERROR: ${LEGACY_ITEMS_UNSUPPORTED}`)) reason = "legacy-v0-plan-unsupported";
-      else if (operation === "plan-items" && error.message === "The requested inbound plan does not exist.") reason = "inbound-plan-unavailable";
+      else if ((operation === "plan-items" || operation === "shipment-items") && error.message === "The requested inbound plan does not exist.") reason = "inbound-plan-unavailable";
+      else if (operation === "plan" && error.message === "The inboundPlanId is malformed.") reason = "inbound-plan-id-malformed";
       else if (operation === "plans" && error.message === "The status is invalid.") reason = "invalid-status";
     }
     details.push({ state: "parsed", code, reason });
@@ -253,18 +259,23 @@ async function readRequestError(response: Response, operation: DiagnosticOperati
   }
 }
 
-async function requestErrorDiagnostic(plan: FbaInboundExternalReadPlan, response: Response): Promise<string> {
-  if (plan.source !== "modern" || ![400, 422].includes(response.status) || (plan.request.kind !== "plans" && plan.request.kind !== "plan-items")) return "";
+async function requestErrorDiagnostic(plan: FbaInboundExternalReadPlan, response: Response): Promise<RequestErrorDiagnostic | null> {
+  if (plan.source !== "modern" || ![400, 404, 422].includes(response.status) ||
+    (plan.request.kind !== "plans" && plan.request.kind !== "plan" && plan.request.kind !== "plan-items" && plan.request.kind !== "shipment-items")) return null;
   const operation = plan.request.kind;
-  const details = await readRequestError(response, operation, plan.signal);
+  if (response.status === 404) void response.body?.cancel().catch(() => undefined);
+  const details = response.status === 404
+    ? unknownRequestError("not-read")
+    : await readRequestError(response, operation, plan.signal);
   throwIfAborted(plan.signal);
-  const label = operation === "plans" ? "入庫計畫清單" : "入庫商品清單";
-  const page = plan.request.paginationToken ? "接續頁" : "首頁";
+  const labels: Record<DiagnosticOperation, string> = { plans: "入庫計畫清單", plan: "入庫計畫資料", "plan-items": "入庫商品清單", "shipment-items": "貨件商品清單" };
+  const label = labels[operation];
+  const page = plan.request.kind !== "plan" && plan.request.paginationToken ? "接續頁" : "首頁";
   const code = details.code === "unknown" ? "未辨識" : details.code;
-  return `（${label}／${page}；HTTP ${response.status}；Amazon：${code}；原因：${REQUEST_ERROR_REASONS[details.reason]}；回應：${REQUEST_ERROR_BODY_STATES[details.state]}）`;
+  return { details, message: `（${label}／${page}；HTTP ${response.status}；Amazon：${code}；原因：${REQUEST_ERROR_REASONS[details.reason]}；回應：${REQUEST_ERROR_BODY_STATES[details.state]}）` };
 }
 
-function throwReadError(response: Response, diagnostic = ""): never {
+function throwReadError(response: Response, diagnostic: RequestErrorDiagnostic | null): never {
   const message = response.status === 401 || response.status === 403
     ? "Amazon 拒絕 FBA 入庫貨件查詢。請確認 Private SP-API App 已具備 Amazon Fulfillment 角色並重新授權。"
     : response.status === 429
@@ -272,7 +283,7 @@ function throwReadError(response: Response, diagnostic = ""): never {
       : response.status === 400 || response.status === 422
         ? "Amazon 無法驗證這次 FBA 入庫貨件唯讀請求。"
         : "Amazon 暫時無法完成 FBA 入庫貨件查詢。";
-  throw new SpApiError(message + diagnostic, {
+  const error = new SpApiError(message + (diagnostic?.message ?? ""), {
     status: response.status,
     code: response.status === 401 || response.status === 403
       ? "FBA_INBOUND_UNAUTHORIZED"
@@ -282,6 +293,7 @@ function throwReadError(response: Response, diagnostic = ""): never {
     requestId: response.headers.get("x-amzn-requestid"),
     retryAfter: response.headers.get("retry-after"),
   });
+  throw diagnostic ? new FbaInboundRequestError(error, diagnostic.details) : error;
 }
 
 export function createFbaInboundReadsProductionAdapter(

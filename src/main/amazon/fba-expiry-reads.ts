@@ -1,9 +1,11 @@
 import { createHash } from "node:crypto";
+import { isInventoryExpirySourceFailure, type InventoryExpirySourceDiagnostics, type InventoryExpirySourceFailure } from "../../shared/inventory-expiry-source-diagnostics";
 import { throwIfAborted } from "../abort-utils";
 import { isPlainRecord } from "../route-input";
 import type { InventoryExpiryRecord } from "./inventory-health";
 import { fbaInboundExternalReadIdentity, type FbaInboundExternalReadAdapter } from "./fba-inbound-reads";
 import type { ModernFbaInboundTransportRequest } from "./fba-inbound-modern";
+import { FbaInboundRequestError } from "./fba-inbound-request-error";
 import { isDateOnly } from "./marketplace-calendar";
 import { SpApiError } from "./sp-api-error";
 import type { SpExecutionContext, SpExecutionContextAdapter } from "./sp-execution-context";
@@ -20,7 +22,10 @@ type CachedPlan = LegacyCachedPlan & { itemSources: ItemSource[] };
 type CurrentPlan = CachedPlan & {
   sourceIndex: number; itemCursor: string | null; itemTokens: string[];
 };
-type UnavailablePlan = PlanSummary & { reason: "upstream-unavailable"; upstreamStatus: 400 | 404 | 422 };
+type SourceRequest = Extract<ModernFbaInboundTransportRequest, { kind: "plan" | "shipment-items" | "plan-items" }>;
+type SourceDiagnostic = Pick<InventoryExpirySourceFailure, "reason" | "code" | "responseState"> & { operation: SourceRequest["kind"]; page: "first" | "next" };
+type LegacySourceDiagnostic = Omit<SourceDiagnostic, "code" | "responseState">;
+type UnavailablePlan = PlanSummary & { reason: "upstream-unavailable"; upstreamStatus: 400 | 404 | 422; diagnostic?: SourceDiagnostic | LegacySourceDiagnostic };
 /** Main-only continuation; the renderer gets only the separate human-readable source label. */
 export type FbaExpiryCheckpoint = {
   schemaVersion: 2;
@@ -50,6 +55,15 @@ const MAX_DECLARED_TOTAL = 100000000;
 const MAX_REQUESTS_PER_SLICE = 100;
 const MAX_CHECKPOINT_BYTES = 7 * 1024 * 1024;
 const SHIPMENT_STATUSES = new Set(["ABANDONED", "CANCELLED", "CHECKED_IN", "CLOSED", "DELETED", "DELIVERED", "IN_TRANSIT", "MIXED", "READY_TO_SHIP", "RECEIVING", "SHIPPED", "UNCONFIRMED", "WORKING"]);
+function sourceDiagnostic(value: unknown, status: 400 | 404 | 422): SourceDiagnostic {
+  if (!isPlainRecord(value) || ![3, 5].includes(Object.keys(value).length) ||
+    Object.keys(value).some(key => !["operation", "page", "reason", "code", "responseState"].includes(key))) invalid("checkpoint");
+  const legacy = Object.keys(value).length === 3;
+  if (legacy && (!Object.hasOwn(value, "operation") || !Object.hasOwn(value, "page") || !Object.hasOwn(value, "reason"))) invalid("checkpoint");
+  const failure = { ...value, ...(legacy ? { code: "not-recorded", responseState: "not-recorded" } : {}), status, count: 1 };
+  if (!isInventoryExpirySourceFailure(failure) || failure.operation === "unknown" || failure.page === "unknown") invalid("checkpoint");
+  return { operation: failure.operation, page: failure.page, reason: failure.reason, code: failure.code, responseState: failure.responseState };
+}
 // Diagnostics identify the rejected field or invariant, never its upstream value.
 const FAILURE_MESSAGES = {
   planShape: "Amazon 入庫計畫摘要格式無法辨識，已停止效期讀取。",
@@ -326,7 +340,8 @@ export function parseFbaExpiryCheckpoint(value: unknown): FbaExpiryCheckpoint | 
     if (!isPlainRecord(raw) || raw.reason !== "upstream-unavailable" || ![400, 404, 422].includes(Number(raw.upstreamStatus))) invalid("checkpoint");
     const plan = summary(raw);
     if ((plan.status !== "ACTIVE" && plan.status !== "SHIPPED") || typeof raw.upstreamStatus !== "number") invalid("checkpointIntegrity");
-    return { ...plan, reason: "upstream-unavailable" as const, upstreamStatus: raw.upstreamStatus as 400 | 404 | 422 };
+    return { ...plan, reason: "upstream-unavailable" as const, upstreamStatus: raw.upstreamStatus as 400 | 404 | 422,
+      ...(raw.diagnostic === undefined ? {} : { diagnostic: sourceDiagnostic(raw.diagnostic, raw.upstreamStatus as 400 | 404 | 422) }) };
   });
   const unavailableIds = unavailablePlans.map(plan => plan.inboundPlanId);
   const activePlans = [...cachedPlans, ...(currentPlan ? [currentPlan] : [])];
@@ -341,6 +356,45 @@ export function parseFbaExpiryCheckpoint(value: unknown): FbaExpiryCheckpoint | 
 function freshCheckpoint(context: SpExecutionContext, now: string, cachedPlans: CachedPlan[] = [], unavailablePlans: UnavailablePlan[] = []): FbaExpiryCheckpoint {
   return { schemaVersion: 2, scopeFingerprint: scopeFingerprint(context), phase: "partial", startedAt: now, cachedPlans, unavailablePlans,
     pendingPlans: [], currentPlan: null, planCursor: null, planPagesComplete: false, seenPlanIds: [], seenPlanTokens: [] };
+}
+
+/** Pure historical projection. It cannot resume a cursor, revalidate stock or read Amazon. */
+export function projectFbaExpirySourceDiagnostics(value: unknown, context: SpExecutionContext, now: Date): InventoryExpirySourceDiagnostics {
+  if (value === null || value === undefined) return { status: "unknown", reason: "not-recorded" };
+  let checkpoint: FbaExpiryCheckpoint | null;
+  try { checkpoint = parseFbaExpiryCheckpoint(value); }
+  catch { return { status: "unknown", reason: "invalid-checkpoint" }; }
+  if (!checkpoint || checkpoint.scopeFingerprint !== scopeFingerprint(context)) return { status: "unknown", reason: "context-mismatch" };
+  if (isPlainRecord(value) && value.schemaVersion === 1) return { status: "unknown", reason: "legacy-checkpoint" };
+  let startedAt: bigint;
+  try { startedAt = revisionInstant(checkpoint.startedAt); }
+  catch { return { status: "unknown", reason: "invalid-checkpoint" }; }
+  const age = now.getTime() - Date.parse(checkpoint.startedAt);
+  if (!Number.isFinite(age) || age < 0 || startedAt > BigInt(now.getTime()) * 1000000n) return { status: "unknown", reason: "stale-checkpoint" };
+  for (const plan of [...checkpoint.cachedPlans, ...(checkpoint.currentPlan ? [checkpoint.currentPlan] : [])]) {
+    if (plan.records.some(record => record.sourceRef !== sourceRef(context, plan.inboundPlanId))) return { status: "unknown", reason: "context-mismatch" };
+  }
+  // Continuations retain prior caches and rejection tombstones. Only sources
+  // already processed in this listing pass belong in its completed counts.
+  const listed = new Set(checkpoint.seenPlanIds);
+  const pending = new Set([...checkpoint.pendingPlans.map(plan => plan.inboundPlanId), ...(checkpoint.currentPlan ? [checkpoint.currentPlan.inboundPlanId] : [])]);
+  const processed = (id: string) => listed.has(id) && !pending.has(id);
+  const unavailable = checkpoint.unavailablePlans.filter(plan => processed(plan.inboundPlanId));
+  const unavailableIds = new Set(unavailable.map(plan => plan.inboundPlanId));
+  const cachedPlanCount = checkpoint.cachedPlans.filter(plan => processed(plan.inboundPlanId) && !unavailableIds.has(plan.inboundPlanId)).length;
+  const statusCounts = { "400": 0, "404": 0, "422": 0 };
+  const failures = new Map<string, InventoryExpirySourceFailure>();
+  for (const plan of unavailable) {
+    statusCounts[plan.upstreamStatus] += 1;
+    const failure: InventoryExpirySourceFailure = { ...(plan.diagnostic ? sourceDiagnostic(plan.diagnostic, plan.upstreamStatus)
+      : { operation: "unknown", page: "unknown", reason: "unknown", code: "not-recorded", responseState: "not-recorded" }), status: plan.upstreamStatus, count: 1 };
+    const key = JSON.stringify([failure.operation, failure.page, failure.status, failure.reason, failure.code, failure.responseState]);
+    failures.set(key, { ...failure, count: (failures.get(key)?.count ?? 0) + 1 });
+  }
+  return { status: "available", recordedAt: new Date(checkpoint.startedAt).toISOString(), stale: age > 30 * 60 * 1000,
+    traversal: checkpoint.phase, listedPlanCount: checkpoint.seenPlanIds.length,
+    pendingPlanCount: pending.size, cachedPlanCount, unavailablePlanCount: unavailable.length,
+    statusCounts, failures: [...failures.values()] };
 }
 
 /** Reads declared dates only. Each slice can be persisted before its successor starts. */
@@ -386,14 +440,18 @@ export class FbaExpiryReads {
       if (!isPlainRecord(result.envelope)) invalid("envelope");
       return result.envelope;
     };
-    const readSelectedPlan = async (plan: PlanSummary, request: ModernFbaInboundTransportRequest) => {
+    const readSelectedPlan = async (plan: PlanSummary, request: SourceRequest) => {
       try { return await read(request); }
       catch (error) {
         if (!(error instanceof SpApiError) || error.code !== "FBA_INBOUND_UPSTREAM_UNAVAILABLE" || ![400, 404, 422].includes(error.status)) throw error;
         // These HTTP statuses prove only that this source was unreadable. Retain
         // no upstream text and no partial items; other independently selected plans can continue.
         unavailable.set(plan.inboundPlanId, { inboundPlanId: plan.inboundPlanId, ...(plan.name === undefined ? {} : { name: plan.name }),
-          lastUpdatedAt: plan.lastUpdatedAt, status: plan.status, reason: "upstream-unavailable", upstreamStatus: error.status as 400 | 404 | 422 });
+          lastUpdatedAt: plan.lastUpdatedAt, status: plan.status, reason: "upstream-unavailable", upstreamStatus: error.status as 400 | 404 | 422,
+          diagnostic: sourceDiagnostic({ operation: request.kind, page: request.kind !== "plan" && request.paginationToken ? "next" : "first",
+            reason: error instanceof FbaInboundRequestError ? error.requestDiagnostic.reason : "unknown",
+            code: error instanceof FbaInboundRequestError ? error.requestDiagnostic.code : "unknown",
+            responseState: error instanceof FbaInboundRequestError ? error.requestDiagnostic.state : "not-recorded" }, error.status as 400 | 404 | 422) });
         cached.delete(plan.inboundPlanId);
         state.currentPlan = null;
         return null;

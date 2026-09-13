@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { createFbaInboundReadsProductionAdapter } from "../src/main/amazon/fba-inbound-reads-production";
+import { FbaInboundRequestError } from "../src/main/amazon/fba-inbound-request-error";
 import { FbaExpiryReads } from "../src/main/amazon/fba-expiry-reads";
 import { createScriptedSpExecutionContextAdapter } from "../src/main/amazon/sp-execution-context";
 import { publicSpApiError, SpApiError } from "../src/main/amazon/sp-api-error";
@@ -21,6 +22,12 @@ const BASE = "Amazon 無法驗證這次 FBA 入庫貨件唯讀請求。";
 const LEGACY = "Operation ListInboundPlanItems is not supported for Fulfillment Inbound API V0 shipments that have been converted to Send-to-Amazon inbound plans.";
 const CANARY = "access_token=PRIVATE_CANARY https://private.invalid/secret";
 const itemsPlan: FbaInboundExternalReadPlan = { source: "modern", marketplaceId: US, request: { kind: "plan-items", inboundPlanId: PLAN_ID, paginationToken: null } };
+const detailPlan: FbaInboundExternalReadPlan = { source: "modern", marketplaceId: US, request: { kind: "plan", inboundPlanId: PLAN_ID } };
+const shipmentItemsPlan: FbaInboundExternalReadPlan = { source: "modern", marketplaceId: US, request: { kind: "shipment-items", inboundPlanId: PLAN_ID, shipmentId: "sh1234abcd-1234-abcd-5678-1234abcd5678", paginationToken: null } };
+const officialCauseCases = [
+  { plan: detailPlan, message: "The inboundPlanId is malformed.", reason: "inbound-plan-id-malformed", label: "入庫計畫識別碼格式遭拒" },
+  { plan: shipmentItemsPlan, message: "The requested inbound plan does not exist.", reason: "inbound-plan-unavailable", label: "指定入庫計畫不存在" },
+];
 const json = (status: number, value: unknown) => new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json", "x-amzn-requestid": "synthetic-request" } });
 const errorBody = (message: string, code = "BadRequest", details?: string) => ({ errors: [{ code, message, ...(details === undefined ? {} : { details }) }] });
 function adapterHarness(response: Response | (() => Response), plan = itemsPlan) {
@@ -109,6 +116,85 @@ describe("FBA inbound request diagnostics at the real health sync seam", () => {
 });
 
 describe("bounded terminal request error evidence", () => {
+  it.each(officialCauseCases)("classifies the official exact $reason response at its operation", async ({ plan, message, reason, label }) => {
+    const h = adapterHarness(json(400, errorBody(message, "BadRequest", CANARY)), plan);
+    const error: unknown = await h.adapter.read(plan).catch((value: unknown) => value);
+    expect(error).toMatchObject({ status: 400, requestDiagnostic: { state: "parsed", code: "BadRequest", reason } });
+    if (!(error instanceof FbaInboundRequestError)) throw new Error("Expected fixed request evidence");
+    expect(publicSpApiError(error, "公開備用訊息。").message).toContain(`原因：${label}`);
+    expect(JSON.stringify(error.requestDiagnostic)).not.toContain(message);
+    expect(JSON.stringify(publicSpApiError(error, "公開備用訊息。"))).not.toMatch(/PRIVATE|wf1234|sh1234|private\.invalid|access_token/);
+    expect(h.fetchImpl).toHaveBeenCalledTimes(1); expect(h.invalidate).not.toHaveBeenCalled();
+  });
+
+  it.each(officialCauseCases.flatMap(testCase => [
+    { ...testCase, variation: "wrong operation", plan: testCase.plan === detailPlan ? shipmentItemsPlan : detailPlan, status: 400, code: "BadRequest", expectedCode: "BadRequest", expectedReason: "other-input", state: "parsed" },
+    { ...testCase, variation: "wrong status", status: 422, code: "BadRequest", expectedCode: "BadRequest", expectedReason: "other-input", state: "parsed" },
+    { ...testCase, variation: "404 unread", status: 404, code: "BadRequest", expectedCode: "unknown", expectedReason: "unknown", state: "not-read" },
+    { ...testCase, variation: "wrong code", status: 400, code: "InvalidInput", expectedCode: "InvalidInput", expectedReason: "other-input", state: "parsed" },
+    { ...testCase, variation: "unreviewed code", status: 400, code: "Unreviewed", expectedCode: "unknown", expectedReason: "unknown", state: "parsed" },
+    ...[
+      ` ${testCase.message}`, `${testCase.message} `, `ERROR: ${testCase.message}`,
+      `${testCase.message} ${CANARY}`, testCase.message.toLowerCase(), testCase.message.slice(0, -1),
+    ].map((message, index) => ({ ...testCase, variation: `near match ${index}`, message, status: 400, code: "BadRequest", expectedCode: "BadRequest", expectedReason: "other-input", state: "parsed" })),
+  ]))("does not infer $reason from $variation", async ({ plan, message, status, code, expectedCode, expectedReason, state }) => {
+    const h = adapterHarness(json(status, errorBody(message, code, CANARY)), plan);
+    const error: unknown = await h.adapter.read(plan).catch((value: unknown) => value);
+    expect(error).toMatchObject({ status, requestDiagnostic: { state, code: expectedCode, reason: expectedReason } });
+    if (!(error instanceof FbaInboundRequestError)) throw new Error("Expected fixed request evidence");
+    expect(JSON.stringify(error.requestDiagnostic)).not.toMatch(/PRIVATE|The inboundPlanId|requested inbound plan/);
+    expect(JSON.stringify(publicSpApiError(error, "公開備用訊息。"))).not.toMatch(/PRIVATE|wf1234|sh1234|private\.invalid|access_token/);
+    expect(h.fetchImpl).toHaveBeenCalledTimes(1); expect(h.invalidate).not.toHaveBeenCalled();
+  });
+
+  it("provides fixed main-only cause metadata without parsing the public message", async () => {
+    const h = adapterHarness(json(400, errorBody(LEGACY, "BadRequest", CANARY)));
+    const error: unknown = await h.adapter.read(itemsPlan).catch((value: unknown) => value);
+    expect(error).toMatchObject({ status: 400, requestDiagnostic: { state: "parsed", code: "BadRequest", reason: "legacy-v0-plan-unsupported" } });
+    if (!(error instanceof FbaInboundRequestError)) throw new Error("Expected fixed request evidence");
+    expect(Object.isFrozen(error.requestDiagnostic)).toBe(true);
+    const value = publicSpApiError(error, "公開備用訊息。");
+    expect(value).not.toHaveProperty("requestDiagnostic");
+    expect(JSON.stringify(value)).not.toContain(CANARY);
+    expect(h.fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    { plan: detailPlan, label: "入庫計畫資料／首頁" },
+    { plan: shipmentItemsPlan, label: "貨件商品清單／首頁" },
+    { plan: { ...shipmentItemsPlan, request: { ...shipmentItemsPlan.request, paginationToken: "PRIVATE-CURSOR" } } as FbaInboundExternalReadPlan, label: "貨件商品清單／接續頁" },
+  ].flatMap(testCase => [400, 422].map(status => ({ ...testCase, status }))))("retains fixed diagnostics for $label HTTP $status", async ({ plan, label, status }) => {
+    const h = adapterHarness(json(status, errorBody(LEGACY, "BadRequest", CANARY)), plan);
+    const error: unknown = await h.adapter.read(plan).catch((value: unknown) => value);
+    expect(error).toMatchObject({ status, requestDiagnostic: { state: "parsed", code: "BadRequest", reason: "other-input" } });
+    if (!(error instanceof FbaInboundRequestError)) throw new Error("Expected fixed request evidence");
+    const value = publicSpApiError(error, "公開備用訊息。");
+    expect(value.message).toBe(`${BASE}（${label}；HTTP ${status}；Amazon：BadRequest；原因：其他請求條件遭拒；回應：已讀取）`);
+    expect(JSON.stringify(value)).not.toMatch(/PRIVATE|wf1234|sh1234|private\.invalid|access_token/);
+    expect(h.fetchImpl).toHaveBeenCalledTimes(1);
+    expect(h.token).toHaveBeenCalledTimes(1);
+    expect(h.invalidate).not.toHaveBeenCalled();
+    expect(h.fetchImpl.mock.calls[0]![1]).toMatchObject({ method: "GET", redirect: "error", cache: "no-store" });
+    expect(h.fetchImpl.mock.calls[0]![1]?.body).toBeUndefined();
+  });
+
+  it.each([
+    { plan: detailPlan, label: "入庫計畫資料／首頁" },
+    { plan: shipmentItemsPlan, label: "貨件商品清單／首頁" },
+    { plan: itemsPlan, label: "入庫商品清單／首頁" },
+    { plan: { source: "modern", marketplaceId: US, request: { kind: "plans", paginationToken: "PRIVATE-CURSOR" } } as FbaInboundExternalReadPlan, label: "入庫計畫清單／接續頁" },
+  ])("records HTTP 404 as unknown for $label without reading its body", async ({ plan, label }) => {
+    const pull = vi.fn(), cancel = vi.fn();
+    const response = new Response(new ReadableStream({ pull, cancel }, { highWaterMark: 0 }), { status: 404 });
+    const h = adapterHarness(response, plan);
+    const error: unknown = await h.adapter.read(plan).catch((value: unknown) => value);
+    expect(error).toMatchObject({ status: 404, code: "FBA_INBOUND_UPSTREAM_UNAVAILABLE", requestDiagnostic: { state: "not-read", code: "unknown", reason: "unknown" } });
+    if (!(error instanceof FbaInboundRequestError)) throw new Error("Expected fixed request evidence");
+    expect(publicSpApiError(error, "公開備用訊息。").message).toBe(`Amazon 暫時無法完成 FBA 入庫貨件查詢。（${label}；HTTP 404；Amazon：未辨識；原因：尚無可辨識原因；回應：未讀取）`);
+    expect(pull).not.toHaveBeenCalled(); expect(cancel).toHaveBeenCalledTimes(1);
+    expect(h.fetchImpl).toHaveBeenCalledTimes(1); expect(h.token).toHaveBeenCalledTimes(1); expect(h.invalidate).not.toHaveBeenCalled();
+  });
+
   it("labels the physical first page when the optional token is empty", async () => {
     const plan: FbaInboundExternalReadPlan = { source: "modern", marketplaceId: US, request: { kind: "plans", paginationToken: "" } };
     const h = adapterHarness(json(400, errorBody("The status is invalid.")), plan);
@@ -242,7 +328,7 @@ describe("bounded terminal request error evidence", () => {
     expect(value.message).toContain("回應：無法讀取"); expect(JSON.stringify(value)).not.toContain(CANARY);
   });
 
-  it.each([401, 403, 404, 429, 500])("does not parse the diagnostic body or change auth/retry behavior for HTTP %s", async status => {
+  it.each([401, 403, 429, 500])("does not parse the diagnostic body or change auth/retry behavior for HTTP %s", async status => {
     const bodies: Array<ReturnType<typeof vi.fn>> = [];
     const h = adapterHarness(() => {
       const pull = vi.fn(); bodies.push(pull);
@@ -257,7 +343,6 @@ describe("bounded terminal request error evidence", () => {
   });
 
   it.each([
-    { source: "modern", marketplaceId: US, request: { kind: "plan", inboundPlanId: PLAN_ID } },
     { source: "modern", marketplaceId: US, request: { kind: "shipment", inboundPlanId: PLAN_ID, shipmentId: "shipment-synthetic" } },
     { source: "v0", request: { kind: "items", marketplaceId: US, shipmentId: "FBA19SYNTHETIC", queryType: "SHIPMENT", nextToken: null } },
   ] as FbaInboundExternalReadPlan[])("leaves other fixed read operations unchanged %#", async plan => {

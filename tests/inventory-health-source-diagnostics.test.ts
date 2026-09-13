@@ -1,0 +1,459 @@
+import { describe, expect, it, vi } from "vitest";
+import { InventoryHealthCoordinator } from "../src/main/inventory-health-coordinator";
+import { FbaExpiryReads, type FbaExpiryCheckpoint } from "../src/main/amazon/fba-expiry-reads";
+import { fbaInboundExternalReadIdentity, type FbaInboundExternalReadAdapter } from "../src/main/amazon/fba-inbound-reads";
+import { createScriptedSpExecutionContextAdapter } from "../src/main/amazon/sp-execution-context";
+import { SpApiError } from "../src/main/amazon/sp-api-error";
+import { FbaInboundRequestError, type FbaInboundRequestDiagnostic } from "../src/main/amazon/fba-inbound-request-error";
+import { createFbaInboundReadsProductionAdapter } from "../src/main/amazon/fba-inbound-reads-production";
+import type { InventoryHealthReportSnapshot } from "../src/main/amazon/aged-inventory-reads";
+import type { ApiRequest } from "../src/shared/contracts";
+import { inventoryHealthCalendarRows, isInventoryHealthSnapshot, type InventoryHealthSnapshot } from "../src/shared/inventory-health";
+import type { InventoryExpirySourceFailure } from "../src/shared/inventory-expiry-source-diagnostics";
+
+const US = "ATVPDKIKX0DER";
+const NOW = new Date("2026-09-13T15:12:14Z");
+const PLAN = { inboundPlanId: "wf1234abcd-1234-abcd-5678-1234abcd5678", name: "SYNTHETIC-PRIVATE-PLAN", marketplaceIds: [US],
+  lastUpdatedAt: "2026-09-12T00:00:00Z", status: "SHIPPED" };
+const plans = [400, 404, 422].map((status, index) => ({ ...PLAN,
+  inboundPlanId: `wf${index + 1}234abcd-1234-abcd-5678-1234abcd5678`, failure: status }));
+const STOCK: InventoryHealthReportSnapshot = { marketplaceId: US, mode: "live", fetchedAt: NOW.toISOString(), rows: [{
+  sellerSku: "SYNTHETIC-PRIVATE-SKU", asin: "B000000001", title: "Synthetic product", available: 1000, agedOver180: null,
+  estimatedExcessQuantity: null, currencyCode: null, estimatedStorageCostNextMonth: null, estimatedAgedSurcharge: null,
+  snapshotDate: "2026-09-13", unitsShipped: { t7: 70, t30: 300, t60: 600, t90: 900 },
+}] };
+const GET: ApiRequest = { requestId: "synthetic", method: "GET", path: "/api/inventory-health", query: { marketplaceId: US }, headers: {} };
+type SavedFixture = { profiles: Record<string, { expiryCheckpoint?: FbaExpiryCheckpoint; marketplaceId: string; mode: string }> };
+const profile = (saved: unknown) => Object.values((saved as SavedFixture).profiles)[0]!;
+function harness(saved: unknown = null, adapter?: FbaInboundExternalReadAdapter) {
+  let disk = saved;
+  let now = NOW, accountScope = "synthetic-source-diagnostics", mode: "live" | "demo" = "live";
+  const context = createScriptedSpExecutionContextAdapter(() => ({ marketplaceId: US, mode, accountScope }));
+  const upstream = vi.fn<FbaInboundExternalReadAdapter["read"]>(async request => {
+    if (request.source !== "modern") throw new Error("Unexpected source");
+    if (request.request.kind === "plans") return { identity: fbaInboundExternalReadIdentity(request), requestId: null, envelope: { inboundPlans: plans } };
+    const operation = request.request;
+    const plan = plans.find(candidate => candidate.inboundPlanId === operation.inboundPlanId)!;
+    throw new SpApiError("SYNTHETIC-PRIVATE-ERROR", { code: "FBA_INBOUND_UPSTREAM_UNAVAILABLE", status: plan.failure, requestId: "SYNTHETIC-PRIVATE-REQUEST" });
+  });
+  const expiry = new FbaExpiryReads({ context, adapter: adapter ?? { read: upstream }, now: () => now });
+  const store = { read: vi.fn(async () => structuredClone(disk)), write: vi.fn(async (value: unknown, fence: () => Promise<void>) => { await fence(); disk = structuredClone(value); }) };
+  const create = () => new InventoryHealthCoordinator({ context, expiry, store, now: () => now });
+  const owner = create();
+  return { owner, create, context, upstream, store, disk: () => structuredClone(disk),
+    setNow: (value: Date) => { now = value; },
+    switchAccount: () => { accountScope = "another-synthetic-account"; context.invalidate("account-changed"); owner.clear(); },
+    switchMode: () => { mode = "demo"; context.invalidate("mode-changed"); owner.clear(); },
+    refresh: () => context.capture(US).then(captured => owner.refresh({ context: captured, snapshot: STOCK, signal: new AbortController().signal })) };
+}
+async function snapshot(owner: InventoryHealthCoordinator) {
+  const response = await owner.read(GET);
+  expect(response.status).toBe(200);
+  const value = (response.body.value as { snapshot: InventoryHealthSnapshot }).snapshot;
+  expect(isInventoryHealthSnapshot(value)).toBe(true);
+  return value;
+}
+
+describe("saved expiry source diagnostics through the health GET", () => {
+  it.each([120, 150])("counts only this traversal's completed plans after reusing a %s-plan cache", async planCount => {
+    const selected = Array.from({ length: planCount }, (_, index) => ({ ...PLAN,
+      inboundPlanId: `wf${String(index).padStart(8, "0")}-1234-abcd-5678-1234abcd5678` }));
+    const read = vi.fn<FbaInboundExternalReadAdapter["read"]>(async request => {
+      if (request.source !== "modern") throw new Error("Unexpected source");
+      const operation = request.request;
+      let envelope: unknown;
+      if (operation.kind === "plans") {
+        const offset = Number(operation.paginationToken ?? "0");
+        envelope = { inboundPlans: selected.slice(offset, offset + 30),
+          ...(offset + 30 < selected.length ? { pagination: { nextToken: String(offset + 30) } } : {}) };
+      } else if (operation.kind === "plan") envelope = { ...selected.find(plan => plan.inboundPlanId === operation.inboundPlanId), shipments: [] };
+      else if (operation.kind === "plan-items") envelope = { items: [] };
+      else throw new Error("Unexpected source operation");
+      return { identity: fbaInboundExternalReadIdentity(request), requestId: null, envelope };
+    });
+    const seed = harness(null, { read }); await seed.refresh();
+    const saved = seed.disk();
+    read.mockClear();
+    const partial = await new FbaExpiryReads({ context: seed.context, adapter: { read }, now: () => NOW }).read({
+      context: await seed.context.capture(US), signal: new AbortController().signal, checkpoint: profile(saved).expiryCheckpoint,
+    });
+    expect(read).toHaveBeenCalledTimes(100);
+    expect(partial.traversalComplete).toBe(false);
+    profile(saved).expiryCheckpoint = partial.checkpoint;
+    Object.assign(profile(saved), { sourceComplete: false });
+    const local = harness(saved), current = await snapshot(local.owner);
+    expect(current.expirySourceDiagnostics).toMatchObject({ status: "available", traversal: "partial", listedPlanCount: 120,
+      cachedPlanCount: 96, pendingPlanCount: 24, unavailablePlanCount: 0 });
+    expect(current.sourceComplete).toBe(false); expect(inventoryHealthCalendarRows(current)).toEqual([]);
+    expect(local.upstream).not.toHaveBeenCalled(); expect(local.store.write).not.toHaveBeenCalled();
+    expect(read).toHaveBeenCalledTimes(100);
+  });
+
+  it.each(["2026-02-30T00:00:00Z", "2025-02-29T00:00:00Z", "2026-09-12T24:00:00Z"])("does not normalize an illegal saved start date %s into available evidence", async startedAt => {
+    const seed = harness(); await seed.refresh(); const saved = seed.disk();
+    profile(saved).expiryCheckpoint!.startedAt = startedAt;
+    const local = harness(saved);
+    expect((await snapshot(local.owner)).expirySourceDiagnostics).toEqual({ status: "unknown", reason: "invalid-checkpoint" });
+    expect(local.upstream).not.toHaveBeenCalled(); expect(local.store.write).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { startedAt: "2024-02-29T23:59:59Z", recordedAt: "2024-02-29T23:59:59.000Z", stale: true },
+    { startedAt: "2026-09-13T23:12:14+08:00", recordedAt: NOW.toISOString(), stale: false },
+  ])("accepts a valid saved RFC3339 start time $startedAt without losing its instant", async expected => {
+    const seed = harness(); await seed.refresh(); const saved = seed.disk();
+    profile(saved).expiryCheckpoint!.startedAt = expected.startedAt;
+    const local = harness(saved);
+    expect((await snapshot(local.owner)).expirySourceDiagnostics).toMatchObject({ status: "available", recordedAt: expected.recordedAt, stale: expected.stale });
+    expect(local.upstream).not.toHaveBeenCalled(); expect(local.store.write).not.toHaveBeenCalled();
+  });
+
+  it("keeps a future fractional instant unknown instead of truncating it into the current millisecond", async () => {
+    const seed = harness(); await seed.refresh(); const saved = seed.disk();
+    profile(saved).expiryCheckpoint!.startedAt = "2026-09-13T15:12:14.000000001Z";
+    const local = harness(saved);
+    expect((await snapshot(local.owner)).expirySourceDiagnostics).toEqual({ status: "unknown", reason: "stale-checkpoint" });
+    expect(local.upstream).not.toHaveBeenCalled(); expect(local.store.write).not.toHaveBeenCalled();
+  });
+
+  it("excludes pending and unlisted rejection tombstones after an expired partial traversal restarts", async () => {
+    const seed = harness(); await seed.refresh(); const saved = seed.disk(), checkpoint = profile(saved).expiryCheckpoint!;
+    Object.assign(checkpoint, { phase: "partial", planPagesComplete: false, planCursor: "old-synthetic-cursor", seenPlanTokens: ["old-synthetic-cursor"] });
+    const selected = Array.from({ length: 150 }, (_, index) => ({ ...PLAN,
+      inboundPlanId: `wf${String(index).padStart(8, "0")}-1234-abcd-5678-1234abcd5678` }));
+    selected[0] = plans[0]!; selected[55] = plans[1]!; selected[149] = plans[2]!;
+    const read = vi.fn<FbaInboundExternalReadAdapter["read"]>(async request => {
+      if (request.source !== "modern") throw new Error("Unexpected source");
+      const operation = request.request;
+      const offset = operation.kind === "plans" ? Number(operation.paginationToken ?? "0") : 0;
+      const envelope = operation.kind === "plans" ? { inboundPlans: selected.slice(offset, offset + 30), pagination: { nextToken: String(offset + 30) } }
+        : operation.kind === "plan" ? { ...selected.find(plan => plan.inboundPlanId === operation.inboundPlanId), shipments: [] }
+          : { items: [] };
+      return { identity: fbaInboundExternalReadIdentity(request), requestId: null, envelope };
+    });
+    const now = new Date(NOW.getTime() + 31 * 60000);
+    const partial = await new FbaExpiryReads({ context: seed.context, adapter: { read }, now: () => now }).read({
+      context: await seed.context.capture(US), signal: new AbortController().signal, checkpoint,
+    });
+    expect(read).toHaveBeenCalledTimes(100);
+    expect(partial.unavailablePlanCount).toBe(3);
+    profile(saved).expiryCheckpoint = partial.checkpoint;
+    const local = harness(saved); local.setNow(now);
+    const current = await snapshot(local.owner);
+    expect(current.expirySourceDiagnostics).toMatchObject({ status: "available", traversal: "partial", listedPlanCount: 60,
+      cachedPlanCount: 49, pendingPlanCount: 10, unavailablePlanCount: 1,
+      statusCounts: { "400": 1, "404": 0, "422": 0 }, failures: [{ operation: "plan", page: "first", status: 400, reason: "unknown", count: 1 }] });
+    expect(local.upstream).not.toHaveBeenCalled(); expect(local.store.write).not.toHaveBeenCalled();
+    expect(partial.checkpoint!.unavailablePlans).toHaveLength(3);
+  });
+
+  it("preserves fixed operation, physical page and allowlisted cause from production adapter through saved GET", async () => {
+    const selected = Array.from({ length: 5 }, (_, index) => ({ ...PLAN, inboundPlanId: `wf${index + 1}234abcd-1234-abcd-5678-1234abcd5678` }));
+    const legacy = "Operation ListInboundPlanItems is not supported for Fulfillment Inbound API V0 shipments that have been converted to Send-to-Amazon inbound plans.";
+    const canary = "SYNTHETIC-PRIVATE https://private.invalid/?access_token=PRIVATE";
+    const response = (status: number, value: unknown) => new Response(JSON.stringify(value), { status });
+    const fetchImpl = vi.fn<typeof fetch>(async input => {
+      const url = new URL(String(input));
+      if (url.pathname.endsWith("/inboundPlans")) return response(200, { inboundPlans: selected });
+      const plan = selected.find(candidate => url.pathname.includes(candidate.inboundPlanId))!;
+      const index = selected.indexOf(plan);
+      if (index === 0) return response(400, { errors: [{ code: "BadRequest", message: "The inboundPlanId is malformed.", details: canary }] });
+      if (!url.pathname.endsWith("/items")) return response(200, { ...plan,
+        ...(index === 2 || index === 4 ? { shipments: [{ shipmentId: `sh${index + 1}234abcd-1234-abcd-5678-1234abcd5678`, status: "SHIPPED" }] } : {}) });
+      if (index === 3) return response(200, { items: [] });
+      if (index === 4) return response(400, { errors: [{ code: "BadRequest", message: "The requested inbound plan does not exist.", details: canary }] });
+      if (!url.searchParams.has("paginationToken")) return response(200, { items: [{ msku: "SYNTHETIC-PRIVATE-SKU", asin: "B000000001", fnsku: "X000000001", quantity: 20, expiration: "2026-12-31" }], pagination: { nextToken: "SYNTHETIC-PRIVATE-CURSOR" } });
+      return response(index === 1 ? 400 : 422, { errors: [{ code: index === 1 ? "BadRequest" : "InvalidInput", message: index === 1 ? legacy : canary, details: canary }] });
+    });
+    const adapter = createFbaInboundReadsProductionAdapter({ getAccessToken: async () => "SYNTHETIC-PRIVATE-TOKEN", invalidateAccessToken: vi.fn(),
+      fetchImpl, sleep: async () => undefined, now: () => NOW });
+    const h = harness(null, adapter); await h.refresh();
+    const current = await snapshot(h.owner);
+    expect(current.expirySourceDiagnostics).toEqual({ status: "available", recordedAt: NOW.toISOString(), stale: false,
+      traversal: "complete", listedPlanCount: 5, pendingPlanCount: 0, cachedPlanCount: 1, unavailablePlanCount: 4,
+      statusCounts: { "400": 3, "404": 0, "422": 1 }, failures: [
+        { operation: "plan", page: "first", status: 400, reason: "inbound-plan-id-malformed", code: "BadRequest", responseState: "parsed", count: 1 },
+        { operation: "plan-items", page: "next", status: 400, reason: "legacy-v0-plan-unsupported", code: "BadRequest", responseState: "parsed", count: 1 },
+        { operation: "shipment-items", page: "next", status: 422, reason: "other-input", code: "InvalidInput", responseState: "parsed", count: 1 },
+        { operation: "shipment-items", page: "first", status: 400, reason: "inbound-plan-unavailable", code: "BadRequest", responseState: "parsed", count: 1 },
+      ] });
+    expect(current.sourceComplete).toBe(false); expect(inventoryHealthCalendarRows(current)).toEqual([]);
+    expect(current.rows[0]).toMatchObject({ expiryDate: null, confirmedRemaining: null, calendarEligible: false });
+    expect(fetchImpl).toHaveBeenCalledTimes(12);
+    expect((await snapshot(h.create())).expirySourceDiagnostics).toEqual(current.expirySourceDiagnostics);
+    expect(fetchImpl).toHaveBeenCalledTimes(12);
+    expect(JSON.stringify(current.expirySourceDiagnostics)).not.toMatch(/SYNTHETIC|private|https?:|wf1234|shipmentId|requestId|token/i);
+    for (const call of fetchImpl.mock.calls) expect(call[1]).toMatchObject({ method: "GET", redirect: "error", cache: "no-store" });
+  });
+
+  it("retains actual terminal statuses across reader, coordinator and reopened GET without upstream reads", async () => {
+    const h = harness();
+    await h.refresh();
+    const current = await snapshot(h.owner);
+    expect(current).toMatchObject({ sourceComplete: false, expirySourceDiagnostics: {
+      status: "available", recordedAt: NOW.toISOString(), stale: false, traversal: "complete", listedPlanCount: 3, pendingPlanCount: 0,
+      cachedPlanCount: 0, unavailablePlanCount: 3, statusCounts: { "400": 1, "404": 1, "422": 1 },
+      failures: [400, 404, 422].map(status => ({ operation: "plan", page: "first", status, reason: "unknown", code: "unknown", responseState: "not-recorded", count: 1 })),
+    } });
+    expect(inventoryHealthCalendarRows(current)).toEqual([]);
+    const calls = h.upstream.mock.calls.length;
+    const local = await snapshot(h.create());
+    expect(local).toMatchObject({ stale: true, sourceComplete: false,
+      expirySourceDiagnostics: current.expirySourceDiagnostics });
+    expect(h.upstream).toHaveBeenCalledTimes(calls);
+    expect(h.store.write).toHaveBeenCalledOnce();
+    expect(JSON.stringify(local.expirySourceDiagnostics)).not.toMatch(/SYNTHETIC|wf1234|requestId|account|https?:|token/i);
+  });
+
+  it("keeps parsed codes and body states in distinct saved groups and ignores untyped diagnostic lookalikes", async () => {
+    const diagnostics: FbaInboundRequestDiagnostic[] = [
+      { code: "BadRequest", state: "parsed", reason: "other-input" },
+      { code: "InvalidInput", state: "parsed", reason: "other-input" },
+      { code: "unknown", state: "parsed", reason: "unknown" },
+      ...(["empty", "malformed", "oversize", "timed-out", "unavailable", "not-read"] as const).map(state => ({ code: "unknown" as const, state, reason: "unknown" as const })),
+      { code: "BadRequest", state: "parsed", reason: "other-input" },
+    ];
+    const selected = Array.from({ length: diagnostics.length + 1 }, (_, index) => ({ ...PLAN,
+      inboundPlanId: `wf${String(index).padStart(8, "0")}-1234-abcd-5678-1234abcd5678` }));
+    const read = vi.fn<FbaInboundExternalReadAdapter["read"]>(async request => {
+      if (request.source !== "modern") throw new Error("Unexpected source");
+      if (request.request.kind === "plans") return { identity: fbaInboundExternalReadIdentity(request), requestId: null, envelope: { inboundPlans: selected } };
+      const id = request.request.inboundPlanId;
+      const diagnostic = diagnostics[selected.findIndex(plan => plan.inboundPlanId === id)];
+      const cause = new SpApiError("The inboundPlanId is malformed.", { code: "FBA_INBOUND_UPSTREAM_UNAVAILABLE", status: diagnostic?.state === "not-read" ? 404 : 400 });
+      if (diagnostic) throw new FbaInboundRequestError(cause, diagnostic);
+      // Merely attaching an upstream-shaped object never grants it typed evidence.
+      throw Object.assign(cause, { requestDiagnostic: { code: "BadRequest", state: "parsed", reason: "inbound-plan-id-malformed" } });
+    });
+    const h = harness(null, { read }); await h.refresh();
+    const current = await snapshot(h.owner);
+    expect(current.expirySourceDiagnostics).toMatchObject({ listedPlanCount: 11, unavailablePlanCount: 11,
+      statusCounts: { "400": 10, "404": 1, "422": 0 }, failures: [
+        { operation: "plan", page: "first", status: 400, code: "BadRequest", responseState: "parsed", reason: "other-input", count: 2 },
+        { operation: "plan", page: "first", status: 400, code: "InvalidInput", responseState: "parsed", reason: "other-input", count: 1 },
+        { operation: "plan", page: "first", status: 400, code: "unknown", responseState: "parsed", reason: "unknown", count: 1 },
+        ...["empty", "malformed", "oversize", "timed-out", "unavailable"].map(responseState => ({ operation: "plan", page: "first", status: 400, code: "unknown", responseState, reason: "unknown", count: 1 })),
+        { operation: "plan", page: "first", status: 404, code: "unknown", responseState: "not-read", reason: "unknown", count: 1 },
+        { operation: "plan", page: "first", status: 400, code: "unknown", responseState: "not-recorded", reason: "unknown", count: 1 },
+      ] });
+    expect((await snapshot(h.create())).expirySourceDiagnostics).toEqual(current.expirySourceDiagnostics);
+    expect(read).toHaveBeenCalledTimes(12); expect(h.store.write).toHaveBeenCalledOnce();
+    expect(inventoryHealthCalendarRows(current)).toEqual([]);
+  });
+
+  it("preserves historical three-field reasons while marking missing response evidence as not recorded", async () => {
+    const seed = harness(); await seed.refresh();
+    const saved = seed.disk(), checkpoint = profile(saved).expiryCheckpoint!;
+    checkpoint.startedAt = "2026-09-13T13:00:00Z";
+    checkpoint.unavailablePlans[0]!.diagnostic = { operation: "plan-items", page: "next", reason: "legacy-v0-plan-unsupported" };
+    checkpoint.unavailablePlans[1]!.diagnostic = { operation: "shipment-items", page: "first", reason: "unknown" };
+    checkpoint.unavailablePlans[2]!.diagnostic = { operation: "plan", page: "first", reason: "other-input" };
+    const h = harness(saved), current = await snapshot(h.owner);
+    expect(current.expirySourceDiagnostics).toMatchObject({ stale: true, failures: [
+      { operation: "plan-items", page: "next", status: 400, reason: "legacy-v0-plan-unsupported", code: "not-recorded", responseState: "not-recorded", count: 1 },
+      { operation: "shipment-items", page: "first", status: 404, reason: "unknown", code: "not-recorded", responseState: "not-recorded", count: 1 },
+      { operation: "plan", page: "first", status: 422, reason: "other-input", code: "not-recorded", responseState: "not-recorded", count: 1 },
+    ] });
+    expect((await snapshot(h.create())).expirySourceDiagnostics).toEqual(current.expirySourceDiagnostics);
+    expect(h.upstream).not.toHaveBeenCalled(); expect(h.store.write).not.toHaveBeenCalled();
+  });
+
+  it("projects all 200 legal diagnostic groups from the 6000-source limit without merging response dimensions", async () => {
+    const pairs = [
+      { operation: "plan", page: "first" },
+      { operation: "plan-items", page: "first" }, { operation: "plan-items", page: "next" },
+      { operation: "shipment-items", page: "first" }, { operation: "shipment-items", page: "next" },
+    ] as const;
+    const groups: InventoryExpirySourceFailure[] = [];
+    for (const pair of pairs) {
+      for (const status of [400, 404, 422] as const) {
+        for (const reason of ["legacy-v0-plan-unsupported", "inbound-plan-unavailable", "inbound-plan-id-malformed", "invalid-status", "other-input", "unknown"] as const) {
+          groups.push({ ...pair, status, reason, code: "not-recorded", responseState: "not-recorded", count: 30 });
+        }
+        groups.push({ ...pair, status, reason: "unknown", code: "unknown", responseState: "not-recorded", count: 30 });
+      }
+      for (const status of [400, 422] as const) {
+        for (const code of ["BadRequest", "InvalidInput"] as const) groups.push({ ...pair, status, reason: "other-input", code, responseState: "parsed", count: 30 });
+        for (const responseState of ["parsed", "empty", "malformed", "oversize", "timed-out", "unavailable"] as const) {
+          groups.push({ ...pair, status, reason: "unknown", code: "unknown", responseState, count: 30 });
+        }
+      }
+      groups.push({ ...pair, status: 404, reason: "unknown", code: "unknown", responseState: "not-read", count: 30 });
+      const reasons: InventoryExpirySourceFailure["reason"][] = pair.operation === "plan" ? ["inbound-plan-id-malformed"]
+        : pair.operation === "plan-items" ? ["legacy-v0-plan-unsupported", "inbound-plan-unavailable"] : ["inbound-plan-unavailable"];
+      for (const reason of reasons) groups.push({ ...pair, status: 400, reason, code: "BadRequest", responseState: "parsed", count: 30 });
+    }
+    for (const status of [400, 404, 422] as const) groups.push({ operation: "unknown", page: "unknown", status, reason: "unknown", code: "not-recorded", responseState: "not-recorded", count: 30 });
+    // 90 historical + 15 untyped + 80 parsed/body-failure + 5 explicit 404
+    // + 7 exact causes + 3 completely unrecorded groups, with 30 sources each.
+    expect(groups).toHaveLength(200);
+    const seed = harness(); await seed.refresh(); const saved = seed.disk(), checkpoint = profile(saved).expiryCheckpoint!;
+    const template = checkpoint.unavailablePlans[0]!;
+    checkpoint.unavailablePlans = groups.flatMap((group, groupIndex) => Array.from({ length: 30 }, (_, offset) => {
+      const { diagnostic: _diagnostic, ...plan } = template;
+      return { ...plan, inboundPlanId: `wf${String(groupIndex * 30 + offset).padStart(8, "0")}-1234-abcd-5678-1234abcd5678`, upstreamStatus: group.status,
+        ...(group.operation === "unknown" || group.page === "unknown" ? {} : { diagnostic: {
+          operation: group.operation, page: group.page, reason: group.reason, code: group.code, responseState: group.responseState,
+        } }) };
+    }));
+    checkpoint.seenPlanIds = checkpoint.unavailablePlans.map(plan => plan.inboundPlanId);
+    const h = harness(saved), current = await snapshot(h.owner);
+    expect(current.expirySourceDiagnostics).toEqual({ status: "available", recordedAt: NOW.toISOString(), stale: false, traversal: "complete",
+      listedPlanCount: 6000, pendingPlanCount: 0, cachedPlanCount: 0, unavailablePlanCount: 6000,
+      statusCounts: { "400": 2490, "404": 1230, "422": 2280 }, failures: groups });
+    expect(h.upstream).not.toHaveBeenCalled(); expect(h.store.write).not.toHaveBeenCalled();
+  });
+
+  it("reads 36 historical schema-2 unavailable plans locally without inventing the unrecorded operation", async () => {
+    const seed = harness(); await seed.refresh();
+    const saved = seed.disk(), checkpoint = profile(saved).expiryCheckpoint!;
+    const unavailable = Array.from({ length: 36 }, (_, index) => ({ ...checkpoint.unavailablePlans[index % 3]!,
+      inboundPlanId: `wf${String(index).padStart(8, "0")}-1234-abcd-5678-1234abcd5678` }));
+    for (const plan of unavailable) delete plan.diagnostic;
+    checkpoint.unavailablePlans = unavailable;
+    checkpoint.seenPlanIds = unavailable.map(plan => plan.inboundPlanId);
+    checkpoint.startedAt = "2026-09-13T13:00:00Z";
+    const h = harness(saved);
+    const current = await snapshot(h.owner);
+    expect(current.expirySourceDiagnostics).toEqual({ status: "available", recordedAt: "2026-09-13T13:00:00.000Z", stale: true,
+      traversal: "complete", listedPlanCount: 36, pendingPlanCount: 0, cachedPlanCount: 0, unavailablePlanCount: 36,
+      statusCounts: { "400": 12, "404": 12, "422": 12 },
+      failures: [400, 404, 422].map(status => ({ operation: "unknown", page: "unknown", status, reason: "unknown", code: "not-recorded", responseState: "not-recorded", count: 12 })),
+    });
+    expect(current).toMatchObject({ stale: true, sourceComplete: false });
+    expect(inventoryHealthCalendarRows(current)).toEqual([]);
+    await snapshot(h.create());
+    expect(h.upstream).not.toHaveBeenCalled(); expect(h.store.write).not.toHaveBeenCalled();
+  });
+
+  it("labels diagnostic age without changing the existing stock freshness policy", async () => {
+    const h = harness(); await h.refresh();
+    h.setNow(new Date(NOW.getTime() + 30 * 60000));
+    expect((await snapshot(h.owner)).expirySourceDiagnostics).toMatchObject({ status: "available", stale: false });
+    h.setNow(new Date(NOW.getTime() + 30 * 60000 + 1));
+    expect(await snapshot(h.owner)).toMatchObject({ stale: false, sourceComplete: false, expirySourceDiagnostics: { status: "available", stale: true } });
+    expect(h.upstream).toHaveBeenCalledTimes(4);
+  });
+
+  it("distinguishes partial listed coverage from cached, unavailable and unfinished plans", async () => {
+    const seed = harness(); await seed.refresh(); const saved = seed.disk(), checkpoint = profile(saved).expiryCheckpoint!;
+    const plan = (index: number) => ({ ...PLAN, status: "SHIPPED" as const, inboundPlanId: `wf${index}234abcd-1234-abcd-5678-1234abcd5678` });
+    checkpoint.phase = "partial";
+    checkpoint.planPagesComplete = false; checkpoint.planCursor = "SYNTHETIC-PRIVATE-NEXT";
+    checkpoint.seenPlanTokens = ["SYNTHETIC-PRIVATE-NEXT"];
+    checkpoint.cachedPlans = [{ ...plan(4), records: [], itemSources: [{ shipmentId: null, shipmentStatus: null, items: [] }] }];
+    checkpoint.currentPlan = { ...plan(5), records: [], itemSources: [{ shipmentId: null, shipmentStatus: null, items: [] }], sourceIndex: 0, itemCursor: null, itemTokens: [] };
+    checkpoint.pendingPlans = [plan(6)];
+    checkpoint.seenPlanIds.push(plan(4).inboundPlanId, plan(5).inboundPlanId, plan(6).inboundPlanId);
+    const h = harness(saved), current = await snapshot(h.owner);
+    expect(current.expirySourceDiagnostics).toMatchObject({ status: "available", traversal: "partial", listedPlanCount: 6,
+      cachedPlanCount: 1, unavailablePlanCount: 3, pendingPlanCount: 2 });
+    expect(current.sourceComplete).toBe(false); expect(inventoryHealthCalendarRows(current)).toEqual([]);
+    expect(h.upstream).not.toHaveBeenCalled(); expect(h.store.write).not.toHaveBeenCalled();
+  });
+
+  it.each(["not-recorded", "legacy-checkpoint", "stale-checkpoint"])("keeps %s coverage explicitly unknown without reading upstream", async reason => {
+    const seed = harness(); await seed.refresh(); const saved = seed.disk();
+    if (reason === "not-recorded") delete profile(saved).expiryCheckpoint;
+    else if (reason === "legacy-checkpoint") Object.assign(profile(saved).expiryCheckpoint!, { schemaVersion: 1 });
+    else profile(saved).expiryCheckpoint!.startedAt = "2026-09-14T00:00:00Z";
+    const h = harness(saved);
+    expect((await snapshot(h.owner)).expirySourceDiagnostics).toEqual({ status: "unknown", reason });
+    expect(h.upstream).not.toHaveBeenCalled(); expect(h.store.write).not.toHaveBeenCalled();
+  });
+
+  it.each(["account", "mode"])("does not expose another %s's saved coverage", async change => {
+    const h = harness(); await h.refresh();
+    if (change === "account") h.switchAccount(); else h.switchMode();
+    const response = await h.owner.read(GET);
+    expect(response.status).toBe(200); expect(response.body.value).toEqual({ snapshot: null });
+    expect(h.upstream).toHaveBeenCalledTimes(4);
+  });
+
+  it("fences a security context change while the local checkpoint is being read", async () => {
+    const seed = harness(); await seed.refresh();
+    const h = harness(seed.disk());
+    const read = h.store.read.getMockImplementation()!;
+    h.store.read.mockImplementationOnce(async () => { const saved = await read(); h.context.invalidate("lock-screen"); return saved; });
+    const response = await h.owner.read(GET);
+    expect(response.status).toBe(409); expect(response.body.value).toMatchObject({ code: "SP_CONTEXT_INVALIDATED" });
+    expect(h.upstream).not.toHaveBeenCalled(); expect(h.store.write).not.toHaveBeenCalled();
+  });
+
+  it("keeps a structurally valid profile with mismatched mode diagnostically unknown", async () => {
+    const seed = harness(); await seed.refresh(); const saved = seed.disk(); profile(saved).mode = "demo";
+    const h = harness(saved);
+    expect((await snapshot(h.owner)).expirySourceDiagnostics).toEqual({ status: "unknown", reason: "context-mismatch" });
+    expect(h.upstream).not.toHaveBeenCalled(); expect(h.store.write).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    (checkpoint: FbaExpiryCheckpoint) => { checkpoint.unavailablePlans.push(checkpoint.unavailablePlans[0]!); },
+    (checkpoint: FbaExpiryCheckpoint) => { checkpoint.scopeFingerprint = "f".repeat(64); },
+    (checkpoint: FbaExpiryCheckpoint) => { checkpoint.startedAt = "SYNTHETIC-PRIVATE-BAD-DATE"; },
+    (checkpoint: FbaExpiryCheckpoint) => { Object.assign(checkpoint.unavailablePlans[0]!.diagnostic!, { operation: "SYNTHETIC-PRIVATE-OP" }); },
+    (checkpoint: FbaExpiryCheckpoint) => { Object.assign(checkpoint.unavailablePlans[0]!.diagnostic!, { reason: "SYNTHETIC-PRIVATE-ERROR" }); },
+    (checkpoint: FbaExpiryCheckpoint) => { Object.assign(checkpoint.unavailablePlans[0]!.diagnostic!, { requestId: "SYNTHETIC-PRIVATE-REQUEST" }); },
+    (checkpoint: FbaExpiryCheckpoint) => { Object.assign(checkpoint.unavailablePlans[0]!.diagnostic!, { page: "next" }); },
+    (checkpoint: FbaExpiryCheckpoint) => { Object.assign(checkpoint.unavailablePlans[0]!.diagnostic!, { operation: ["plan"] }); },
+    (checkpoint: FbaExpiryCheckpoint) => { Object.assign(checkpoint.unavailablePlans[0]!.diagnostic!, { code: "SYNTHETIC-PRIVATE-CODE" }); },
+    (checkpoint: FbaExpiryCheckpoint) => { Object.assign(checkpoint.unavailablePlans[0]!.diagnostic!, { responseState: "SYNTHETIC-PRIVATE-STATE" }); },
+    (checkpoint: FbaExpiryCheckpoint) => { Object.assign(checkpoint.unavailablePlans[0]!.diagnostic!, { code: ["unknown"] }); },
+    (checkpoint: FbaExpiryCheckpoint) => { Object.assign(checkpoint.unavailablePlans[0]!.diagnostic!, { responseState: ["not-recorded"] }); },
+    (checkpoint: FbaExpiryCheckpoint) => { Reflect.deleteProperty(checkpoint.unavailablePlans[0]!.diagnostic!, "code"); },
+    (checkpoint: FbaExpiryCheckpoint) => { Object.assign(checkpoint.unavailablePlans[0]!.diagnostic!, { code: "BadRequest", responseState: "timed-out" }); },
+    (checkpoint: FbaExpiryCheckpoint) => { Object.assign(checkpoint.unavailablePlans[0]!.diagnostic!, { code: "not-recorded", responseState: "parsed" }); },
+    (checkpoint: FbaExpiryCheckpoint) => { Object.assign(checkpoint.unavailablePlans[0]!.diagnostic!, { code: "BadRequest", responseState: "parsed", reason: "legacy-v0-plan-unsupported" }); },
+  ])("rejects invalid saved coverage without exposing raw checkpoint or errors %#", async corrupt => {
+    const seed = harness(); await seed.refresh(); const saved = seed.disk();
+    corrupt(profile(saved).expiryCheckpoint!);
+    const h = harness(saved), response = await h.owner.read(GET);
+    expect(response.status).toBeGreaterThanOrEqual(400);
+    expect(response.body.value).not.toHaveProperty("snapshot");
+    expect(JSON.stringify(response.body.value)).not.toMatch(/SYNTHETIC|wf1234|account|https?:|token/i);
+    expect(h.upstream).not.toHaveBeenCalled(); expect(h.store.write).not.toHaveBeenCalled();
+  });
+
+  it("accepts the prior Bridge shape but rejects inconsistent or unbounded diagnostic DTOs", async () => {
+    const h = harness(); await h.refresh(); const current = await snapshot(h.owner);
+    const { expirySourceDiagnostics: _diagnostic, ...prior } = current;
+    expect(isInventoryHealthSnapshot(prior)).toBe(true);
+    const diagnostic = current.expirySourceDiagnostics!;
+    expect(diagnostic.status).toBe("available");
+    if (diagnostic.status !== "available") throw new Error("Expected diagnostic fixture");
+    const invalid = [
+      { ...diagnostic, requestId: "SYNTHETIC-PRIVATE" },
+      { ...diagnostic, recordedAt: "SYNTHETIC-PRIVATE" },
+      { ...diagnostic, listedPlanCount: 6001 },
+      { ...diagnostic, unavailablePlanCount: 2 },
+      { ...diagnostic, traversal: "partial", pendingPlanCount: 1 },
+      { ...diagnostic, statusCounts: { "400": 1, "404": 1, "422": 2 } },
+      { ...diagnostic, statusCounts: { "400": 1, "404": 1, "422": 1, other: 0 } },
+      { ...diagnostic, failures: [diagnostic.failures[0], diagnostic.failures[0], diagnostic.failures[2]] },
+      { ...diagnostic, failures: Array.from({ length: 6000 }, () => diagnostic.failures[0]) },
+      { ...diagnostic, failures: [{ ...diagnostic.failures[0], operation: "SYNTHETIC-PRIVATE" }, ...diagnostic.failures.slice(1)] },
+      { ...diagnostic, failures: [{ ...diagnostic.failures[0], reason: "SYNTHETIC-PRIVATE" }, ...diagnostic.failures.slice(1)] },
+      { ...diagnostic, failures: [{ ...diagnostic.failures[0], page: "next" }, ...diagnostic.failures.slice(1)] },
+      { ...diagnostic, failures: [{ ...diagnostic.failures[0], status: "400" }, ...diagnostic.failures.slice(1)] },
+      { ...diagnostic, failures: [{ ...diagnostic.failures[0], count: -1 }, ...diagnostic.failures.slice(1)] },
+      { ...diagnostic, failures: [{ ...diagnostic.failures[0], count: 1.5 }, ...diagnostic.failures.slice(1)] },
+      { ...diagnostic, failures: [{ ...diagnostic.failures[0], message: "SYNTHETIC-PRIVATE" }, ...diagnostic.failures.slice(1)] },
+      { ...diagnostic, failures: [{ ...diagnostic.failures[0], operation: ["plan"] }, ...diagnostic.failures.slice(1)] },
+      { ...diagnostic, failures: [{ ...diagnostic.failures[0], reason: ["unknown"] }, ...diagnostic.failures.slice(1)] },
+      ...[
+        { code: "SYNTHETIC-PRIVATE" }, { responseState: "SYNTHETIC-PRIVATE" }, { code: ["unknown"] }, { responseState: ["not-recorded"] },
+        { code: "BadRequest", responseState: "empty" }, { code: "not-recorded", responseState: "parsed" },
+        { code: "unknown", responseState: "parsed", reason: "inbound-plan-id-malformed" },
+        { code: "InvalidInput", responseState: "parsed", reason: "inbound-plan-id-malformed" },
+        { code: "BadRequest", responseState: "parsed", reason: "legacy-v0-plan-unsupported" },
+        { code: "BadRequest", responseState: "parsed", reason: "invalid-status" },
+        { code: "unknown", responseState: "not-read" },
+        { operation: "unknown", page: "unknown", code: "unknown", responseState: "not-recorded" },
+        { operation: "unknown", page: "unknown", code: "not-recorded", responseState: "not-recorded", reason: "other-input" },
+      ].map(fields => ({ ...diagnostic, failures: [{ ...diagnostic.failures[0], ...fields }, ...diagnostic.failures.slice(1)] })),
+      { status: "unknown", reason: ["not-recorded"] },
+      { status: "unknown", reason: "not-recorded", statusCounts: { "400": 0, "404": 0, "422": 0 } },
+    ];
+    for (const expirySourceDiagnostics of invalid) expect(isInventoryHealthSnapshot({ ...current, expirySourceDiagnostics })).toBe(false);
+  });
+});

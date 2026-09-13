@@ -7,6 +7,7 @@ import {
   type InventoryHealthStatus,
 } from "../../../shared/inventory-health";
 import { isInventoryHealthSyncJob, type InventoryHealthSyncJob } from "../../../shared/inventory-health-sync";
+import InventoryExpirySourceSummary from "./inventory-expiry-source-summary";
 
 const count = (value: number | null, missing = "未提供", digits = 1) => value === null
   ? missing : value.toLocaleString("zh-TW", { maximumFractionDigits: digits });
@@ -258,6 +259,7 @@ export default function InventoryHealthPanel({ marketplaceId, mode }: {
         {snapshot.stale && <strong>資料需重新核對，請同步全部 FBA 效期與銷速。</strong>}
         {!snapshot.sourceComplete && <strong>效期來源尚未完整；待確認品項不加入行事曆。</strong>}
       </div>
+      <InventoryExpirySourceSummary diagnostic={snapshot.expirySourceDiagnostics} />
       <div className="inventory-health-summary" role="group" aria-label="庫存健康顯示範圍">
         {groups.map(group => <button key={group.status} type="button" disabled={saving} aria-label={group.label} aria-pressed={filter === group.status}
           onClick={() => { setFilter(group.status); setLimit(100); setExpandedId(null); }}>
