@@ -170,7 +170,100 @@ function retryDelayMs(
   return Math.min(500 * 2 ** attempt + random() * 250, 5_000);
 }
 
-function throwReadError(response: Response): never {
+const REQUEST_ERROR_BODY_LIMIT = 128 * 1024;
+const REQUEST_ERROR_BODY_TIMEOUT_MS = 2_000;
+type ErrorBodyState = "parsed" | "empty" | "malformed" | "oversize" | "timed-out" | "unavailable";
+type RequestErrorCode = "BadRequest" | "InvalidInput" | "unknown";
+type RequestErrorReason = "legacy-v0-plan-unsupported" | "inbound-plan-unavailable" | "invalid-status" | "other-input" | "unknown";
+type RequestErrorDetails = { state: ErrorBodyState; code: RequestErrorCode; reason: RequestErrorReason };
+type DiagnosticOperation = "plans" | "plan-items";
+const LEGACY_ITEMS_UNSUPPORTED = "Operation ListInboundPlanItems is not supported for Fulfillment Inbound API V0 shipments that have been converted to Send-to-Amazon inbound plans.";
+const REQUEST_ERROR_REASONS: Record<RequestErrorReason, string> = {
+  "legacy-v0-plan-unsupported": "舊版入庫計畫不支援商品讀取",
+  "inbound-plan-unavailable": "指定入庫計畫不存在",
+  "invalid-status": "計畫狀態條件遭拒",
+  "other-input": "其他請求條件遭拒",
+  unknown: "尚無可辨識原因",
+};
+const REQUEST_ERROR_BODY_STATES: Record<ErrorBodyState, string> = {
+  parsed: "已讀取", empty: "空白", malformed: "格式無法辨識",
+  oversize: "超過讀取上限", "timed-out": "讀取逾時", unavailable: "無法讀取",
+};
+const unknownRequestError = (state: ErrorBodyState): RequestErrorDetails => ({ state, code: "unknown", reason: "unknown" });
+
+function requestErrorDetails(value: unknown, operation: DiagnosticOperation, status: number): RequestErrorDetails {
+  const record = (input: unknown): input is Record<string, unknown> => Boolean(input && typeof input === "object" && !Array.isArray(input));
+  const boundedText = (input: unknown, minimum: number, maximum: number): input is string => typeof input === "string" && input.length >= minimum && input.length <= maximum;
+  if (!record(value) || Object.keys(value).some(key => key !== "errors") || !Array.isArray(value.errors) || value.errors.length < 1 || value.errors.length > 8) return unknownRequestError("malformed");
+  const details: RequestErrorDetails[] = [];
+  for (const error of value.errors) {
+    if (!record(error) || Object.keys(error).some(key => !["code", "message", "details"].includes(key)) ||
+      !boundedText(error.code, 1, 256) || !boundedText(error.message, 1, 2048) ||
+      (error.details !== undefined && !boundedText(error.details, 0, 8192))) return unknownRequestError("malformed");
+    const code: RequestErrorCode = error.code === "BadRequest" || error.code === "InvalidInput" ? error.code : "unknown";
+    let reason: RequestErrorReason = code === "unknown" ? "unknown" : "other-input";
+    // Only whole, documented messages identify a cause. Never project a value,
+    // partial keyword match, or an arbitrary upstream code/message/details.
+    if (status === 400 && code === "BadRequest") {
+      if (operation === "plan-items" && (error.message === LEGACY_ITEMS_UNSUPPORTED || error.message === `ERROR: ${LEGACY_ITEMS_UNSUPPORTED}`)) reason = "legacy-v0-plan-unsupported";
+      else if (operation === "plan-items" && error.message === "The requested inbound plan does not exist.") reason = "inbound-plan-unavailable";
+      else if (operation === "plans" && error.message === "The status is invalid.") reason = "invalid-status";
+    }
+    details.push({ state: "parsed", code, reason });
+  }
+  const first = details[0]!;
+  return details.every(detail => detail.code === first.code && detail.reason === first.reason) ? first : unknownRequestError("parsed");
+}
+
+async function readRequestError(response: Response, operation: DiagnosticOperation, signal?: AbortSignal): Promise<RequestErrorDetails> {
+  throwIfAborted(signal);
+  if (!response.body) return unknownRequestError("empty");
+  if (response.bodyUsed || response.body.locked) return unknownRequestError("unavailable");
+  const reader = response.body.getReader();
+  const control = new AbortController();
+  const unlink = forwardAbort(control, signal);
+  const timer = setTimeout(() => control.abort(), REQUEST_ERROR_BODY_TIMEOUT_MS);
+  const chunks: Uint8Array[] = [];
+  let bytes = 0;
+  try {
+    const declared = response.headers.get("content-length");
+    if (declared !== null && !/^\d+$/.test(declared)) return unknownRequestError("malformed");
+    if (declared !== null && Number(declared) > REQUEST_ERROR_BODY_LIMIT) return unknownRequestError("oversize");
+    while (true) {
+      const chunk = await waitForPromiseWithSignal(reader.read(), control.signal);
+      if (chunk.done) break;
+      bytes += chunk.value.length;
+      if (bytes > REQUEST_ERROR_BODY_LIMIT) return unknownRequestError("oversize");
+      chunks.push(chunk.value);
+    }
+    throwIfAborted(control.signal);
+    if (bytes === 0) return unknownRequestError("empty");
+    let value: unknown;
+    try { value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks))); }
+    catch { return unknownRequestError("malformed"); }
+    return requestErrorDetails(value, operation, response.status);
+  } catch {
+    throwIfAborted(signal);
+    return unknownRequestError(control.signal.aborted ? "timed-out" : "unavailable");
+  } finally {
+    clearTimeout(timer); unlink();
+    void reader.cancel().catch(() => undefined);
+    reader.releaseLock();
+  }
+}
+
+async function requestErrorDiagnostic(plan: FbaInboundExternalReadPlan, response: Response): Promise<string> {
+  if (plan.source !== "modern" || ![400, 422].includes(response.status) || (plan.request.kind !== "plans" && plan.request.kind !== "plan-items")) return "";
+  const operation = plan.request.kind;
+  const details = await readRequestError(response, operation, plan.signal);
+  throwIfAborted(plan.signal);
+  const label = operation === "plans" ? "入庫計畫清單" : "入庫商品清單";
+  const page = plan.request.paginationToken ? "接續頁" : "首頁";
+  const code = details.code === "unknown" ? "未辨識" : details.code;
+  return `（${label}／${page}；HTTP ${response.status}；Amazon：${code}；原因：${REQUEST_ERROR_REASONS[details.reason]}；回應：${REQUEST_ERROR_BODY_STATES[details.state]}）`;
+}
+
+function throwReadError(response: Response, diagnostic = ""): never {
   const message = response.status === 401 || response.status === 403
     ? "Amazon 拒絕 FBA 入庫貨件查詢。請確認 Private SP-API App 已具備 Amazon Fulfillment 角色並重新授權。"
     : response.status === 429
@@ -178,7 +271,7 @@ function throwReadError(response: Response): never {
       : response.status === 400 || response.status === 422
         ? "Amazon 無法驗證這次 FBA 入庫貨件唯讀請求。"
         : "Amazon 暫時無法完成 FBA 入庫貨件查詢。";
-  throw new SpApiError(message, {
+  throw new SpApiError(message + diagnostic, {
     status: response.status,
     code: response.status === 401 || response.status === 403
       ? "FBA_INBOUND_UNAUTHORIZED"
@@ -328,7 +421,7 @@ export function createFbaInboundReadsProductionAdapter(
           };
       const response = await execute(fixedPlan);
       throwIfAborted(fixedPlan.signal);
-      if (!response.ok) throwReadError(response);
+      if (!response.ok) throwReadError(response, await requestErrorDiagnostic(fixedPlan, response));
       const envelope = await parseJson(response, fixedPlan.signal);
       throwIfAborted(fixedPlan.signal);
       if (envelope === null) {
