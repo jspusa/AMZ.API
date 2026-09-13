@@ -33,8 +33,8 @@ describe("FBA declared-expiry public read owner", () => {
     name = "x".repeat(401);
     await expect(new FbaExpiryReads({ context, adapter }).read({ context: captured, signal: new AbortController().signal })).rejects.toThrow();
   });
-  it("resumes bounded slices across owner reopen and reuses unchanged completed plans", async () => {
-    const plans = Array.from({ length: 110 }, (_, index) => ({ ...plan, inboundPlanId: `wf${String(index).padStart(8, "0")}-1234-abcd-5678-1234abcd5678` }));
+  it.each([undefined, ""])("resumes bounded slices with name %j across owner reopen and reuses unchanged completed plans", async name => {
+    const plans = Array.from({ length: 110 }, (_, index) => ({ ...plan, ...(name === undefined ? {} : { name }), inboundPlanId: `wf${String(index).padStart(8, "0")}-1234-abcd-5678-1234abcd5678` }));
     const seen: string[] = [];
     const adapter = { async read(request: Parameters<typeof fbaInboundExternalReadIdentity>[0]) {
       if (request.source !== "modern") throw new Error("Only modern reads");
@@ -71,13 +71,13 @@ describe("FBA declared-expiry public read owner", () => {
     const next = await reads.read({ context: captured, signal: new AbortController().signal, checkpoint: first.checkpoint });
     expect(next.complete).toBe(true); expect(next.records).toEqual([]); expect(itemCalls).toBe(1);
   });
-  it("resumes a plan's item pages and publishes that plan only after all pages complete", async () => {
+  it.each([undefined, ""])("resumes item pages with plan name %j and publishes only after all pages complete", async name => {
     let itemCalls = 0;
     const adapter = { async read(request: Parameters<typeof fbaInboundExternalReadIdentity>[0]) {
       if (request.source !== "modern") throw new Error("Only modern reads");
       const index = request.request.kind === "plan-items" ? Number(request.request.paginationToken ?? "0") : 0;
       if (request.request.kind === "plan-items") itemCalls += 1;
-      return { identity: fbaInboundExternalReadIdentity(request), requestId: null, envelope: request.request.kind === "plans" ? { inboundPlans: [plan] }
+      return { identity: fbaInboundExternalReadIdentity(request), requestId: null, envelope: request.request.kind === "plans" ? { inboundPlans: [{ ...plan, ...(name === undefined ? {} : { name }) }] }
         : { items: [{ msku: "FBA-ONE", asin: "B000000001", fnsku: "X000000001", quantity: 1, expiration: new Date(Date.UTC(2027, 0, index + 1)).toISOString().slice(0, 10) }], ...(index < 100 ? { pagination: { nextToken: String(index + 1) } } : {}) } };
     } };
     const captured = await context.capture(US);
