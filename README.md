@@ -22,7 +22,7 @@ JSPUSA 的 GitHub 控制台＋macOS／Windows 11 本機 Notebook Key Amazon 營�
 | 產品 | SKU 查詢、標題、1–5 項產品要點、成分、Amazon 預檢與寫入 | 一鍵＋Touch ID／Windows Hello／系統確認；只有實際編輯產品要點時，才可在完整揭露同語系第 6 項後舊值、勾選 preview-bound 確認並通過原生確認後，以 1–5 項完整取代；只改標題不會刪除多出的要點 |
 | 產品 | 全站 FBA 文案健檢（產品名稱 `<60`、產品亮點 `<110`、每項產品要點 `<150`／`>200`、產品敘述 `<1800`、疑似錯字、缺值、成分宣稱核對與逐項原因） | Amazon 唯讀掃描；第一次按下就啟動一個工作，忙碌期間重複點擊只沿用同一 flight；依明確 ingredients 證據核對多成分、Tendon／Tendons 與 Chicken／hypoallergenic 宣稱；`airdried`、`grainfree`、`dogfood`、`airdry` 只在後台產品敘述免列錯字，出現在標題、亮點、要點或成分仍回報；摘要與常用操作優先顯示，門檻、辭典與安全範圍收在低調的「詳細說明 ›」；Excel 依已證明的變體 family 分頁，問題欄著色，未發現問題的可編輯欄使用淺綠色。只有 family 每一列資料完整且全部檢查通過時，工作表才由 `F001` 命名為 `F001(可)`；任一問題、incomplete 或 unknown 都維持原名 |
 | 產品 | 將文案健檢 Excel 以選檔或拖放回傳，逐欄核對 Amazon 原值／Excel 更新值後批次更新；新版可只回傳 F007，或只回傳 F007、F008 等實際要改的完整工作表 | 同檔 round trip 保留特殊換行與 main-owned 24 小時證據。匯入會一次列出所有問題 SKU、工作表、Excel 列號、實際欄位與原因；能安全歸屬單列的 parser／fresh-read／Validation 問題只隔離該 SKU，其餘獨立安全 SKU 繼續，Amazon `INVALID` 沒有強制送出入口。公式／巨集／外部連結、跨帳號／站點、auth／rate limit／server／network／timeout 或無法綁定結果仍整批 fail closed。Preview／重新預檢最多同時 3 筆，並只在同一 phase、相同 Product Type 與安全脈絡內沿用 PTD；正式 PATCH 仍逐 SKU 單線送出。每筆 durable `ACCEPTED` 後立刻前進下一筆，main 另外以最多 2 個 GET-only 工作做 bounded 回查；進度分開顯示實際標籤「重新預檢 n/N」、「等待 Touch ID／Windows Hello」、「送出 n/N」、「Amazon 已接受 n/N」與「回查完成 n/N」。每 SKU 只有一次 ledgered PATCH，任何回查都不會重送 PATCH |
-| 產品 | 整組拖入圖片，依檔名 01–10 數字排序、自動準備公開圖片、格式／像素檢查與 Amazon 回查 | 首次設定後以 Touch ID／Windows Hello 解鎖圖片服務；實際可用位置依商品規格，Amazon 預檢通過後核對商品並以原生確認送出，不需重打 SKU |
+| 產品 | 整組拖入圖片，依檔名 01–10 數字排序、自動準備公開圖片、格式／像素檢查與 Amazon 回查 | 拖入、上傳與準備不需密碼或生物辨識；實際可用位置依商品規格，只有最後 Amazon 更新在預檢通過後使用與文案相同的原生確認，不需重打 SKU |
 | 產品 | 全站 FBA 圖片健檢（門檻可選 1–10 張、預設 8 張；不足與讀取未完成分開標示、結果保留並可返回） | Amazon 唯讀 |
 | 產品 | 全站 FBA A+ 健檢（依唯一 ASIN 讀取官方 publish records、Content Manager 文件與文件-ASIN 關聯；分開顯示發布狀態、文件名稱、文件審核狀態與關聯狀態，問題列可前往 A+ Content Manager 核對） | Amazon A+ Content API 唯讀；任一 exact 文件／ASIN 關聯只要含 schema-valid `CONTENT_PUBLISHED` 就保留已發布正向證據，不會被同 ASIN 另一文件的 negative／malformed 關聯抹除；未使用的 optional `contentReferenceKeySet` 畸形只把完整度降為 partial；沒有任何 published positive 的 malformed／negative 關聯仍 fail closed；文件存在或 APPROVED 本身不會被猜成已發布 |
 | 產品 | 文案健檢同一快照可分別匯出「待確認清單」與「全部商品完整模板」；兩個入口使用不同名稱與視覺層級，任一份都可選回同一批次更新流程 | 一鍵；兩份 Excel 都只在本機建立，不上傳商品文案 |
@@ -74,9 +74,9 @@ SP-API 不是單一 API Key。北美（US／CA）、遠東（JP／SG／AU）、�
 
 目前每個區域保存一組 Selling Partner 授權；只有同一 Seller authorization 實際涵蓋的 marketplaces 才能共用。若 JP、SG、AU 是不同 Seller accounts，v0.1 不會把它們合併成同一個遠東設定，未授權站點會由 Amazon 拒絕。
 
-把 JPEG／PNG 整組拖進圖片工作台，App 會自動準備 Amazon 可讀取的公開圖片。首次在本機視窗完成下載頁密碼驗證與 Touch ID／Windows Hello 確認，登入資料會保存於這台電腦的系統加密儲存；之後重新開啟或鎖定後，使用指紋／Windows Hello 即可解鎖圖片登入。不必另設 R2 或逐張提供網址。檔名可用「品號_01.jpg」或「品號_01_說明.jpg」，依數字排序至第 10 張，實際可編輯位置仍依 Amazon 商品規格。準備中斷會保留原檔，重新準備後再安全預檢與確認送出。
+把 JPEG／PNG 整組拖進圖片工作台，App 會自動準備 Amazon 可讀取的公開圖片。拖入、上傳與準備不需登入、密碼、Touch ID 或 Windows Hello，也不必另設 R2 或逐張提供網址。檔名可用「品號_01.jpg」或「品號_01_說明.jpg」，依數字排序至第 10 張，實際可編輯位置仍依 Amazon 商品規格。準備中斷會保留原檔；保存結果不明時只查詢既有結果，不自動重傳。服務額度或連線受限時會停止並顯示狀態，不改為要求登入。
 
-已有 CDN 圖片時仍可直接貼 HTTPS URL，也可在「Notebook Key 安全連線」選配自己的 R2。R2 Secret 與獨立圖片登入資料只存在作業系統加密儲存區；圖片服務 session 則只保留於 main 記憶體。安全預檢通過後直接核對 SKU、ASIN 與變更位置，按「送出圖片更新」以本機身分確認，不再重新輸入 SKU。
+已有 CDN 圖片時仍可直接貼 HTTPS URL。新版預設使用內建圖片代管，不讀取圖片登入資料或 R2 憑證；自有 R2 僅保留給未提供內建代管的自訂整合。舊圖片登入加密檔原樣保留，新流程不讀取、解密或刪除。安全預檢通過後核對 SKU、ASIN 與變更位置，只有按「送出圖片更新」才進入與文案相同的本機身分確認，不需重打 SKU。此變更不取消下載頁或公布欄原有驗證，完整邊界見 [免登入圖片準備規格](docs/specs/2026-09-passwordless-image-preparation.md)。
 
 ## 憑證保存位置
 

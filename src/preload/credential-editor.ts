@@ -25,7 +25,3 @@ const operationsBoardEditor: OperationsBoardEditorBridge = Object.freeze({
 contextBridge.exposeInMainWorld("fbaCredentialEditor", credentialEditor);
 contextBridge.exposeInMainWorld("fbaAdvertisingCredentialEditor", advertisingCredentialEditor);
 contextBridge.exposeInMainWorld("fbaOperationsBoardEditor", operationsBoardEditor);
-contextBridge.exposeInMainWorld("fbaListingImageEditor", Object.freeze({
-  login: (password: string) => ipcRenderer.invoke("fba:listing-image-editor-login", password) as Promise<void>,
-  close: () => ipcRenderer.invoke("fba:listing-image-editor-close") as Promise<void>,
-}));

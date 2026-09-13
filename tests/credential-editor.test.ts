@@ -58,6 +58,11 @@ describe("local-only SP-API/R2/Skill credential editor", () => {
     expect(remotePreload).not.toContain("fbaCredentialEditor");
     expect(localPreload).toContain('ipcRenderer.invoke("fba:credentials-save"');
     expect(localPreload).toContain('exposeInMainWorld("fbaCredentialEditor"');
+    expect(localPreload).not.toContain("fbaListingImageEditor");
+    expect(localPreload).not.toContain("fba:listing-image-editor-");
+    expect(mainSource).not.toContain("ListingImageLogin");
+    expect(mainSource).not.toContain("ListingImageCredentialVault");
+    expect(mainSource).not.toContain("listing-image-credentials.enc");
     const desktopBridge = contracts.slice(
       contracts.indexOf("export type DesktopBridge"),
       contracts.indexOf("export type CredentialEditorBridge"),

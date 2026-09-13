@@ -11,6 +11,8 @@
 
 ## 目前狀態
 
+- Issue #265 接續使用者明確要求：圖片拖入、排序、上傳準備不需要密碼或生物辨識，只有最後更新 Amazon 使用文案共用原生批准且不重打 SKU。0.1.70 退休專用圖片登入／vault owner，production 準備不讀加密設定，並接獨立有配額的 Supply Boss v2 圖片入口。0.1.69 效期核心修正已合併，但新要求抵達後未重跑 Mac／安裝，與本版合併交付；實機仍 0.1.68。完整需求與各層未完成驗收保留，见 [spec](specs/2026-09-passwordless-image-preparation.md) 與 [帳本](releases/2026-09-passwordless-image-preparation.md)。
+
 - Issue #263 接續 0.1.68 實機失敗：可信新版已安裝、首頁連線與圖片門檻重開保存已驗；第一次全 FBA 效期同步仍因 0–30 天缺值中斷，未重試。0.1.69 改以專用核心報表投影整理庫存、銷量與申報效期，補充庫齡未知保持 null，原嚴格庫齡入口不放寬。公開 reader→sync→coordinator 測試先重現相同錯誤；實作、檢查與交付狀態見 [規格](specs/2026-09-inventory-health-core-report.md) 與 [本輪帳本](releases/2026-09-inventory-health-core-report.md)。完整原始功能驗收持續保留。
 
 - Issue #261 已由 PR #262／main `7b202675a72fcc2cbe38dc3bb371f9664952f5dc` 合併 0.1.68：按整份報表的完整數量選擇非重疊庫齡組，處理空白細分與有效彙總並存的情況。3,813 tests、production audit 0、兩軸 review 各 0 open，四條 exact main CI、Pages HTML／11 個 JS／CSS、兩平台可信 artifact 與 Mac→Windows 下載卡上傳均已核對；使用者解鎖後已正常備份並安裝可信 0.1.68，vault／ledger 未變且 .67 App 保留；原生首頁截圖及後續完整輔助使用文字已證明 US／Amazon 已連線；圖片門檻 10 已跨正常退出／安裝／重開保存，並已恢復 8。全 FBA 效期與銷速本版首次同步仍以「0–30 天缺值」失敗結束，未重試，核心流程與庫齡缺值的關聯接續診斷；尚無完整原生結果。0.1.67 兩份實際 Excel 匯出及圖片門檻 1–10 已驗；變體掃描終態 285 FBA／74 未綁／1 未完成已觀察，0.1.68 已完成健檢 → 變體完整讀取 → 返回相同結果的導覽驗證，員工下載頁仍需登入。完整效期／銷速與其餘原始驗收範圍繼續保留，詳見 [需求規格](specs/2026-09-health-age-values.md) 與 [分層帳本](releases/2026-09-health-age-values.md)。

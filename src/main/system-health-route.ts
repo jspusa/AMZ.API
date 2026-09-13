@@ -108,14 +108,9 @@ export class SystemHealthRoute implements SystemHealthRoutePort {
       check(
         "image-storage",
         "圖片拖拉與公開來源",
-        summary.imageStorageConfigured ? "ready" : "attention",
+        "ready",
         "one_click",
-        summary.imageStorageConfigured
-          ? "圖片會在本機驗證後上傳到你自己的 R2 公開網域，再交由 Amazon 讀取。"
-          : "本機拖拉與格式檢查可用；正式送出圖片前需設定自己的 R2 公開 HTTPS 網域。",
-        summary.imageStorageConfigured
-          ? null
-          : "本機安全連線 → 圖片空間 → 加入 R2 設定",
+        "拖入與準備圖片不需密碼或 Touch ID／Windows Hello；只有最後送出 Amazon 更新時才需原生確認。",
       ),
       check(
         "replenishment-engine",

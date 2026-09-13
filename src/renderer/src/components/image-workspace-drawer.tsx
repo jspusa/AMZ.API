@@ -827,7 +827,7 @@ export default function ImageWorkspaceDrawer({
                   <div className="sku-search-row"><input disabled={busy} value={manualUrl} onChange={(event) => setManualUrl(event.target.value)} placeholder="https://cdn.example.com/product.jpg" inputMode="url" /><button type="button" onClick={() => void applyManualUrl()} disabled={busy || !snapshot.images[selectedIndex]?.capability.editable}>{actionLoading ? "檢查中" : "檢查並套用"}</button></div>
                 </section>
 
-                {hasPrivateDraft && <div className="price-warning compact"><strong>圖片已暫存，但尚無 Amazon 可用網址</strong><p>原圖保留在目前草稿；圖片服務可用後，按下方按鈕繼續準備。若未出現圖片服務登入，請先更新 AMZ.API Notebook Key；已有公開 HTTPS 圖片網址也可直接套用到對應位置。</p><button type="button" disabled={busy} onClick={() => {
+                {hasPrivateDraft && <div className="price-warning compact"><strong>圖片已暫存，但尚無 Amazon 可用網址</strong><p>原圖保留在目前草稿，按下方按鈕可繼續準備。只有最後送出 Amazon 圖片更新時才需 Touch ID／Windows Hello；已有公開 HTTPS 圖片網址也可直接套用到對應位置。</p><button type="button" disabled={busy} onClick={() => {
                   setBatchFiles(assets.flatMap(asset => !asset.readyForAmazon && asset.sourceFile ? [asset.sourceFile] : []));
                   setBatchId(value => value + 1);
                 }}>繼續準備暫存圖片</button></div>}
