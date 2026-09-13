@@ -1,6 +1,6 @@
 # AMZ.API — Codex 交接入口
 
-更新：2026-09-13。Repository：`jspusa/AMZ.API`；控制台：`https://jspusa.github.io/AMZ.API/`。
+更新：2026-09-14。Repository：`jspusa/AMZ.API`；控制台：`https://jspusa.github.io/AMZ.API/`。
 
 ## 開始工作
 
@@ -10,6 +10,8 @@
 4. 建立可審查變更，核對同一 commit 的 Actions 後才合併／發布。發布、artifact、安裝和 live 驗證分開記錄，不能從前一步推定後一步成功。
 
 ## 目前狀態
+
+- 0.1.75 已由 PR #282 合併，runtime source 固定為 `3a40cc0309d89abed80b25df40ca2c8e29188708`，與兩軸 0 findings 的 final candidate `39a21ecec0cf6aabadb091a866c1e90fa62c7992` 同一 tree。4,106 tests、audit 0、四條 exact main CI（均 attempt 1）、Pages 12 檔 bytes、兩平台 artifact／manifest／ASAR／fuses 及 Mac→Windows 上傳的 server completion receipts 均已驗。實際安裝仍 .74；目前 CUA 回報 Mac 鎖定且自動解鎖失敗，新的解鎖請求待使用者處理。員工下載頁仍有獨立的登入需求，實際下載 bytes 未驗。未安裝／啟動 .75、未跑 .75 同步，也未重跑 .74 同步。接續[本輪交付帳本](releases/2026-09-expiry-source-read-diagnostics.md)的分層證據與待辦；runtime checkout 保持 detached clean，文件交接 checkout 不作 artifact／安裝來源。完整 #263 仍未完成，先前已驗功能保留。
 
 - 0.1.74 原生首頁與 Amazon 連線已恢復，首次且唯一效期同步於 2026-09-13 23:12:14（台北）完成遍歷，結果仍 partial：284 FBA 品號、33 偏慢／待核對，36 個計畫不可讀。本機重讀、人工公告 4 項、門檻 8 與八欄版面保留；未重試。合計無法證明總計畫數或同一失敗原因，現有紀錄也沒保存操作／頁次。官方 request 契約未找到具體差異。Issue #281 的 0.1.75 接續補強純本機來源摘要與未來固定診斷，完整保存固定錯誤代碼／回應狀態並精確分類官方兩種來源錯誤，不更改讀取策略、不新增 Amazon 呼叫入口；見[規格](specs/2026-09-expiry-source-read-diagnostics.md)與[帳本](releases/2026-09-expiry-source-read-diagnostics.md)。實際安裝仍 .74，完整 #263 未完成。員工下載頁仍需登入，已明確指出下載頁而非 Mac 解鎖。
 
