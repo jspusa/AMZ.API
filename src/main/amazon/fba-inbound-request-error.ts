@@ -2,7 +2,7 @@ import { SpApiError } from "./sp-api-error";
 
 export type FbaInboundRequestErrorBodyState = "parsed" | "empty" | "malformed" | "oversize" | "timed-out" | "unavailable" | "not-read";
 export type FbaInboundRequestErrorCode = "BadRequest" | "InvalidInput" | "unknown";
-export type FbaInboundRequestErrorReason = "legacy-v0-plan-unsupported" | "inbound-plan-unavailable" | "invalid-status" | "other-input" | "unknown";
+export type FbaInboundRequestErrorReason = "legacy-v0-plan-unsupported" | "inbound-plan-unavailable" | "inbound-plan-id-malformed" | "invalid-status" | "other-input" | "unknown";
 export type FbaInboundRequestDiagnostic = Readonly<{
   state: FbaInboundRequestErrorBodyState;
   code: FbaInboundRequestErrorCode;

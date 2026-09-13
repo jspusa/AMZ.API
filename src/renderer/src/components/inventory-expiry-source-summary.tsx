@@ -10,10 +10,17 @@ const unknownLabels = {
 const operationLabels = { plan: "計畫資料", "shipment-items": "貨件商品", "plan-items": "計畫商品" } as const;
 const reasonLabels = {
   "legacy-v0-plan-unsupported": "回應提及舊版計畫限制",
+  "inbound-plan-id-malformed": "回應指出計畫編號格式不符",
   "inbound-plan-unavailable": "回應指出計畫不可用",
   "invalid-status": "回應指出狀態不符",
   "other-input": "其他請求驗證問題",
   unknown: "原因未記錄",
+} as const;
+
+const codeLabels = { BadRequest: "BadRequest", InvalidInput: "InvalidInput", unknown: "無法辨識", "not-recorded": "未記錄" } as const;
+const responseLabels = {
+  parsed: "已讀取", empty: "空白", malformed: "格式無法辨識", oversize: "超過讀取上限",
+  "timed-out": "讀取逾時", unavailable: "無法讀取", "not-read": "未讀取", "not-recorded": "未記錄",
 } as const;
 
 export default function InventoryExpirySourceSummary({ diagnostic }: { diagnostic?: InventoryExpirySourceDiagnostics }) {
@@ -29,7 +36,8 @@ export default function InventoryExpirySourceSummary({ diagnostic }: { diagnosti
           {([400, 404, 422] as const).filter(status => diagnostic.statusCounts[String(status) as "400" | "404" | "422"] > 0)
             .map(status => <p key={status}>{`HTTP ${status}：${diagnostic.statusCounts[String(status) as "400" | "404" | "422"]} 個計畫`}</p>)}
           {diagnostic.failures.map((failure, index) => <p key={index}>
-            {`${failure.operation === "unknown" ? "舊版紀錄未保存失敗步驟" : `${operationLabels[failure.operation]} · ${failure.page === "first" ? "首頁" : failure.page === "next" ? "後續頁" : "頁次未記錄"}`} · HTTP ${failure.status} · ${reasonLabels[failure.reason]}：${failure.count} 個計畫`}
+            {`${failure.operation === "unknown" ? "舊版紀錄未保存失敗步驟" : `${operationLabels[failure.operation]} · ${failure.page === "first" ? "首頁" : failure.page === "next" ? "後續頁" : "頁次未記錄"}`} · HTTP ${failure.status} · ${failure.reason === "unknown" && failure.responseState !== "not-recorded" ? "原因尚無法辨識" : reasonLabels[failure.reason]}：${failure.count} 個計畫`}
+            <br />{`Amazon 分類：${codeLabels[failure.code]} · 回應：${responseLabels[failure.responseState]}`}
           </p>)}
         </>}
   </details>;

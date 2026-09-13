@@ -24,6 +24,10 @@ const CANARY = "access_token=PRIVATE_CANARY https://private.invalid/secret";
 const itemsPlan: FbaInboundExternalReadPlan = { source: "modern", marketplaceId: US, request: { kind: "plan-items", inboundPlanId: PLAN_ID, paginationToken: null } };
 const detailPlan: FbaInboundExternalReadPlan = { source: "modern", marketplaceId: US, request: { kind: "plan", inboundPlanId: PLAN_ID } };
 const shipmentItemsPlan: FbaInboundExternalReadPlan = { source: "modern", marketplaceId: US, request: { kind: "shipment-items", inboundPlanId: PLAN_ID, shipmentId: "sh1234abcd-1234-abcd-5678-1234abcd5678", paginationToken: null } };
+const officialCauseCases = [
+  { plan: detailPlan, message: "The inboundPlanId is malformed.", reason: "inbound-plan-id-malformed", label: "入庫計畫識別碼格式遭拒" },
+  { plan: shipmentItemsPlan, message: "The requested inbound plan does not exist.", reason: "inbound-plan-unavailable", label: "指定入庫計畫不存在" },
+];
 const json = (status: number, value: unknown) => new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json", "x-amzn-requestid": "synthetic-request" } });
 const errorBody = (message: string, code = "BadRequest", details?: string) => ({ errors: [{ code, message, ...(details === undefined ? {} : { details }) }] });
 function adapterHarness(response: Response | (() => Response), plan = itemsPlan) {
@@ -112,6 +116,37 @@ describe("FBA inbound request diagnostics at the real health sync seam", () => {
 });
 
 describe("bounded terminal request error evidence", () => {
+  it.each(officialCauseCases)("classifies the official exact $reason response at its operation", async ({ plan, message, reason, label }) => {
+    const h = adapterHarness(json(400, errorBody(message, "BadRequest", CANARY)), plan);
+    const error: unknown = await h.adapter.read(plan).catch((value: unknown) => value);
+    expect(error).toMatchObject({ status: 400, requestDiagnostic: { state: "parsed", code: "BadRequest", reason } });
+    if (!(error instanceof FbaInboundRequestError)) throw new Error("Expected fixed request evidence");
+    expect(publicSpApiError(error, "公開備用訊息。").message).toContain(`原因：${label}`);
+    expect(JSON.stringify(error.requestDiagnostic)).not.toContain(message);
+    expect(JSON.stringify(publicSpApiError(error, "公開備用訊息。"))).not.toMatch(/PRIVATE|wf1234|sh1234|private\.invalid|access_token/);
+    expect(h.fetchImpl).toHaveBeenCalledTimes(1); expect(h.invalidate).not.toHaveBeenCalled();
+  });
+
+  it.each(officialCauseCases.flatMap(testCase => [
+    { ...testCase, variation: "wrong operation", plan: testCase.plan === detailPlan ? shipmentItemsPlan : detailPlan, status: 400, code: "BadRequest", expectedCode: "BadRequest", expectedReason: "other-input", state: "parsed" },
+    { ...testCase, variation: "wrong status", status: 422, code: "BadRequest", expectedCode: "BadRequest", expectedReason: "other-input", state: "parsed" },
+    { ...testCase, variation: "404 unread", status: 404, code: "BadRequest", expectedCode: "unknown", expectedReason: "unknown", state: "not-read" },
+    { ...testCase, variation: "wrong code", status: 400, code: "InvalidInput", expectedCode: "InvalidInput", expectedReason: "other-input", state: "parsed" },
+    { ...testCase, variation: "unreviewed code", status: 400, code: "Unreviewed", expectedCode: "unknown", expectedReason: "unknown", state: "parsed" },
+    ...[
+      ` ${testCase.message}`, `${testCase.message} `, `ERROR: ${testCase.message}`,
+      `${testCase.message} ${CANARY}`, testCase.message.toLowerCase(), testCase.message.slice(0, -1),
+    ].map((message, index) => ({ ...testCase, variation: `near match ${index}`, message, status: 400, code: "BadRequest", expectedCode: "BadRequest", expectedReason: "other-input", state: "parsed" })),
+  ]))("does not infer $reason from $variation", async ({ plan, message, status, code, expectedCode, expectedReason, state }) => {
+    const h = adapterHarness(json(status, errorBody(message, code, CANARY)), plan);
+    const error: unknown = await h.adapter.read(plan).catch((value: unknown) => value);
+    expect(error).toMatchObject({ status, requestDiagnostic: { state, code: expectedCode, reason: expectedReason } });
+    if (!(error instanceof FbaInboundRequestError)) throw new Error("Expected fixed request evidence");
+    expect(JSON.stringify(error.requestDiagnostic)).not.toMatch(/PRIVATE|The inboundPlanId|requested inbound plan/);
+    expect(JSON.stringify(publicSpApiError(error, "公開備用訊息。"))).not.toMatch(/PRIVATE|wf1234|sh1234|private\.invalid|access_token/);
+    expect(h.fetchImpl).toHaveBeenCalledTimes(1); expect(h.invalidate).not.toHaveBeenCalled();
+  });
+
   it("provides fixed main-only cause metadata without parsing the public message", async () => {
     const h = adapterHarness(json(400, errorBody(LEGACY, "BadRequest", CANARY)));
     const error: unknown = await h.adapter.read(itemsPlan).catch((value: unknown) => value);

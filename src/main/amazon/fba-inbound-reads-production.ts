@@ -186,6 +186,7 @@ const LEGACY_ITEMS_UNSUPPORTED = "Operation ListInboundPlanItems is not supporte
 const REQUEST_ERROR_REASONS: Record<RequestErrorReason, string> = {
   "legacy-v0-plan-unsupported": "舊版入庫計畫不支援商品讀取",
   "inbound-plan-unavailable": "指定入庫計畫不存在",
+  "inbound-plan-id-malformed": "入庫計畫識別碼格式遭拒",
   "invalid-status": "計畫狀態條件遭拒",
   "other-input": "其他請求條件遭拒",
   unknown: "尚無可辨識原因",
@@ -211,7 +212,8 @@ function requestErrorDetails(value: unknown, operation: DiagnosticOperation, sta
     // partial keyword match, or an arbitrary upstream code/message/details.
     if (status === 400 && code === "BadRequest") {
       if (operation === "plan-items" && (error.message === LEGACY_ITEMS_UNSUPPORTED || error.message === `ERROR: ${LEGACY_ITEMS_UNSUPPORTED}`)) reason = "legacy-v0-plan-unsupported";
-      else if (operation === "plan-items" && error.message === "The requested inbound plan does not exist.") reason = "inbound-plan-unavailable";
+      else if ((operation === "plan-items" || operation === "shipment-items") && error.message === "The requested inbound plan does not exist.") reason = "inbound-plan-unavailable";
+      else if (operation === "plan" && error.message === "The inboundPlanId is malformed.") reason = "inbound-plan-id-malformed";
       else if (operation === "plans" && error.message === "The status is invalid.") reason = "invalid-status";
     }
     details.push({ state: "parsed", code, reason });

@@ -19,3 +19,13 @@ Public seam 先重現診斷丟失，之後驗證 production adapter → reader �
 第一次獨立 Spec 審查找到兩項 P2：部分遍歷保留快取重複計入本輪完成，以及不存在的日期被正規化為有效時間。兩項已在 public GET 先重現，再修正投影與 DTO 一致性；120／150 個舊 cache、過期部分遍歷 tombstone、非法日期、合法閏日／offset 及微秒未來邊界皆已驗，底層快取／遍歷／request 未改。複查中既有 B2B recent-work 的 65 筆磁碟 fixture 曾超過 5 秒，原測試未改，單檔 9 tests 與第二次完整檢查通過。
 
 本機證據：`/tmp/amz-expiry-source-diagnostics-revised-check-r2.log`、`/tmp/amz-expiry-source-diagnostics-recent-work-focused.log`、`/tmp/amz-expiry-source-diagnostics-audit.log`、`/tmp/inventory-expiry-source-summary-evidence/verification.json`。修訂後 exact candidate 複審及 CI／產物／安裝證據尚待。完整 #263 仍未完成；真正效期來源與多日期尚無實機驗收。
+
+## 發布前完整分類補強
+
+`1bdf738` 已完成兩軸 0 findings 與 PR Validate／Windows 檢查，但尚未合併。最後唯讀核對發現 adapter 已解析的固定 code／response state 仍會在來源保存時丟失，因此在同一未發布版本補齊，避免安裝後又只看到泛化原因。新增分類只依官方模型的 operation／400／BadRequest／完整精確訊息；其他 operation、狀態、代碼與近似文字保守不分類。這不是本帳號 live 原因的推論。
+
+Renderer 保留分類與回應狀態，舊資料標示未記錄；public DTO 拒絕非法組合，聚合鍵分開保留不同固定維度。原 cursor、schema 2 歷史相容、嚴格日期、本輪互斥計數、128 KiB／2 秒錯誤讀取與 404 不讀 body 政策保持。Adapter 107 項聚焦驗證通過；renderer 16 項測試通過，390px 的摘要段落沒有溢出，viewport／暫時頁面與 server 已清理。最終來源保存檢查、完整 check、exact candidate 複審及 CI 需在補強完成後另行記錄。
+
+新增本機證據：`/tmp/amz-expiry-source-diagnostics-body-renderer-red.log`、`/tmp/amz-expiry-source-diagnostics-body-renderer-green.log`、`/tmp/inventory-expiry-source-summary-complete-evidence/verification.json`。
+
+補強後完整檢查已通過：326 files／4,106 tests、typecheck、build、stylesheet composition、diff check，production audit 0。來源摘要的 41 項測試包含 6,000 個來源／全部 200 種合法固定分類、旧三欄保存、未記錄與新回應狀態、嚴格日期及本輪互斥計數；相關 9 files／305 tests 另已通過。最終 check：`/tmp/amz-expiry-source-diagnostics-complete-check.log`；audit：`/tmp/amz-expiry-source-diagnostics-complete-audit.log`。補強後 final candidate 的兩軸複審與 CI 尚待，尚未合併／安裝 .75。

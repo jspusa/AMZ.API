@@ -1,11 +1,11 @@
 import { createHash } from "node:crypto";
-import type { InventoryExpirySourceDiagnostics, InventoryExpirySourceFailure } from "../../shared/inventory-expiry-source-diagnostics";
+import { isInventoryExpirySourceFailure, type InventoryExpirySourceDiagnostics, type InventoryExpirySourceFailure } from "../../shared/inventory-expiry-source-diagnostics";
 import { throwIfAborted } from "../abort-utils";
 import { isPlainRecord } from "../route-input";
 import type { InventoryExpiryRecord } from "./inventory-health";
 import { fbaInboundExternalReadIdentity, type FbaInboundExternalReadAdapter } from "./fba-inbound-reads";
 import type { ModernFbaInboundTransportRequest } from "./fba-inbound-modern";
-import { FbaInboundRequestError, type FbaInboundRequestErrorReason } from "./fba-inbound-request-error";
+import { FbaInboundRequestError } from "./fba-inbound-request-error";
 import { isDateOnly } from "./marketplace-calendar";
 import { SpApiError } from "./sp-api-error";
 import type { SpExecutionContext, SpExecutionContextAdapter } from "./sp-execution-context";
@@ -23,8 +23,9 @@ type CurrentPlan = CachedPlan & {
   sourceIndex: number; itemCursor: string | null; itemTokens: string[];
 };
 type SourceRequest = Extract<ModernFbaInboundTransportRequest, { kind: "plan" | "shipment-items" | "plan-items" }>;
-type SourceDiagnostic = { operation: SourceRequest["kind"]; page: "first" | "next"; reason: FbaInboundRequestErrorReason };
-type UnavailablePlan = PlanSummary & { reason: "upstream-unavailable"; upstreamStatus: 400 | 404 | 422; diagnostic?: SourceDiagnostic };
+type SourceDiagnostic = Pick<InventoryExpirySourceFailure, "reason" | "code" | "responseState"> & { operation: SourceRequest["kind"]; page: "first" | "next" };
+type LegacySourceDiagnostic = Omit<SourceDiagnostic, "code" | "responseState">;
+type UnavailablePlan = PlanSummary & { reason: "upstream-unavailable"; upstreamStatus: 400 | 404 | 422; diagnostic?: SourceDiagnostic | LegacySourceDiagnostic };
 /** Main-only continuation; the renderer gets only the separate human-readable source label. */
 export type FbaExpiryCheckpoint = {
   schemaVersion: 2;
@@ -54,13 +55,14 @@ const MAX_DECLARED_TOTAL = 100000000;
 const MAX_REQUESTS_PER_SLICE = 100;
 const MAX_CHECKPOINT_BYTES = 7 * 1024 * 1024;
 const SHIPMENT_STATUSES = new Set(["ABANDONED", "CANCELLED", "CHECKED_IN", "CLOSED", "DELETED", "DELIVERED", "IN_TRANSIT", "MIXED", "READY_TO_SHIP", "RECEIVING", "SHIPPED", "UNCONFIRMED", "WORKING"]);
-function sourceDiagnostic(value: unknown): SourceDiagnostic {
-  if (!isPlainRecord(value) || Object.keys(value).length !== 3 ||
-    typeof value.operation !== "string" || !["plan", "shipment-items", "plan-items"].includes(value.operation) ||
-    typeof value.page !== "string" || !["first", "next"].includes(value.page) ||
-    typeof value.reason !== "string" || !["legacy-v0-plan-unsupported", "inbound-plan-unavailable", "invalid-status", "other-input", "unknown"].includes(value.reason) ||
-    (value.operation === "plan" && value.page !== "first")) invalid("checkpoint");
-  return { operation: value.operation as SourceDiagnostic["operation"], page: value.page as SourceDiagnostic["page"], reason: value.reason as FbaInboundRequestErrorReason };
+function sourceDiagnostic(value: unknown, status: 400 | 404 | 422): SourceDiagnostic {
+  if (!isPlainRecord(value) || ![3, 5].includes(Object.keys(value).length) ||
+    Object.keys(value).some(key => !["operation", "page", "reason", "code", "responseState"].includes(key))) invalid("checkpoint");
+  const legacy = Object.keys(value).length === 3;
+  if (legacy && (!Object.hasOwn(value, "operation") || !Object.hasOwn(value, "page") || !Object.hasOwn(value, "reason"))) invalid("checkpoint");
+  const failure = { ...value, ...(legacy ? { code: "not-recorded", responseState: "not-recorded" } : {}), status, count: 1 };
+  if (!isInventoryExpirySourceFailure(failure) || failure.operation === "unknown" || failure.page === "unknown") invalid("checkpoint");
+  return { operation: failure.operation, page: failure.page, reason: failure.reason, code: failure.code, responseState: failure.responseState };
 }
 // Diagnostics identify the rejected field or invariant, never its upstream value.
 const FAILURE_MESSAGES = {
@@ -339,7 +341,7 @@ export function parseFbaExpiryCheckpoint(value: unknown): FbaExpiryCheckpoint | 
     const plan = summary(raw);
     if ((plan.status !== "ACTIVE" && plan.status !== "SHIPPED") || typeof raw.upstreamStatus !== "number") invalid("checkpointIntegrity");
     return { ...plan, reason: "upstream-unavailable" as const, upstreamStatus: raw.upstreamStatus as 400 | 404 | 422,
-      ...(raw.diagnostic === undefined ? {} : { diagnostic: sourceDiagnostic(raw.diagnostic) }) };
+      ...(raw.diagnostic === undefined ? {} : { diagnostic: sourceDiagnostic(raw.diagnostic, raw.upstreamStatus as 400 | 404 | 422) }) };
   });
   const unavailableIds = unavailablePlans.map(plan => plan.inboundPlanId);
   const activePlans = [...cachedPlans, ...(currentPlan ? [currentPlan] : [])];
@@ -384,8 +386,9 @@ export function projectFbaExpirySourceDiagnostics(value: unknown, context: SpExe
   const failures = new Map<string, InventoryExpirySourceFailure>();
   for (const plan of unavailable) {
     statusCounts[plan.upstreamStatus] += 1;
-    const failure: InventoryExpirySourceFailure = { ...(plan.diagnostic ?? { operation: "unknown", page: "unknown", reason: "unknown" }), status: plan.upstreamStatus, count: 1 };
-    const key = JSON.stringify([failure.operation, failure.page, failure.status, failure.reason]);
+    const failure: InventoryExpirySourceFailure = { ...(plan.diagnostic ? sourceDiagnostic(plan.diagnostic, plan.upstreamStatus)
+      : { operation: "unknown", page: "unknown", reason: "unknown", code: "not-recorded", responseState: "not-recorded" }), status: plan.upstreamStatus, count: 1 };
+    const key = JSON.stringify([failure.operation, failure.page, failure.status, failure.reason, failure.code, failure.responseState]);
     failures.set(key, { ...failure, count: (failures.get(key)?.count ?? 0) + 1 });
   }
   return { status: "available", recordedAt: new Date(checkpoint.startedAt).toISOString(), stale: age > 30 * 60 * 1000,
@@ -446,7 +449,9 @@ export class FbaExpiryReads {
         unavailable.set(plan.inboundPlanId, { inboundPlanId: plan.inboundPlanId, ...(plan.name === undefined ? {} : { name: plan.name }),
           lastUpdatedAt: plan.lastUpdatedAt, status: plan.status, reason: "upstream-unavailable", upstreamStatus: error.status as 400 | 404 | 422,
           diagnostic: sourceDiagnostic({ operation: request.kind, page: request.kind !== "plan" && request.paginationToken ? "next" : "first",
-            reason: error instanceof FbaInboundRequestError ? error.requestDiagnostic.reason : "unknown" }) });
+            reason: error instanceof FbaInboundRequestError ? error.requestDiagnostic.reason : "unknown",
+            code: error instanceof FbaInboundRequestError ? error.requestDiagnostic.code : "unknown",
+            responseState: error instanceof FbaInboundRequestError ? error.requestDiagnostic.state : "not-recorded" }, error.status as 400 | 404 | 422) });
         cached.delete(plan.inboundPlanId);
         state.currentPlan = null;
         return null;

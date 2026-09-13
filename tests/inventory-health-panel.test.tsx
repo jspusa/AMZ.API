@@ -38,7 +38,7 @@ describe("inventory health local workflow", () => {
       status: "available", recordedAt: "2026-09-12T09:00:00.000Z", stale: true, traversal: "complete",
       listedPlanCount: 42, cachedPlanCount: 6, unavailablePlanCount: 36, pendingPlanCount: 0,
       statusCounts: { "400": 36, "404": 0, "422": 0 },
-      failures: [{ operation: "unknown", page: "unknown", status: 400, reason: "unknown", count: 36 }],
+      failures: [{ operation: "unknown", page: "unknown", status: 400, reason: "unknown", code: "not-recorded", responseState: "not-recorded", count: 36 }],
     } };
     const listeners = await mount(async (url, init) => {
       calls.push({ url, method: init?.method }); return Response.json({ snapshot: historical });
@@ -48,6 +48,8 @@ describe("inventory health local workflow", () => {
     expect(output()).toContain("本輪已讀完 6 個");
     expect(output()).toContain("HTTP 400：36 個計畫");
     expect(output()).toContain("舊版紀錄未保存失敗步驟");
+    expect(output()).toContain("Amazon 分類：未記錄");
+    expect(output()).toContain("回應：未記錄");
     expect(output()).not.toContain("★ 列入行事曆");
     await act(async () => { button("重新讀取本機資料").props.onClick(); });
     expect(calls).toHaveLength(2);
@@ -55,6 +57,35 @@ describe("inventory health local workflow", () => {
     await act(async () => { listeners.get("context")!(); });
     expect(output()).not.toContain("HTTP 400：36 個計畫");
     expect(output()).not.toContain("來源讀取摘要");
+  });
+
+  it("keeps saved request classifications and unread response states distinct in the local summary", async () => {
+    const calls: Array<{ url: string; method?: string }> = [];
+    await mount(async (url, init) => {
+      calls.push({ url, method: init?.method });
+      return Response.json({ snapshot: { ...snapshot({ sourceComplete: false, rows: [] }), expirySourceDiagnostics: {
+        status: "available", recordedAt: "2026-09-12T09:00:00.000Z", stale: false, traversal: "complete",
+        listedPlanCount: 5, cachedPlanCount: 0, unavailablePlanCount: 5, pendingPlanCount: 0,
+        statusCounts: { "400": 4, "404": 1, "422": 0 },
+        failures: [
+          { operation: "plan", page: "first", status: 400, reason: "inbound-plan-id-malformed", code: "BadRequest", responseState: "parsed", count: 1 },
+          { operation: "shipment-items", page: "next", status: 400, reason: "inbound-plan-unavailable", code: "BadRequest", responseState: "parsed", count: 1 },
+          { operation: "shipment-items", page: "first", status: 400, reason: "other-input", code: "InvalidInput", responseState: "parsed", count: 1 },
+          { operation: "plan", page: "first", status: 400, reason: "unknown", code: "unknown", responseState: "malformed", count: 1 },
+          { operation: "plan", page: "first", status: 404, reason: "unknown", code: "unknown", responseState: "not-read", count: 1 },
+        ],
+      } } });
+    });
+    expect(output()).toContain("回應指出計畫編號格式不符");
+    expect(output()).toContain("回應指出計畫不可用");
+    expect(output()).toContain("Amazon 分類：BadRequest");
+    expect(output()).toContain("Amazon 分類：InvalidInput");
+    expect(output()).toContain("回應：格式無法辨識");
+    expect(output()).toContain("回應：未讀取");
+    expect(output()).toContain("原因尚無法辨識");
+    expect(output()).not.toContain("原因未記錄");
+    expect(calls).toEqual([{ url: `/api/inventory-health?marketplaceId=${marketplaceId}`, method: undefined }]);
+    expect(output()).not.toContain("★ 列入行事曆");
   });
 
   it("shows an unknown source diagnostic without inventing zero failures", async () => {
