@@ -3,8 +3,16 @@
 Issue #265；規格見 [圖片準備免登入](../specs/2026-09-passwordless-image-preparation.md)。
 
 - Source base: `54a6bb6b97f0c887ca0330ae64a96c99bb0e6984`（0.1.69 健康核心修正已合併）。
-- 目前安裝仍為可信 0.1.68；0.1.69 Mac CI 首次因既有 dashboard test 5 秒 timeout 失敗，定點一次通過，未重跑、未安裝。Windows 0.1.69 artifact 與 Pages 已驗，不能當本版證據。
+- 0.1.69 未安裝；Mac CI 首次因既有 dashboard test 5 秒 timeout 失敗，定點一次通過，未重跑。該版健康核心修正已包含在本版；其 artifact 與 Pages 不作本版證據。
 - 本版 LocalImageUpload 公開重現先因 vault lookup 失敗，再移除 production 準備阶段 lookup；ApiRouter 證明正常 ready 與 context 失效拒絕，零批准及零 Amazon 呼叫。
-- 本機全檢、兩軸 review、Site exact source/deployment、兩平台 exact CI/artifact、Pages、安裝、原生準備與效期同步、員工實際下載各層待驗，完成後以本輪實際證據更新。
-- 原生圖片登入 sheet 已取消，原本圖片檔案保留；未送 Amazon Preview/PATCH。上傳準備不需要登入的改動仍須新服務及 Notebook Key 同時交付後才可實機驗收。
+- PR #266 已合併，release-code/main SHA `82d2739c708c3c371e4ece80721de742d9dac6b3` 與 reviewed HEAD `fba76bb4e09c301b034d17d5776ea7d77d9fdb87` tree 完全一致。本機 321 files／3,834 tests、typecheck／build／樣式檢查及 production audit 0 通過；AMZ.API 兩軸 review 各 0 open。首次全檢的刪除檔案索引及既有 B2B timeout 已分别定位、定點驗證，最終全檢通過，未放寬 timeout 或跳過測試。
+- 四條 exact main/push CI 均 attempt 1 成功：Validate `34738727062`、Pages `34738727058`、Mac `34738727074`、Windows `34738727059`。Pages artifact `10311617434` 的 HTML 及全部 11 個 JS／CSS 與線上 bytes 相符。
+- Mac artifact `10312271532` 與 Windows artifact `10311428099` 已核对 archive／manifest／payload／ASAR、版本 0.1.70、disabled update channel 及全部八項 fuses；Mac universal 兩架構與 deep strict ad-hoc codesign、Windows AMD64 N-API 封裝亦通過。這不證明正式簽章、Windows 實機或真人 Hello。
+- Supply Boss final source `da9c9e01bed8e0add7fdbec3c6397937227e0ef1` 已推送並發布 version 8，deployment `appgdep_6aa62c3d2418819181f20c5a861122c6` succeeded，audience public 與 environment revision 11 保留。Server review 首輪兩項 P2 已各以 regression 修復，final 兩軸各 0 open。實際原始 JPEG 1,405,699 bytes 以一次免登入 PUT、status GET 與 public GET 均 200，原 bytes 完全一致；零 Amazon 呼叫。這是服務端證據，尚非原生 App 準備證據。
+- Mac→Windows 0.1.70 兩张既有下載卡上傳 receipt 均核對可信 payload。Mac DMG 246,884,632 bytes／SHA-256 `915b1f05e0f3005cd7e5f2781c621bb741a01fa7ce7264398ac006c85f8427ab`；Windows installer 102,057,244 bytes／SHA-256 `0487a7f1d84915b2080cd4ac4e78f0967768317023ee8d9f32d45171e48cdf19`。目前員工頁顯示空登入表單，尚無本版登入後實際下載 bytes 證據。
+- 2026-09-13 使用者解鎖後已正常退出 .68，完成 0700 userData 備份並安裝 read-only mounted 可信 0.1.70；.68 App 保留，換版期間 vault／ledger bytes 相同。已安裝 ASAR SHA-256 `db15f8a26579e375721b225311d80b353fe8e789497fb4906541a0113135889d` 與可信 artifact 相符。
+- 本版程序已啟動，但原生首頁尚未觀察成功：CUA 讀取視窗 timeout；一次有界唯讀程序取樣顯示 SecItemCopyMatching／SecKeychainItemCopyContent 等待 SecurityServer decrypt，SecurityAgent 正在執行。後續 CUA 唯讀存取遭安全限制拒絕，未取得提示內容、未操作批准。已請使用者完成實際系統啟動授權或回報沒有提示；不能從此推定原生圖片準備、連線或效期同步成功。
+- 2026-09-13 05:12 UTC 接續觀察：同一 main process 28432 仍存活，已安裝 .70 的 ASAR 仍相符，有界取樣仍顯示相同鑰匙圈等待；CUA 此時明確回報 Mac 已鎖定且自動解鎖失敗。未重啟程序、未重送操作、未重複提出授權問題；等待先前已請使用者完成的本機解鎖／系統授權。證據為 `native-wait-20260913T051233Z.json`。
+- 原生圖片登入 sheet 的舊要求已取消，原檔保留；本輪未送 Amazon Preview/PATCH。接續已安裝 .70 的免 prep prompt 圖片準備、全 FBA 效期／銷速首次同步與終態、人工公告保留、已確認正清售缺口行事曆，以及員工登入後兩平台實際下載。未獲具體寫入授權前，不為驗收自行送 Amazon mutation；真人指紋仍須分開記錄。
+- 本輪證據根目錄為 `/tmp/amz-api-v0170-verified/`；主要索引為 `source-merge.json`、`review.json`、`site-deployment.json`、`site-live-image.json`、`portal-upload-verification.json`、`installation-verification.json` 與 `native-startup-pending.json`。舊 `native-status.json` 的 .68／鎖定快照保留為歷史，不作目前狀態。
 - 原始目標全部保留：自動入庫申報效期與全 FBA 銷速、人工即期品/促銷、僅已確認正缺口行事曆、兩種價目表、外觀保存、變體工作區、圖片排序/門檻/最終批准、進行中 Vine。已驗兩份 XLSX、偏好、Vine、門檻和變體導覽不因本輪重置。

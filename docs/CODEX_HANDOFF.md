@@ -11,7 +11,7 @@
 
 ## 目前狀態
 
-- Issue #265 接續使用者明確要求：圖片拖入、排序、上傳準備不需要密碼或生物辨識，只有最後更新 Amazon 使用文案共用原生批准且不重打 SKU。0.1.70 退休專用圖片登入／vault owner，production 準備不讀加密設定，並接獨立有配額的 Supply Boss v2 圖片入口。0.1.69 效期核心修正已合併，但新要求抵達後未重跑 Mac／安裝，與本版合併交付；實機仍 0.1.68。完整需求與各層未完成驗收保留，见 [spec](specs/2026-09-passwordless-image-preparation.md) 與 [帳本](releases/2026-09-passwordless-image-preparation.md)。
+- Issue #265／PR #266 已合併 0.1.70，release-code `82d2739c708c3c371e4ece80721de742d9dac6b3`：圖片準備免密碼與生物辨識，僅最後更新 Amazon 沿用文案共用原生批准且不重打 SKU；包含 .69 效期核心修正。3,834 tests、audit 0、兩軸 final review、四條 exact main CI、Pages 全 bytes、兩平台可信 artifact 與 Mac→Windows 下載卡 receipt 已驗；Supply Boss v8 已發布並以原始 JPEG 實測免登入上傳及原 bytes 回讀。使用者解鎖後已正常備份安裝可信 .70，.68 App 與 vault／ledger 保留；05:12 UTC 同一新程序仍存活，有界取樣顯示等待 macOS 鑰匙圈讀取；CUA 回報 Mac 已鎖定且自動解鎖失敗，先前唯讀安全視窗存取遭拒，未取得提示內容。已請使用者處理本機解鎖／系統啟動授權。原生免密碼圖片準備、全 FBA 效期／銷速終態與人工公告／行事曆、員工登入後實際下載尚待；未送 Amazon Preview/PATCH。原始已驗 Excel、偏好、Vine、門檻及變體導覽不重置。完整需求與分層證據見 [spec](specs/2026-09-passwordless-image-preparation.md) 與 [帳本](releases/2026-09-passwordless-image-preparation.md)。
 
 - Issue #263 接續 0.1.68 實機失敗：可信新版已安裝、首頁連線與圖片門檻重開保存已驗；第一次全 FBA 效期同步仍因 0–30 天缺值中斷，未重試。0.1.69 改以專用核心報表投影整理庫存、銷量與申報效期，補充庫齡未知保持 null，原嚴格庫齡入口不放寬。公開 reader→sync→coordinator 測試先重現相同錯誤；實作、檢查與交付狀態見 [規格](specs/2026-09-inventory-health-core-report.md) 與 [本輪帳本](releases/2026-09-inventory-health-core-report.md)。完整原始功能驗收持續保留。
 
