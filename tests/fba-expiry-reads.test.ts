@@ -12,6 +12,7 @@ describe("FBA declared-expiry public read owner", () => {
     let name: string | undefined = "FBA September restock";
     let itemCalls = 0;
     const adapter = { async read(request: Parameters<typeof fbaInboundExternalReadIdentity>[0]) {
+      if (request.source === "modern" && request.request.kind === "plan") return { identity: fbaInboundExternalReadIdentity(request), requestId: null, envelope: { ...plan, ...(name ? { name } : {}) } };
       const list = request.source === "modern" && request.request.kind === "plans";
       if (!list) itemCalls += 1;
       return { identity: fbaInboundExternalReadIdentity(request), requestId: null, envelope: list ? { inboundPlans: [{ ...plan, ...(name ? { name } : {}) }] }
@@ -37,8 +38,9 @@ describe("FBA declared-expiry public read owner", () => {
     const plans = Array.from({ length: 110 }, (_, index) => ({ ...plan, ...(name === undefined ? {} : { name }), inboundPlanId: `wf${String(index).padStart(8, "0")}-1234-abcd-5678-1234abcd5678` }));
     const seen: string[] = [];
     const adapter = { async read(request: Parameters<typeof fbaInboundExternalReadIdentity>[0]) {
-      if (request.source !== "modern") throw new Error("Only modern reads");
       seen.push(request.request.kind);
+      if (request.source === "modern" && request.request.kind === "plan") return { identity: fbaInboundExternalReadIdentity(request), requestId: null, envelope: plans.find(value => value.inboundPlanId === ("inboundPlanId" in request.request ? request.request.inboundPlanId : null))! };
+      if (request.source !== "modern") throw new Error("Only modern reads");
       const offset = request.request.kind === "plans" ? Number(request.request.paginationToken ?? "0") : 0;
       return { identity: fbaInboundExternalReadIdentity(request), requestId: null, envelope: request.request.kind === "plans"
         ? { inboundPlans: plans.slice(offset, offset + 30), ...(offset + 30 < plans.length ? { pagination: { nextToken: String(offset + 30) } } : {}) }
@@ -49,17 +51,21 @@ describe("FBA declared-expiry public read owner", () => {
     expect(first.complete).toBe(false); expect(seen).toHaveLength(100);
     expect(first.records.length).toBeGreaterThan(0);
     const checkpoint = parseFbaExpiryCheckpoint(JSON.parse(JSON.stringify(first.checkpoint)));
-    const second = await new FbaExpiryReads({ context, adapter }).read({ context: captured, signal: new AbortController().signal, checkpoint });
+    let second = await new FbaExpiryReads({ context, adapter }).read({ context: captured, signal: new AbortController().signal, checkpoint });
+    while (!second.traversalComplete) second = await new FbaExpiryReads({ context, adapter }).read({ context: captured, signal: new AbortController().signal, checkpoint: JSON.parse(JSON.stringify(second.checkpoint)) });
     expect(second.complete).toBe(true); expect(second.records).toHaveLength(110);
     expect(seen.filter(kind => kind === "plan-items")).toHaveLength(110);
     const before = seen.length;
-    const fresh = await new FbaExpiryReads({ context, adapter }).read({ context: captured, signal: new AbortController().signal, checkpoint: second.checkpoint });
+    let fresh = await new FbaExpiryReads({ context, adapter }).read({ context: captured, signal: new AbortController().signal, checkpoint: second.checkpoint });
+    while (!fresh.traversalComplete) fresh = await new FbaExpiryReads({ context, adapter }).read({ context: captured, signal: new AbortController().signal, checkpoint: fresh.checkpoint });
     expect(fresh.complete).toBe(true); expect(fresh.records).toEqual(second.records);
-    expect(seen.slice(before)).toEqual(["plans", "plans", "plans", "plans"]);
+    expect(seen.slice(before).filter(kind => kind !== "plan")).toEqual(["plans", "plans", "plans", "plans"]);
+    expect(seen.slice(before).filter(kind => kind === "plan")).toHaveLength(110);
   });
   it("removes voided cached plans without inventing remaining inventory or re-reading their items", async () => {
     let status = "SHIPPED", itemCalls = 0;
     const reads = new FbaExpiryReads({ context, adapter: { async read(request) {
+      if (request.source === "modern" && request.request.kind === "plan") return { identity: fbaInboundExternalReadIdentity(request), requestId: null, envelope: { ...plan, status } };
       const list = request.source === "modern" && request.request.kind === "plans";
       if (!list) itemCalls += 1;
       return { identity: fbaInboundExternalReadIdentity(request), requestId: null, envelope: list ? { inboundPlans: [{ ...plan, status }] }
@@ -74,6 +80,7 @@ describe("FBA declared-expiry public read owner", () => {
   it.each([undefined, ""])("resumes item pages with plan name %j and publishes only after all pages complete", async name => {
     let itemCalls = 0;
     const adapter = { async read(request: Parameters<typeof fbaInboundExternalReadIdentity>[0]) {
+      if (request.source === "modern" && request.request.kind === "plan") return { identity: fbaInboundExternalReadIdentity(request), requestId: null, envelope: { ...plan, ...(name === undefined ? {} : { name }) } };
       if (request.source !== "modern") throw new Error("Only modern reads");
       const index = request.request.kind === "plan-items" ? Number(request.request.paginationToken ?? "0") : 0;
       if (request.request.kind === "plan-items") itemCalls += 1;
@@ -83,13 +90,14 @@ describe("FBA declared-expiry public read owner", () => {
     const captured = await context.capture(US);
     const first = await new FbaExpiryReads({ context, adapter }).read({ context: captured, signal: new AbortController().signal });
     expect(first.complete).toBe(false); expect(first.records).toEqual([]);
-    expect(first.checkpoint?.currentPlan?.records).toHaveLength(99);
+    expect(first.checkpoint?.currentPlan?.records).toHaveLength(98);
     const next = await new FbaExpiryReads({ context, adapter }).read({ context: captured, signal: new AbortController().signal, checkpoint: JSON.parse(JSON.stringify(first.checkpoint)) });
     expect(next.complete).toBe(true); expect(next.records).toHaveLength(101); expect(itemCalls).toBe(101);
   });
   it("reloads a changed plan revision and rejects checkpoints from another account or with manual quantities", async () => {
     let updated = plan.lastUpdatedAt, quantity = 100, itemCalls = 0;
     const adapter = { async read(request: Parameters<typeof fbaInboundExternalReadIdentity>[0]) {
+      if (request.source === "modern" && request.request.kind === "plan") return { identity: fbaInboundExternalReadIdentity(request), requestId: null, envelope: { ...plan, lastUpdatedAt: updated } };
       const list = request.source === "modern" && request.request.kind === "plans";
       if (!list) itemCalls += 1;
       return { identity: fbaInboundExternalReadIdentity(request), requestId: null, envelope: list ? { inboundPlans: [{ ...plan, lastUpdatedAt: updated }] }
@@ -110,6 +118,7 @@ describe("FBA declared-expiry public read owner", () => {
   it("rejects a repeated nonempty pagination token with otherwise valid distinct items", async () => {
     let page = 0;
     const reads = new FbaExpiryReads({ context, adapter: { async read(request) {
+      if (request.source === "modern" && request.request.kind === "plan") return { identity: fbaInboundExternalReadIdentity(request), requestId: null, envelope: plan };
       const list = request.source === "modern" && request.request.kind === "plans";
       if (!list) page += 1;
       return { identity: fbaInboundExternalReadIdentity(request), requestId: null, envelope: list ? { inboundPlans: [plan] }
@@ -121,6 +130,7 @@ describe("FBA declared-expiry public read owner", () => {
   it("reads all item pages, keeps separate dates, and never invents remaining quantities", async () => {
     const seen: string[] = [];
     const reads = new FbaExpiryReads({ context, adapter: { async read(request) {
+      if (request.source === "modern" && request.request.kind === "plan") return { identity: fbaInboundExternalReadIdentity(request), requestId: null, envelope: plan };
       if (request.source !== "modern") throw new Error("Only modern reads");
       seen.push(request.request.kind);
       const token = "paginationToken" in request.request && request.request.paginationToken;
@@ -137,6 +147,7 @@ describe("FBA declared-expiry public read owner", () => {
   });
   it("never converts malformed expiry to no risk", async () => {
     const reads = new FbaExpiryReads({ context, adapter: { async read(request) {
+      if (request.source === "modern" && request.request.kind === "plan") return { identity: fbaInboundExternalReadIdentity(request), requestId: null, envelope: plan };
       return { identity: fbaInboundExternalReadIdentity(request), requestId: null,
         envelope: request.source === "modern" && request.request.kind === "plans" ? { inboundPlans: [plan] }
           : { items: [{ msku: "FBA-ONE", asin: "B000000001", fnsku: "X000000001", quantity: 100, expiration: "2026-02-31" }], pagination: { nextToken: "same" } } };

@@ -107,9 +107,13 @@ export class InventoryHealthSync {
       await this.fence(job);
       const value = response.body.value;
       if (response.status !== 200 || !isPlainRecord(value) || !isInventoryHealthSnapshot(value.snapshot)) throw new SpApiError("本機庫存健康資料未能安全保存，請檢查儲存空間及解鎖狀態。", { code: "INVENTORY_HEALTH_UNAVAILABLE", status: 503 });
+      // The awaited refresh reports source failures through its callback.
+      const finalSourceError = sourceError as InventoryHealthSyncJob["error"];
       job.public = { ...job.public, status: value.snapshot.sourceComplete && !value.snapshot.stale ? "completed" : "partial", stage: "complete",
-        error: sourceError,
-        message: value.snapshot.sourceComplete && !value.snapshot.stale ? "全部 FBA 庫存與可取得的入庫效期已整理。" : "已保留 FBA 庫存估算；效期來源尚未完整，可再次同步接續。" };
+        error: finalSourceError,
+        message: value.snapshot.sourceComplete && !value.snapshot.stale ? "全部 FBA 庫存與可取得的入庫效期已整理。"
+          : finalSourceError?.code === "FBA_EXPIRY_SOURCES_UNAVAILABLE" ? "已整理可讀取的入庫效期；仍有來源無法讀取。"
+            : "已保留 FBA 庫存估算；效期來源尚未完整，可再次同步接續。" };
     } catch (error) {
       if (job.controller.signal.aborted || job.revision !== this.revision || this.jobs.get(job.context.marketplaceId) !== job) return;
       try { await this.fence(job); } catch { if (this.jobs.get(job.context.marketplaceId) === job) this.jobs.delete(job.context.marketplaceId); return; }

@@ -46,6 +46,21 @@ function jsonResponse(
 }
 
 describe("FBA Inbound production adapter", () => {
+  it.each([null, "OPAQUE/+next=page"])("reads shipment items through the fixed GET path with cursor %j", async paginationToken => {
+    const { adapter, fetchImpl } = adapterForBody(jsonResponse(200, { items: [] }));
+    const plan: FbaInboundExternalReadPlan = { source: "modern", marketplaceId: US,
+      request: { kind: "shipment-items", inboundPlanId: "wf1234abcd-1234-abcd-5678-1234abcd5678",
+        shipmentId: "sh1234abcd-1234-abcd-5678-1234abcd5678", paginationToken } };
+    await expect(adapter.read(plan)).resolves.toMatchObject({ identity: fbaInboundExternalReadIdentity(plan), envelope: { items: [] } });
+    const [url, init] = fetchImpl.mock.calls[0]!;
+    const actual = new URL(String(url));
+    expect(actual.origin).toBe("https://sellingpartnerapi-na.amazon.com");
+    expect(actual.pathname).toBe("/inbound/fba/2024-03-20/inboundPlans/wf1234abcd-1234-abcd-5678-1234abcd5678/shipments/sh1234abcd-1234-abcd-5678-1234abcd5678/items");
+    expect([...actual.searchParams.entries()]).toEqual([["pageSize", "1000"], ...(paginationToken ? [["paginationToken", paginationToken]] : [])]);
+    expect(init).toMatchObject({ method: "GET", redirect: "error", cache: "no-store" });
+    expect(init?.body).toBeUndefined(); expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+
   it("accepts valid JSON exactly at the 16 MiB response boundary", async () => {
     const response = new Response(fullSizeJsonObject());
     const { adapter, fetchImpl } = adapterForBody(response);

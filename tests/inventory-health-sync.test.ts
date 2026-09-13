@@ -8,6 +8,7 @@ import { SpApiError } from "../src/main/amazon/sp-api-error";
 import type { ReportsRuntimeReceipt } from "../src/main/amazon/reports-runtime";
 import type { InventoryHealthSyncJob } from "../src/shared/inventory-health-sync";
 import type { InventoryHealthSnapshot } from "../src/shared/inventory-health";
+import type { FbaExpiryEvidence } from "../src/main/amazon/fba-expiry-reads";
 
 const marketplaceId = "ATVPDKIKX0DER";
 const now = new Date("2026-07-01T12:00:00Z");
@@ -18,7 +19,7 @@ const start: ApiRequest = { ...get, method: "POST", query: {}, body: { kind: "js
 function harness() {
   let account = "fixture-account";
   const context = createScriptedSpExecutionContextAdapter(() => ({ marketplaceId, mode: "live", accountScope: account }));
-  const expiry = { read: vi.fn(async () => ({ records: [], complete: true })) };
+  const expiry = { read: vi.fn(async (): Promise<FbaExpiryEvidence> => ({ records: [], complete: true })) };
   const health = new InventoryHealthCoordinator({ context, expiry, now: () => now });
   const reads = { begin: vi.fn(async () => receipt), status: vi.fn(async () => receipt), readInventoryHealth: vi.fn(async () => stock) };
   const owner = new InventoryHealthSync({ context, reads, health, now: () => now.getTime(), wait: async () => undefined });
@@ -31,6 +32,18 @@ async function terminal(h: ReturnType<typeof harness>): Promise<InventoryHealthS
   return job!;
 }
 describe("independent full FBA health synchronization", () => {
+  it("finishes a partial traversal with an honest unavailable-source count and no GET restart", async () => {
+    const h = harness();
+    h.expiry.read.mockResolvedValueOnce({ records: [], complete: false, traversalComplete: true, unavailablePlanCount: 3 });
+    await h.owner.start(start);
+    expect(await terminal(h)).toMatchObject({ status: "partial", stage: "complete", error: {
+      code: "FBA_EXPIRY_SOURCES_UNAVAILABLE", message: "已完成可讀來源的效期整理；仍有 3 個入庫計畫無法讀取，批次清售提醒暫停。",
+    } });
+    expect(payload(await h.health.read({ ...get, path: "/api/inventory-health" })).snapshot.rows[0]).toMatchObject({ wholeSkuClearanceDays: 100, calendarEligible: false });
+    await h.owner.observe(get); await h.owner.observe(get);
+    expect(h.expiry.read).toHaveBeenCalledOnce(); expect(h.reads.begin).toHaveBeenCalledOnce();
+  });
+
   it("starts from its own action and retains low-age stock without starting an aged audit", async () => {
     const h = harness();
     expect(payload(await h.owner.observe(get))).toEqual({ job: null }); expect(h.reads.begin).not.toHaveBeenCalled();

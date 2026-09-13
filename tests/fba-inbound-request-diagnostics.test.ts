@@ -40,26 +40,45 @@ function adapterHarness(response: Response | (() => Response), plan = itemsPlan)
 
 describe("FBA inbound request diagnostics at the real health sync seam", () => {
   it.each([
-    ...["plans-first", "items-first", "items-next", "plans-next"].flatMap(target => [400, 422].map(status => ({ target, status, code: "InvalidInput", message: CANARY, reason: "其他請求條件遭拒" }))),
-    { target: "items-first", status: 400, code: "BadRequest", message: LEGACY, reason: "舊版入庫計畫不支援商品讀取" },
-    { target: "items-first", status: 400, code: "BadRequest", message: "The requested inbound plan does not exist.", reason: "指定入庫計畫不存在" },
-    { target: "plans-first", status: 400, code: "BadRequest", message: "The status is invalid.", reason: "計畫狀態條件遭拒" },
-  ])("identifies $target HTTP $status ($reason) without exposing private values", async ({ target, status, code, message, reason }) => {
+    ...[
+      ...["plans-first", "items-first", "items-next", "plans-next"].flatMap(target => [400, 422].map(status => ({ target, status, code: "InvalidInput", message: CANARY, reason: "其他請求條件遭拒" }))),
+      { target: "items-first", status: 400, code: "BadRequest", message: LEGACY, reason: "舊版入庫計畫不支援商品讀取" },
+      { target: "items-first", status: 400, code: "BadRequest", message: "The requested inbound plan does not exist.", reason: "指定入庫計畫不存在" },
+      { target: "plans-first", status: 400, code: "BadRequest", message: "The status is invalid.", reason: "計畫狀態條件遭拒" },
+    ].map(testCase => ({ ...testCase, planCount: 1 })),
+    { target: "items-first", status: 400, code: "BadRequest", message: CANARY, reason: "其他請求條件遭拒", planCount: 3 },
+  ])("identifies $target HTTP $status ($reason) across $planCount plans without exposing private values", async ({ target, status, code, message, reason, planCount }) => {
     const context = createScriptedSpExecutionContextAdapter(() => ({ marketplaceId: US, mode: "live", accountScope: "synthetic-diagnostics" }));
+    const plans = Array.from({ length: planCount }, (_, index) => ({ ...PLAN, inboundPlanId: `wf${index + 1}234abcd-1234-abcd-5678-1234abcd5678` }));
     const calls: string[] = [];
     const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
       const url = new URL(String(input)), items = url.pathname.endsWith("/items"), next = url.searchParams.has("paginationToken");
       expect(init?.method).toBe("GET"); expect(init?.body).toBeUndefined();
+      if (!items && url.pathname !== "/inbound/fba/2024-03-20/inboundPlans") {
+        calls.push("plan");
+        const detail = plans.find(plan => url.pathname.endsWith(`/${plan.inboundPlanId}`));
+        expect(detail).toBeDefined();
+        return json(200, detail);
+      }
       const stage = `${items ? "items" : "plans"}-${next ? "next" : "first"}`;
       calls.push(stage);
       if (stage === target) return json(status, errorBody(message, code, CANARY));
       return json(200, items
         ? { items: [ITEM], ...(target === "items-next" ? { pagination: { nextToken: "PRIVATE-CURSOR" } } : {}) }
-        : { inboundPlans: [PLAN], ...(target === "plans-next" ? { pagination: { nextToken: "PRIVATE-CURSOR" } } : {}) });
+        : { inboundPlans: plans, ...(target === "plans-next" ? { pagination: { nextToken: "PRIVATE-CURSOR" } } : {}) });
     });
     const invalidate = vi.fn();
     const adapter = createFbaInboundReadsProductionAdapter({ getAccessToken: async () => "SYNTHETIC-TOKEN", invalidateAccessToken: invalidate, fetchImpl, now: () => NOW, sleep: async () => undefined });
-    const health = new InventoryHealthCoordinator({ context, expiry: new FbaExpiryReads({ context, adapter, now: () => NOW }), now: () => NOW });
+    const upstreamErrors: ReturnType<typeof publicSpApiError>[] = [];
+    const expiry = new FbaExpiryReads({ context, adapter: { read: async plan => {
+      try { return await adapter.read(plan); }
+      catch (error) {
+        if (error instanceof SpApiError) upstreamErrors.push(publicSpApiError(error, "公開備用訊息。"));
+        throw error;
+      }
+    } }, now: () => NOW });
+    const readExpiry = vi.spyOn(expiry, "read");
+    const health = new InventoryHealthCoordinator({ context, expiry, now: () => NOW });
     const stock: InventoryHealthReportSnapshot = { marketplaceId: US, mode: "live", fetchedAt: NOW.toISOString(), rows: [{ sellerSku: ITEM.msku, asin: ITEM.asin, title: "Synthetic", available: 1000, agedOver180: null, estimatedExcessQuantity: null, currencyCode: null, estimatedStorageCostNextMonth: null, estimatedAgedSurcharge: null, snapshotDate: "2026-09-13", unitsShipped: { t7: 70, t30: 300, t60: 600, t90: 900 } }] };
     const receipt: ReportsRuntimeReceipt = { reportId: "report-lease.synthetic", documentId: "report-document.synthetic", status: "DONE", ready: true, mode: "live", notice: "ready" };
     const begin = vi.fn(async () => receipt);
@@ -71,13 +90,20 @@ describe("FBA inbound request diagnostics at the real health sync seam", () => {
       job = ((await sync.observe(get)).body.value as { job: InventoryHealthSyncJob }).job;
       expect(job?.status).toBe("partial");
     }, { timeout: 1000, interval: 5 });
-    expect(job).toMatchObject({ error: { code: "FBA_INBOUND_UPSTREAM_UNAVAILABLE", message: `${BASE}（${target.startsWith("items") ? "入庫商品清單" : "入庫計畫清單"}／${target.endsWith("next") ? "接續頁" : "首頁"}；HTTP ${status}；Amazon：${code}；原因：${reason}；回應：已讀取）` } });
+    const diagnostic = { code: "FBA_INBOUND_UPSTREAM_UNAVAILABLE", message: `${BASE}（${target.startsWith("items") ? "入庫商品清單" : "入庫計畫清單"}／${target.endsWith("next") ? "接續頁" : "首頁"}；HTTP ${status}；Amazon：${code}；原因：${reason}；回應：已讀取）` };
+    expect(upstreamErrors).toHaveLength(planCount);
+    for (const error of upstreamErrors) expect(error).toMatchObject({ ...diagnostic, status });
+    expect(readExpiry).toHaveBeenCalledTimes(1);
+    if (target.startsWith("items")) {
+      expect(job).toMatchObject({ stage: "complete", error: { code: "FBA_EXPIRY_SOURCES_UNAVAILABLE", message: `已完成可讀來源的效期整理；仍有 ${planCount} 個入庫計畫無法讀取，批次清售提醒暫停。` } });
+      await expect(readExpiry.mock.results[0]!.value).resolves.toMatchObject({ complete: false, traversalComplete: true, unavailablePlanCount: planCount, records: [], checkpoint: { schemaVersion: 2, phase: "complete", cachedPlans: [], currentPlan: null, unavailablePlans: plans.map(plan => ({ inboundPlanId: plan.inboundPlanId, reason: "upstream-unavailable", upstreamStatus: status })) } });
+    } else expect(job).toMatchObject({ error: diagnostic });
     const snapshot = ((await health.read({ ...get, path: "/api/inventory-health" })).body.value as { snapshot: InventoryHealthSnapshot }).snapshot;
     expect(snapshot).toMatchObject({ sourceComplete: false });
     expect(snapshot.rows[0]).toMatchObject({ available: 1000, wholeSkuClearanceDays: 100, calendarEligible: false, confirmedRemaining: null });
     expect(JSON.stringify(job)).not.toMatch(/PRIVATE|SYNTHETIC|wf1234|private\.invalid|access_token/);
-    expect(calls.filter(stage => stage === target)).toHaveLength(1);
-    const completedCalls = calls.length; await sync.observe(get); expect(calls).toHaveLength(completedCalls);
+    expect(calls.filter(stage => stage === target)).toHaveLength(planCount);
+    const completedCalls = calls.length; await sync.observe(get); await health.read({ ...get, path: "/api/inventory-health" }); expect(calls).toHaveLength(completedCalls);
     expect(invalidate).not.toHaveBeenCalled(); expect(begin).toHaveBeenCalledTimes(1); sync.clear();
   });
 });

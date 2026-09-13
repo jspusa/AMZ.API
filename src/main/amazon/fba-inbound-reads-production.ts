@@ -108,9 +108,10 @@ function fixedModernUrl(
     }
   } else {
     path += `/${encodeURIComponent(request.inboundPlanId)}`;
-    if (request.kind === "shipment") {
+    if (request.kind === "shipment" || request.kind === "shipment-items") {
       path += `/shipments/${encodeURIComponent(request.shipmentId)}`;
-    } else if (request.kind === "plan-items") {
+    }
+    if (request.kind === "plan-items" || request.kind === "shipment-items") {
       path += "/items";
       query.set("pageSize", "1000");
       if (request.paginationToken) query.set("paginationToken", request.paginationToken);
