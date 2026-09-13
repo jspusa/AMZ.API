@@ -29,3 +29,11 @@
 - 新本機 Mac 檔 `/Users/jasper/Downloads/AMZ.API-0.1.72-universal.dmg` 為 247,921,653 bytes；Windows 檔 `/Users/jasper/Downloads/AMZ.API-Notebook-Key-Windows-x64-Setup (4).exe` 為 102,057,911 bytes。兩檔均在本輪下載起點後建立、穩定且 SHA-256 完全符合上列各自可信 artifact。
 - 分開保存 CUA 登入／事件證據 `portal-browser-download-evidence.json` 與檔案證據 `portal-authenticated-download-verification.json`，均在 `/tmp/amz-api-v0172-verified/`。檔案驗證器本身不聲稱能驗登入；兩層證據合併完成 .72 員工下載驗收，取代上方待登入的歷史狀態。沒有擷取憑證或下載簽名網址。
 - 原生 CUA 再次回報 Mac 鎖定且無法自動解鎖，.72 尚未安裝，完整原生效期同步仍待。這是新鎖定的第 2 個 goal turn，不按同回合觀察次數累加；本輪下載是實際新進度。保留原解鎖請求，不再要求員工登入，也不重做成功的上傳、下載或圖片驗收。若下一個 goal turn 新鮮核對仍為同一鎖定、且已無獨立工作可推進，依三回合門檻標記 goal blocked。
+
+## 解鎖後安裝與一次原生同步
+
+- 使用者再次解鎖後，CUA 已可讀取原生 AMZ.API；正常退出 .71、確認程序停止，建立 0700 userData 備份後安裝可信 .72。安裝檢查為 universal、deep strict codesign、disabled updater，ASAR `73fd82b82b82d83ab9793d8c54d470b0756bf9d8f37e07f64a9af95681b42154` 符合 artifact；換版期間 vault／ledger bytes 未變。.71 App 保存在 `/Applications/AMZ.API-v0.1.71-backup-before-0172-20260913.app`。
+- 初次 CUA 開啟觀察 timeout，接著同一 handle 已顯示原生首頁、US 與 Amazon 已連線，沒有重複啟動。這次觀察未見密碼或生物辨識啟動提示。
+- Agent 只按一次「同步全部 FBA 效期與銷速」，觀察 running 到 partial。2026-09-13 19:32:35 台灣時間快照保留 284 FBA 核心品號、33 銷售偏慢／效期需核對、284 未知批次、0 清售風險／0 預估可清完；實際樣本有全 SKU 預估清完天數。
+- 新終態為 `Amazon 無法驗證這次 FBA 入庫貨件唯讀請求。（FBA_INBOUND_UPSTREAM_UNAVAILABLE）`。Adapter 原碼顯示此訊息對應 HTTP 400／422，不是 401／403；尚缺失敗 operation 與上游固定錯誤原因證據，不據此要求重新登入或推定權限失效。沒有重試，沒有保存 raw upstream response，沒有 Amazon listing mutation。
+- `/tmp/amz-api-v0172-verified/installation-verification.json`、`user-data-backup-verification.json` 與 `native-acceptance-20260913.json` 分別保存安裝、備份與實機證據。原鎖定阻礙已解除；完整效期仍未驗收。另接續使用者新回報的 [表格可讀性修正](../specs/2026-09-inventory-health-table-layout.md)，不把介面修正當成效期資料完整。
