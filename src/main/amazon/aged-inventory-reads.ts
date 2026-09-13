@@ -521,6 +521,22 @@ function parseAgedInventoryReportData(
       ...item,
       index: reportColumn(headerIndexes, [item.header]),
     }));
+  const completeAgeColumns = (candidates: ReportAgeColumn[][]): ReportAgeColumn[] => {
+    const present = candidates.filter((columns) => columns.every((item) => item.index >= 0));
+    for (const columns of present) {
+      let complete = true;
+      // Keep one bucket shape across the report. Missing detail can use another
+      // fully reported range, but malformed nonempty values must still fail.
+      for (const row of rows.slice(1)) {
+        for (const item of columns) {
+          if (reportIntegerCell(row, item.index, item.label) === null) complete = false;
+        }
+      }
+      if (complete) return columns;
+    }
+    // Preserve the missing-value error when no complete evidence route exists.
+    return present[0] ?? [];
+  };
   const recentDetailedAgeColumns = ageColumns([
     {
       key: "0-30",
@@ -608,20 +624,10 @@ function parseAgedInventoryReportData(
     },
   ])[0];
 
-  const hasRecentDetailed = recentDetailedAgeColumns.every(
-    (item) => item.index >= 0,
-  );
-  const selectedRecentAgeColumns = hasRecentDetailed
-    ? recentDetailedAgeColumns
-    : recentAggregateAgeColumn.index >= 0
-      ? [recentAggregateAgeColumn]
-      : [];
-  const hasStandardBase = standardBaseAgeColumns.every(
-    (item) => item.index >= 0,
-  );
-  const hasAlternateBase = alternateBaseAgeColumns.every(
-    (item) => item.index >= 0,
-  );
+  const selectedRecentAgeColumns = completeAgeColumns([
+    recentDetailedAgeColumns,
+    [recentAggregateAgeColumn],
+  ]);
   const hasRegionalTail = regionalTailAgeColumns.every(
     (item) => item.index >= 0,
   );
@@ -629,11 +635,10 @@ function parseAgedInventoryReportData(
 
   // Amazon publishes overlapping aggregate and detailed bucket generations.
   // Select exactly one complete route so the same units cannot be counted twice.
-  const selectedBaseAgeColumns = hasStandardBase
-    ? standardBaseAgeColumns
-    : hasAlternateBase
-      ? alternateBaseAgeColumns
-      : [];
+  const selectedBaseAgeColumns = completeAgeColumns([
+    standardBaseAgeColumns,
+    alternateBaseAgeColumns,
+  ]);
   const selectedTailAgeColumns = hasRegionalTail
     ? regionalTailAgeColumns
     : hasGlobalTail

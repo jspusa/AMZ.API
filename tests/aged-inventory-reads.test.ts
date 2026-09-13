@@ -297,6 +297,114 @@ describe("AgedInventoryReads", () => {
     });
   });
 
+  it.each([false, true])("uses the reported recent aggregate when its detailed buckets are blank (reversed: %s)", async (reversed) => {
+    const headers = [
+      "sku", "inv-age-0-to-90-days", ...DETAILED_AGE_HEADERS,
+    ];
+    if (reversed) headers.reverse();
+    const { snapshot } = await readLive(reportText(headers, [{
+      sku: "AGGREGATE-WITH-BLANK-DETAIL",
+      "inv-age-0-to-90-days": 132,
+      "inv-age-91-to-180-days": 9,
+      "inv-age-181-to-270-days": 12,
+      "inv-age-271-to-365-days": 10,
+      "inv-age-366-to-455-days": 7,
+      "inv-age-456-plus-days": 2,
+    }]), US);
+
+    expect(snapshot.rows[0]).toMatchObject({
+      totalAgedUnits: 172,
+      agedOver180: 31,
+      ageBuckets: [
+        { key: "0-90", units: 132 },
+        { key: "91-180", units: 9 },
+        { key: "181-270", units: 12 },
+        { key: "271-365", units: 10 },
+        { key: "366-455", units: 7 },
+        { key: "456-plus", units: 2 },
+      ],
+    });
+    expect(snapshot.summary).toMatchObject({ totalAgedUnits: 172, agedOver180: 31 });
+  });
+
+  it.each(DETAILED_AGE_HEADERS.slice(0, 3))("uses one aggregate shape across rows when %s is missing in one row", async (missingHeader) => {
+    const { snapshot } = await readLive(reportText([
+      ...GLOBAL_AGE_HEADERS, ...DETAILED_AGE_HEADERS.slice(0, 3),
+    ], [
+      globalAgeRecord("COMPLETE-DETAIL", {
+        "inv-age-0-to-90-days": 6,
+        "inv-age-0-to-30-days": 1,
+        "inv-age-31-to-60-days": 2,
+        "inv-age-61-to-90-days": 3,
+      }),
+      globalAgeRecord("PARTIAL-DETAIL", {
+        "inv-age-0-to-90-days": 12,
+        "inv-age-0-to-30-days": 2,
+        "inv-age-31-to-60-days": 4,
+        "inv-age-61-to-90-days": 6,
+        [missingHeader]: "",
+      }),
+    ]));
+
+    expect(snapshot.rows.map((row) => row.ageBuckets.map((bucket) => bucket.key))).toEqual([
+      ["0-90", "91-180", "181-270", "271-365", "365-plus"],
+      ["0-90", "91-180", "181-270", "271-365", "365-plus"],
+    ]);
+    expect(snapshot.rows.map((row) => row.totalAgedUnits)).toEqual([6, 12]);
+    expect(snapshot.summary.totalAgedUnits).toBe(18);
+  });
+
+  it.each(["invalid", "1e2", "9007199254740992"])("rejects nonempty malformed detail %s even after another missing value", async (invalid) => {
+    const document = reportText([
+      ...GLOBAL_AGE_HEADERS, ...DETAILED_AGE_HEADERS.slice(0, 3),
+    ], [
+      globalAgeRecord("BLANK-DETAIL"),
+      globalAgeRecord("MALFORMED-DETAIL", {
+        "inv-age-0-to-30-days": "",
+        "inv-age-31-to-60-days": invalid,
+        "inv-age-61-to-90-days": 0,
+      }),
+    ]);
+    await expect(readLive(document)).rejects.toMatchObject({
+      code: "REPORT_FORMAT_UNSUPPORTED",
+      message: expect.stringContaining("「31–60 天」"),
+    });
+  });
+
+  it.each(["absent", "blank", "malformed"])("rejects missing recent detail with an %s aggregate", async (aggregate) => {
+    const document = reportText([
+      ...GLOBAL_AGE_HEADERS.filter((header) => aggregate !== "absent" || header !== "inv-age-0-to-90-days"),
+      ...DETAILED_AGE_HEADERS.slice(0, 3),
+    ], [globalAgeRecord("NO-COMPLETE-RECENT-RANGE", {
+      "inv-age-0-to-90-days": aggregate === "malformed" ? "not-a-count" : "",
+    })]);
+    await expect(readLive(document)).rejects.toMatchObject({ code: "REPORT_FORMAT_UNSUPPORTED" });
+  });
+
+  it("preserves an explicit zero aggregate without inventing detailed buckets or fee totals", async () => {
+    const { snapshot } = await readLive(reportText([
+      ...GLOBAL_AGE_HEADERS, ...DETAILED_AGE_HEADERS.slice(0, 3),
+      "currency", "estimated-storage-cost-next-month",
+    ], [
+      globalAgeRecord("ZERO-AGGREGATE", {
+        "inv-age-0-to-90-days": 0,
+        currency: "JPY",
+        "estimated-storage-cost-next-month": 1.5,
+      }),
+      globalAgeRecord("MISSING-COST", { currency: "JPY" }),
+    ]));
+    expect(snapshot.rows.find((row) => row.sellerSku === "ZERO-AGGREGATE")?.ageBuckets[0])
+      .toMatchObject({ key: "0-90", units: 0 });
+    expect(snapshot.summary).toMatchObject({
+      totalAgedUnits: 1,
+      storageCostAvailability: "partial",
+      estimatedStorageCostNextMonth: null,
+      storageCostReportedSkuCount: 1,
+      agedSurchargeAvailability: "unavailable",
+      estimatedAgedSurcharge: null,
+    });
+  });
+
   it("accepts the global 365-plus tail only for a matching marketplace", async () => {
     const document = reportText(GLOBAL_AGE_HEADERS, [
       globalAgeRecord("GLOBAL-AGED", {
@@ -323,6 +431,64 @@ describe("AgedInventoryReads", () => {
     });
   });
 
+  it.each(["inv-age-181-to-270-days", "inv-age-271-to-365-days", "both"])("uses a complete alternate 181–365 range when %s is blank", async (missingHeader) => {
+    const { snapshot } = await readLive(reportText([
+      ...GLOBAL_AGE_HEADERS,
+      "inv-age-181-to-330-days", "inv-age-331-to-365-days",
+    ], [globalAgeRecord("ALTERNATE-OLDER-AGE", {
+      "inv-age-0-to-90-days": 5,
+      "inv-age-91-to-180-days": 4,
+      "inv-age-181-to-270-days": missingHeader === "both" || missingHeader === "inv-age-181-to-270-days" ? "" : 10,
+      "inv-age-271-to-365-days": missingHeader === "both" || missingHeader === "inv-age-271-to-365-days" ? "" : 12,
+      "inv-age-181-to-330-days": 20,
+      "inv-age-331-to-365-days": 2,
+      "inv-age-365-plus-days": 3,
+    })]));
+
+    expect(snapshot.rows[0]).toMatchObject({
+      totalAgedUnits: 34,
+      agedOver180: 25,
+      ageBuckets: [
+        { key: "0-90", units: 5 },
+        { key: "91-180", units: 4 },
+        { key: "181-330", units: 20 },
+        { key: "331-365", units: 2 },
+        { key: "365-plus", units: 3 },
+      ],
+    });
+    expect(snapshot.summary).toMatchObject({ totalAgedUnits: 34, agedOver180: 25 });
+  });
+
+  it.each([
+    { label: "incomplete alternate", standardFirst: "", standardSecond: "", alternateFirst: "20", alternateSecond: "" },
+    { label: "overlapping partial ranges", standardFirst: "", standardSecond: "12", alternateFirst: "20", alternateSecond: "" },
+    { label: "malformed standard", standardFirst: "", standardSecond: "invalid", alternateFirst: "20", alternateSecond: "2" },
+  ])("rejects $label instead of stitching or hiding an invalid 181–365 range", async ({ standardFirst, standardSecond, alternateFirst, alternateSecond }) => {
+    const document = reportText([
+      ...GLOBAL_AGE_HEADERS,
+      "inv-age-181-to-330-days", "inv-age-331-to-365-days",
+    ], [globalAgeRecord("NO-COMPLETE-OLDER-RANGE", {
+      "inv-age-181-to-270-days": standardFirst,
+      "inv-age-271-to-365-days": standardSecond,
+      "inv-age-181-to-330-days": alternateFirst,
+      "inv-age-331-to-365-days": alternateSecond,
+    })]);
+    await expect(readLive(document)).rejects.toMatchObject({ code: "REPORT_FORMAT_UNSUPPORTED" });
+  });
+
+  it("does not replace missing regional tail values with a global tail", async () => {
+    const document = reportText([
+      ...GLOBAL_AGE_HEADERS,
+      "inv-age-366-to-455-days", "inv-age-456-plus-days",
+    ], [globalAgeRecord("MISSING-REGIONAL-TAIL", {
+      "inv-age-365-plus-days": 9,
+    })]);
+    await expect(readLive(document, US)).rejects.toMatchObject({
+      code: "REPORT_FORMAT_UNSUPPORTED",
+      message: expect.stringContaining("「366–455 天」缺值"),
+    });
+  });
+
   it("fails closed when a required selected bucket is blank", async () => {
     const document = reportText(GLOBAL_AGE_HEADERS, [{
       ...globalAgeRecord("MISSING-BUCKET"),
@@ -338,6 +504,7 @@ describe("AgedInventoryReads", () => {
   it("keeps partial row evidence and counts without partial marketplace totals", async () => {
     const headers = [
       ...GLOBAL_AGE_HEADERS,
+      ...DETAILED_AGE_HEADERS.slice(0, 3),
       "estimated-excess-quantity",
       "currency",
       "storage-volume",
