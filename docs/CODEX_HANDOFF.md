@@ -11,6 +11,8 @@
 
 ## 目前狀態
 
+- 0.1.74 已由 PR #279／main `8352a502aefe8eae61912c26496cd749490bcdc5` 發布並正常備份安裝：4,029 tests、audit 0、兩軸 exact-head review 0 open、四條 exact-source CI、Pages 12 檔 bytes、Mac／Windows 可信產物與 Mac→Windows 下載卡上傳均已核對。安裝 ASAR 相符、vault／ledger 未變且 .73 App 保留。新程式已在執行，但 CUA 啟動／AX 讀取連續逾時；不是已證明 Mac 鎖定或登入失效。已留一次畫面狀態詢問，等使用者確認首頁或系統授權視窗，不強制結束、不重裝、不繞過保護。員工下載頁仍明示登入過期，登入請求已留；.74 尚未有原生首頁／Amazon 首次效期同步或員工實際下載 bytes 證據。接續 `/tmp/amz-api-v0174-verified/active-release.json` 與[交付帳本](releases/2026-09-shipment-expiry-source.md)；完整 #263 仍未結案，先前已驗功能不重做。
+
 - .73 原生啟動與 Amazon 連線已恢復，第一次且唯一全效期同步更新 284 個 FBA 核心品號／33 個偏慢品號，但某計畫商品首頁回 HTTP 400／BadRequest／other-input；不能推定 legacy 或登入原因，未重試。本機重读保留快照，人工公告 4 項、門檻 8 與八欄版面已核對。Issue #278 接續 .74：改讀計畫已選貨件的申報效期，同計畫跨貨件聚合保持既有批次 ID，個別 400／404／422 留為來源不可讀並接續其他計畫，遍歷完成與来源完整分開；不是把未知當成功。實作／檢查／發布／安裝／native 各層以[本輪帳本](releases/2026-09-shipment-expiry-source.md)為準，完整 #263 仍未結案。員工下載頁目前登入過期，一次登入請求已留，不能重複要求解鎖 Mac。
 
 - .73 最終 release-code 為 PR #276／main `bc0d2ba08baabe515e4ddf2cf9ba48c0a3c30e70`：Issue #273 安全診斷加上 Issue #275 的 Mac 單 worker 檢查排程。3,942 本機 tests、audit 0、兩軸 review、四條 exact-source CI、Pages 12 檔 bytes、Mac／Windows 可信產物及 Mac→Windows 上傳均已驗；舊 b647 Mac 兩次逾時來源未混用。可信 .73 已安裝，ASAR／vault／ledger 保留且 .72 App 備份可還原。原生 .72 Reload 已實機確認八欄表格清楚、公告 4 項及門檻 8 保留，表格 #271 結案。開啟 .73 時 CUA 再報 Mac 鎖定且自動解鎖失敗；員工下載頁保留登入文件，但點下載實際回報登入已過期。已集中請使用者解鎖並登入；這是新阻礙第 1 個 goal turn，尚未跑 .73 效期同步或核對員工實際下載 bytes。接續 `/tmp/amz-api-v0173-r2-verified/active-release.json` 及[分層帳本](releases/2026-09-inbound-request-diagnostics.md)，不重裝 .73、不重做備份、不重跑 .72。完整效期目標 #263 持續，下一次可信原生同步只做一次，依固定診斷接續根因修正。
