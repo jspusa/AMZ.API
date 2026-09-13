@@ -11,7 +11,7 @@
 
 ## 目前狀態
 
-- 0.1.71 診斷 PR #267 已合併至 `2147d35243f109c99d5da2d745523feda28e9ec7`；Validate／Pages／Windows 與对应 bytes 已驗。Mac 兩次因相同兩項既有測試超過 5 秒失敗，尚無 Mac artifact／安裝／原生診斷。Issue #268 以[測試執行改善](specs/2026-09-macos-test-stability.md) 接續，保留全部功能與安全斷言，不提高 timeout、不改 production 或版本；新 final source 必須重新完成各層交付。完整效期及原始目標仍未完成。
+- 0.1.71 最終發布來源為 PR #269／main `26f2f693299721e3e759467a58b680e9c7bca04f`。Issue #268 的[測試執行改善](specs/2026-09-macos-test-stability.md) 保留全部斷言與同一 Dashboard 的健檢到 lazy 工作區流程；3,875 本機 tests、audit 0、兩軸 review、四條 exact main CI 均通過，新 Mac 第一次建置成功。Pages 12 檔 bytes、Mac／Windows artifact、ASAR／addon／fuses 已核對，Mac→Windows 安裝檔上傳 complete HTTP 成功。現有 uploader 未保留 server complete manifest，因此這只證明上傳確認與送出的可信 bytes；員工登入後的獨立 manifest／實際下載 hash 仍待。可信 .71 DMG 已唯讀掛載並可安裝，但目前 App 仍是 .70；安裝前 CUA 回報 Mac 鎖定且自動解鎖失敗，已請使用者解鎖，尚未退出 App／備份／換版。原生效期原因與完整目標仍未完成；接續 [本輪帳本](releases/2026-09-inbound-expiry-diagnostics.md) 和 `/tmp/amz-api-v0171-r2-verified/active-release.json`，不可使用初次失敗來源 `2147d35` 的 artifact。
 
 - Issue #263 接續 .70 原生 partial：全 FBA 核心已取得 284 列，但入庫效期 generic `FBA_EXPIRY_FORMAT_UNSUPPORTED` 尚無欄位原因。0.1.71 先補固定安全診斷，保留全部解析／checkpoint／context 與行事曆政策；不是實際根因修復。公開 reader → coordinator → sync 已先紅，最終檢查、交付與 live 原因仍待。見 [spec](specs/2026-09-inbound-expiry-diagnostics.md) 與 [本輪帳本](releases/2026-09-inbound-expiry-diagnostics.md)。
 
