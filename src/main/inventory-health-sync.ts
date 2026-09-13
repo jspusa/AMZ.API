@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { ApiRequest, ApiResponse } from "../shared/contracts";
 import type { InventoryHealthSyncJob } from "../shared/inventory-health-sync";
 import { isInventoryHealthSnapshot } from "../shared/inventory-health";
-import type { AgedInventoryReadsPort } from "./amazon/aged-inventory-reads";
+import type { InventoryHealthReportReadsPort } from "./amazon/aged-inventory-reads";
 import { publicSpApiError, SpApiError } from "./amazon/sp-api-error";
 import { SpExecutionContextError, type SpExecutionContext, type SpExecutionContextAdapter } from "./amazon/sp-execution-context";
 import { abortableDelay, throwIfAborted } from "./abort-utils";
@@ -19,7 +19,7 @@ export class InventoryHealthSync {
   private readonly jobs = new Map<string, Job>();
   constructor(private readonly input: Readonly<{
     context: SpExecutionContextAdapter;
-    reads: AgedInventoryReadsPort;
+    reads: InventoryHealthReportReadsPort;
     health: Pick<InventoryHealthCoordinator, "refresh" | "read">;
     now?: () => number;
     wait?: (ms: number, signal?: AbortSignal) => Promise<void>;
@@ -91,7 +91,7 @@ export class InventoryHealthSync {
       }
       await this.fence(job);
       if (!report.ready || !report.documentId || report.mode !== job.context.mode) throw new SpApiError("庫存與銷量報表尚未完成，稍後可再次同步以接續既有報表。", { code: "INVENTORY_REPORT_NOT_READY", status: 504 });
-      const snapshot = await this.input.reads.read({ ...request, reportId: report.reportId, documentId: report.documentId });
+      const snapshot = await this.input.reads.readInventoryHealth({ ...request, reportId: report.reportId, documentId: report.documentId });
       await this.fence(job);
       job.public = { ...job.public, stage: "expiry", message: `已取得 ${snapshot.rows.length} 個 FBA 品項，正在整理入庫申報效期…` };
       let sourceError: InventoryHealthSyncJob["error"] = null;

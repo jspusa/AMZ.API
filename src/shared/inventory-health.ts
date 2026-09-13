@@ -14,7 +14,7 @@ export type InventoryHealthRow = Readonly<{
   declaredQuantity: number | null;
   confirmedRemaining: number | null;
   available: number | null;
-  agedOver180: number;
+  agedOver180: number | null;
   estimatedExcessQuantity: number | null;
   currencyCode: string | null;
   estimatedStorageCostNextMonth: number | null;
@@ -66,10 +66,10 @@ export function isInventoryHealthSnapshot(value: unknown): value is InventoryHea
       !Number.isFinite(Date.parse(String(r.sourceUpdatedAt))) ||
       !["expiryDate", "stopSaleDate", "snapshotDate"].every(k => r[k] === null || dateOnly(r[k])) ||
       !(r.currencyCode === null || (typeof r.currencyCode === "string" && /^[A-Z]{3}$/.test(r.currencyCode))) ||
-      !["declaredQuantity", "confirmedRemaining", "available", "estimatedExcessQuantity", "quantityDueByDate", "projectedShortfall"].every(k => r[k] === null || count(r[k])) ||
+      !["declaredQuantity", "confirmedRemaining", "available", "agedOver180", "estimatedExcessQuantity", "quantityDueByDate", "projectedShortfall"].every(k => r[k] === null || count(r[k])) ||
       !["estimatedStorageCostNextMonth", "estimatedAgedSurcharge", "dailyUnits", "minimumDailyUnits", "wholeSkuClearanceDays"].every(k => r[k] === null || nonnegative(r[k])) ||
       !(r.daysRemaining === null || (typeof r.daysRemaining === "number" && Number.isSafeInteger(r.daysRemaining))) ||
-      !count(r.agedOver180) || !["clearance-risk", "on-track", "needs-review"].includes(String(r.status)) || typeof r.calendarEligible !== "boolean") return false;
+      !["clearance-risk", "on-track", "needs-review"].includes(String(r.status)) || typeof r.calendarEligible !== "boolean") return false;
     if (r.sourceLabel !== undefined && (typeof r.sourceLabel !== "string" || r.sourceLabel.length > 512 || /[\p{Cc}\p{Cf}]/u.test(r.sourceLabel))) return false;
     if (r.estimatedDailyUnits !== undefined && r.estimatedDailyUnits !== null && !nonnegative(r.estimatedDailyUnits)) return false;
     if (r.earliestDeclaredExpiryDate !== undefined && r.earliestDeclaredExpiryDate !== null && !dateOnly(r.earliestDeclaredExpiryDate)) return false;

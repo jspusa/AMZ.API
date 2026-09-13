@@ -4,7 +4,7 @@ import { isDateOnly, marketplaceCalendar } from "./marketplace-calendar";
 
 export type InventoryHealthStock = Readonly<{
   sellerSku: string; asin: string; title: string; available: number | null;
-  agedOver180: number; estimatedExcessQuantity: number | null; currencyCode: string | null;
+  agedOver180: number | null; estimatedExcessQuantity: number | null; currencyCode: string | null;
   estimatedStorageCostNextMonth: number | null; estimatedAgedSurcharge: number | null;
   snapshotDate: string | null;
   unitsShipped?: Readonly<{ t7: number | null; t30: number | null; t60: number | null; t90: number | null }>;

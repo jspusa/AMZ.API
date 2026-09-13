@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { InventoryHealthSync } from "../src/main/inventory-health-sync";
 import { InventoryHealthCoordinator } from "../src/main/inventory-health-coordinator";
 import { createScriptedSpExecutionContextAdapter } from "../src/main/amazon/sp-execution-context";
-import type { AgedInventorySnapshot } from "../src/main/amazon/aged-inventory-reads";
+import type { InventoryHealthReportSnapshot } from "../src/main/amazon/aged-inventory-reads";
 import type { ApiRequest } from "../src/shared/contracts";
 import { SpApiError } from "../src/main/amazon/sp-api-error";
 import type { ReportsRuntimeReceipt } from "../src/main/amazon/reports-runtime";
@@ -11,7 +11,7 @@ import type { InventoryHealthSnapshot } from "../src/shared/inventory-health";
 
 const marketplaceId = "ATVPDKIKX0DER";
 const now = new Date("2026-07-01T12:00:00Z");
-const stock = { marketplaceId, mode: "live", fetchedAt: now.toISOString(), rows: [{ sellerSku: "FBA-YOUNG", asin: "B000000001", title: "Test", available: 1000, agedOver180: 0, estimatedExcessQuantity: null, currencyCode: null, estimatedStorageCostNextMonth: null, estimatedAgedSurcharge: null, snapshotDate: "2026-07-01", unitsShipped: { t7: 70, t30: 300, t60: 600, t90: 900 } }] } as AgedInventorySnapshot;
+const stock = { marketplaceId, mode: "live", fetchedAt: now.toISOString(), rows: [{ sellerSku: "FBA-YOUNG", asin: "B000000001", title: "Test", available: 1000, agedOver180: 0, estimatedExcessQuantity: null, currencyCode: null, estimatedStorageCostNextMonth: null, estimatedAgedSurcharge: null, snapshotDate: "2026-07-01", unitsShipped: { t7: 70, t30: 300, t60: 600, t90: 900 } }] } as InventoryHealthReportSnapshot;
 const receipt = { reportId: "report-lease.test", documentId: "report-document.test", status: "DONE", ready: true, mode: "live", notice: "ready" } as ReportsRuntimeReceipt;
 const get: ApiRequest = { requestId: "health", method: "GET", path: "/api/inventory-health/sync", query: { marketplaceId }, headers: {} };
 const start: ApiRequest = { ...get, method: "POST", query: {}, body: { kind: "json", value: { marketplaceId } } };
@@ -20,7 +20,7 @@ function harness() {
   const context = createScriptedSpExecutionContextAdapter(() => ({ marketplaceId, mode: "live", accountScope: account }));
   const expiry = { read: vi.fn(async () => ({ records: [], complete: true })) };
   const health = new InventoryHealthCoordinator({ context, expiry, now: () => now });
-  const reads = { begin: vi.fn(async () => receipt), status: vi.fn(async () => receipt), read: vi.fn(async () => stock) };
+  const reads = { begin: vi.fn(async () => receipt), status: vi.fn(async () => receipt), readInventoryHealth: vi.fn(async () => stock) };
   const owner = new InventoryHealthSync({ context, reads, health, now: () => now.getTime(), wait: async () => undefined });
   return { owner, health, reads, expiry, context, changeAccount: () => { account = "other"; context.invalidate("account-changed"); owner.clear(); health.clear(); } };
 }
@@ -81,6 +81,6 @@ describe("independent full FBA health synchronization", () => {
     h.changeAccount(); release(receipt);
     await Promise.resolve(); await Promise.resolve();
     expect(payload(await h.owner.observe(get)).job).toBeNull();
-    expect(h.reads.read).not.toHaveBeenCalled(); expect(h.expiry.read).not.toHaveBeenCalled();
+    expect(h.reads.readInventoryHealth).not.toHaveBeenCalled(); expect(h.expiry.read).not.toHaveBeenCalled();
   });
 });

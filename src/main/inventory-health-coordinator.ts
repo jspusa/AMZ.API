@@ -5,14 +5,14 @@ import { throwIfAborted } from "./abort-utils";
 import { bodyRecord, isPlainRecord, parseMarketplace } from "./route-input";
 import { invalid, json, routeError } from "./route-response";
 import type { PrivateLocalJsonPort } from "./private-local-json";
-import type { AgedInventorySnapshot } from "./amazon/aged-inventory-reads";
+import type { InventoryHealthReportSnapshot } from "./amazon/aged-inventory-reads";
 import { parseFbaExpiryCheckpoint, type FbaExpiryCheckpoint, type FbaExpiryEvidence } from "./amazon/fba-expiry-reads";
 import { assessInventoryHealth, type InventoryHealthEvidence, type InventoryExpiryRecord } from "./amazon/inventory-health";
 import { isDateOnly, marketplaceCalendar } from "./amazon/marketplace-calendar";
 import { SpExecutionContextError, type SpExecutionContext, type SpExecutionContextAdapter } from "./amazon/sp-execution-context";
 
 type Profile = InventoryHealthEvidence & { expiryCheckpoint?: FbaExpiryCheckpoint | null };
-type HealthRefreshInput = { context: SpExecutionContext; snapshot: AgedInventorySnapshot; signal: AbortSignal; onProgress?: (records: number) => void; onSourceError?: (error: unknown) => void };
+type HealthRefreshInput = { context: SpExecutionContext; snapshot: InventoryHealthReportSnapshot; signal: AbortSignal; onProgress?: (records: number) => void; onSourceError?: (error: unknown) => void };
 type Saved = { schemaVersion: 1; profiles: Record<string, Profile> };
 const scopeKey = (context: SpExecutionContext) => createHash("sha256").update(JSON.stringify([context.accountScope, context.mode, context.marketplaceId])).digest("hex");
 const count = (n: unknown): n is number => typeof n === "number" && Number.isSafeInteger(n) && n >= 0 && n <= 100000000;
@@ -37,7 +37,7 @@ function parseSaved(value: unknown): Saved {
     }
     const skus = new Set<string>();
     for (const row of raw.rows) {
-      if (!isPlainRecord(row) || !shortText(row.sellerSku, 40) || skus.has(String(row.sellerSku)) || !shortText(row.asin, 10) || !shortText(row.title, 4000) || !nullableCount(row.available) || !count(row.agedOver180) || !nullableCount(row.estimatedExcessQuantity) || !(row.currencyCode === null || (typeof row.currencyCode === "string" && /^[A-Z]{3}$/.test(row.currencyCode))) || !money(row.estimatedStorageCostNextMonth) || !money(row.estimatedAgedSurcharge) || !nullableDate(row.snapshotDate) || !(row.unitsShipped === undefined || (isPlainRecord(row.unitsShipped) && ["t7", "t30", "t60", "t90"].every(k => nullableCount((row.unitsShipped as Record<string, unknown>)[k]))))) throw new Error("PRIVATE_LOCAL_INVALID");
+      if (!isPlainRecord(row) || !shortText(row.sellerSku, 40) || skus.has(String(row.sellerSku)) || !shortText(row.asin, 10) || !shortText(row.title, 4000) || !nullableCount(row.available) || !nullableCount(row.agedOver180) || !nullableCount(row.estimatedExcessQuantity) || !(row.currencyCode === null || (typeof row.currencyCode === "string" && /^[A-Z]{3}$/.test(row.currencyCode))) || !money(row.estimatedStorageCostNextMonth) || !money(row.estimatedAgedSurcharge) || !nullableDate(row.snapshotDate) || !(row.unitsShipped === undefined || (isPlainRecord(row.unitsShipped) && ["t7", "t30", "t60", "t90"].every(k => nullableCount((row.unitsShipped as Record<string, unknown>)[k]))))) throw new Error("PRIVATE_LOCAL_INVALID");
       skus.add(String(row.sellerSku));
     }
   }

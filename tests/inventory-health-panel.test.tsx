@@ -47,6 +47,22 @@ describe("inventory health local workflow", () => {
     expect(output()).not.toContain("列入行事曆");
   });
 
+  it("shows unknown supplementary age as not provided while preserving whole-stock estimates and batch review", async () => {
+    await mount(async () => Response.json({ snapshot: snapshot({ sourceComplete: false, rows: [row({
+      agedOver180: null, confirmedRemaining: null, quantityDueByDate: null, projectedShortfall: null,
+      minimumDailyUnits: null, wholeSkuClearanceDays: 140, estimatedDailyUnits: 5,
+      status: "needs-review", calendarEligible: false,
+    })] }) }));
+    expect(output()).toContain("EXACT-SKU");
+    expect(output()).toContain("約 140 天清完");
+    expect(output()).not.toContain("★ 列入行事曆");
+    await act(async () => { button("核對批次：lot-one").props.onClick(); });
+    const age = renderer!.root.findAllByType("dt").find(node => node.children.join("") === "180 天以上庫齡")!;
+    expect(age.parent!.findByType("dd").children).toEqual(["未提供"]);
+    expect(renderer!.root.findByProps({ "aria-label": "已確認批次餘量" }).props.value).toBe("");
+    expect(renderer!.root.findByType("fieldset").props.disabled).toBe(true);
+  });
+
   it("saves only the three local confirmations for the exact snapshot and displays the returned result", async () => {
     const requests: Array<{ url: string; init?: RequestInit }> = [];
     await mount(async (url, init) => {

@@ -1,17 +1,17 @@
 import { describe, expect, it, vi } from "vitest";
 import { InventoryHealthCoordinator } from "../src/main/inventory-health-coordinator";
 import { createScriptedSpExecutionContextAdapter } from "../src/main/amazon/sp-execution-context";
-import { AgedInventoryReads, type AgedInventorySnapshot } from "../src/main/amazon/aged-inventory-reads";
+import { AgedInventoryReads, type InventoryHealthReportSnapshot } from "../src/main/amazon/aged-inventory-reads";
 import type { ApiRequest } from "../src/shared/contracts";
-import { isInventoryHealthSnapshot, type InventoryHealthSnapshot } from "../src/shared/inventory-health";
+import { inventoryHealthCalendarRows, isInventoryHealthSnapshot, type InventoryHealthSnapshot } from "../src/shared/inventory-health";
 
 const US = "ATVPDKIKX0DER";
 const now = new Date("2026-07-01T12:00:00Z");
-const snapshot = { mode: "live", marketplaceId: US, fetchedAt: now.toISOString(), rows: [{
+const snapshot: InventoryHealthReportSnapshot = { mode: "live", marketplaceId: US, fetchedAt: now.toISOString(), rows: [{
   sellerSku: "FBA-ONE", asin: "B000000001", title: "Test", available: 1000, agedOver180: 500,
   estimatedExcessQuantity: 300, currencyCode: "USD", estimatedStorageCostNextMonth: 20,
   estimatedAgedSurcharge: 8, snapshotDate: "2026-07-01", unitsShipped: { t7: 70, t30: 300, t60: 600, t90: 900 },
-}] } as AgedInventorySnapshot;
+}] };
 const lot = { id: "lot-one", sellerSku: "FBA-ONE", asin: "B000000001", expiryDate: "2026-08-30", declaredQuantity: 1200,
   sourceRef: "inbound-one", sourceUpdatedAt: "2026-06-01T00:00:00Z", observedAt: now.toISOString(), stopSaleDate: null, confirmedRemaining: null, confirmedForSnapshot: null };
 function harness() {
@@ -29,6 +29,53 @@ function harness() {
 function payload(response: { body: { value: unknown } }) { return response.body.value as { snapshot: InventoryHealthSnapshot | null }; }
 
 describe("inventory health local evidence lifecycle", () => {
+  it("preserves unknown age through save and reopen without weakening batch confirmation or calendar revalidation", async () => {
+    const h = harness();
+    const unknownAge = { ...snapshot, rows: [{ ...snapshot.rows[0]!, agedOver180: null }] };
+    await h.refresh(h.owner, unknownAge);
+    const response = await h.owner.read(h.get);
+    expect(response.status).toBe(200);
+    const current = payload(response).snapshot!;
+    expect(isInventoryHealthSnapshot(current)).toBe(true);
+    expect(current.rows[0]).toMatchObject({ agedOver180: null, wholeSkuClearanceDays: 100,
+      estimatedDailyUnits: 10, confirmedRemaining: null, projectedShortfall: null, calendarEligible: false });
+    expect(inventoryHealthCalendarRows(current)).toEqual([]);
+
+    const confirmed = await h.owner.confirm(h.confirm());
+    expect(confirmed.status).toBe(200);
+    expect(payload(confirmed).snapshot!.rows[0]).toMatchObject({ agedOver180: null,
+      confirmedRemaining: 1000, projectedShortfall: 400, calendarEligible: true });
+    expect(inventoryHealthCalendarRows(payload(confirmed).snapshot!).map(row => row.id)).toEqual([lot.id]);
+
+    const reopened = h.create();
+    const storedResponse = await reopened.read(h.get);
+    expect(storedResponse.status).toBe(200);
+    const stored = payload(storedResponse).snapshot!;
+    expect(isInventoryHealthSnapshot(stored)).toBe(true);
+    expect(stored).toMatchObject({ stale: true, rows: [{ agedOver180: null, confirmedRemaining: 1000,
+      wholeSkuClearanceDays: null, projectedShortfall: null, calendarEligible: false }] });
+    expect(inventoryHealthCalendarRows(stored)).toEqual([]);
+    expect((await reopened.confirm(h.confirm())).status).toBe(409);
+
+    await h.refresh(reopened, unknownAge);
+    const refreshed = payload(await reopened.read(h.get)).snapshot!;
+    expect(refreshed).toMatchObject({ stale: false, rows: [{ agedOver180: null, confirmedRemaining: 1000,
+      wholeSkuClearanceDays: 100, projectedShortfall: 400, calendarEligible: true }] });
+    expect(inventoryHealthCalendarRows(refreshed).map(row => row.id)).toEqual([lot.id]);
+  });
+  it.each([-1, 0.5, Number.NaN, Number.POSITIVE_INFINITY, "0", undefined])(
+    "rejects invalid supplementary age %s without replacing saved numeric evidence", async agedOver180 => {
+      const h = harness();
+      await h.refresh();
+      await h.refresh(h.owner, { ...snapshot, rows: [{ ...snapshot.rows[0]!, agedOver180: agedOver180 as number }] });
+      expect((await h.owner.read(h.get)).status).toBe(503);
+      expect((await h.owner.confirm(h.confirm())).status).toBe(503);
+      const saved = payload(await h.create().read(h.get)).snapshot!;
+      expect(isInventoryHealthSnapshot(saved)).toBe(true);
+      expect(saved).toMatchObject({ stale: true, rows: [{ agedOver180: 500, calendarEligible: false }] });
+    },
+  );
+
   it.each([undefined, "", "2026-06-01"])("cannot borrow a current inventory-age date for stock freshness when snapshot-date is %s", async (stockDate) => {
     const h = harness();
     const fields: Array<[string, string | number]> = [
@@ -72,7 +119,7 @@ describe("inventory health local evidence lifecycle", () => {
     expect(stored.stale).toBe(true);
     expect(isInventoryHealthSnapshot(stored)).toBe(true);
     expect(stored.notice).toContain("同步全部 FBA 效期與銷速");
-    expect(stored.rows[0]).toMatchObject({ expiryDate: lot.expiryDate, confirmedRemaining: 1000, status: "needs-review", calendarEligible: false, projectedShortfall: null });
+    expect(stored.rows[0]).toMatchObject({ expiryDate: lot.expiryDate, agedOver180: 500, confirmedRemaining: 1000, status: "needs-review", calendarEligible: false, projectedShortfall: null });
     expect((await reopened.confirm(h.confirm())).status).toBe(409);
     expect(h.expiry.read).toHaveBeenCalledOnce();
     await h.refresh(reopened);

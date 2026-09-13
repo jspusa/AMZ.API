@@ -147,6 +147,164 @@ async function readLive(
   return { ...built, snapshot };
 }
 
+const HEALTH_CORE: ReportRecord = {
+  sku: "HEALTH-ONE", asin: "B000000001", available: 1000,
+  "snapshot-date": "2026-08-25", "units-shipped-t7": 70,
+  "units-shipped-t30": 300, "units-shipped-t60": 600, "units-shipped-t90": 900,
+};
+
+async function readHealth(document: string, marketplaceId: MarketplaceId = US) {
+  return build({ document }).subject.readInventoryHealth({
+    marketplaceId, reportId: REPORT_ID, documentId: DOCUMENT_ID,
+  });
+}
+
+describe("AgedInventoryReads inventory health evidence projection", () => {
+  it("keeps unknown core values and absent sales periods without borrowing another snapshot date", async () => {
+    const snapshot = await readHealth(reportText(
+      ["sku", "asin", "available", "units-shipped-t30", "Inventory age snapshot date"],
+      [{ sku: "CORE-UNKNOWN", asin: "B000000001", "Inventory age snapshot date": "2026-08-25" }],
+    ));
+    expect(snapshot.rows).toEqual([{
+      sellerSku: "CORE-UNKNOWN", asin: "B000000001", title: "", available: null,
+      unitsShipped: { t7: null, t30: null, t60: null, t90: null },
+      snapshotDate: null, agedOver180: null, estimatedExcessQuantity: null,
+      currencyCode: null, estimatedStorageCostNextMonth: null, estimatedAgedSurcharge: null,
+    }]);
+  });
+
+  it("retains each independently complete supplement when recent age is missing", async () => {
+    const keys = [...COMMON_AIS_KEYS, "366-455", "456-plus"];
+    const ais: ReportRecord = Object.fromEntries(keys.flatMap(key => [
+      [`quantity-to-be-charged-ais-${key}-days`, 0], [`estimated-ais-${key}-days`, ""],
+    ]));
+    const known: ReportRecord = {
+      ...HEALTH_CORE, ...ais, currency: "USD", "estimated-excess-quantity": 123,
+      "storage-volume": 2, "estimated-storage-cost-next-month": "20.25",
+      "inv-age-181-to-270-days": 100, "inv-age-271-to-365-days": 20,
+      "inv-age-181-to-330-days": 999, "inv-age-331-to-365-days": 999,
+      "inv-age-366-to-455-days": 2, "inv-age-456-plus-days": 3,
+      "quantity-to-be-charged-ais-181-210-days": 2, "estimated-ais-181-210-days": "1.25",
+    };
+    const alternate = { ...known, sku: "HEALTH-ALTERNATE", "inv-age-181-to-270-days": "",
+      "inv-age-181-to-330-days": 40, "inv-age-331-to-365-days": 10,
+      "estimated-storage-cost-next-month": "", "estimated-ais-181-210-days": "" };
+    const unknown = { ...alternate, sku: "HEALTH-UNKNOWN", "inv-age-181-to-330-days": "" };
+    const headers = [...Object.keys(known), ...DETAILED_AGE_HEADERS.filter(key => !(key in known)), "inv-age-0-to-90-days"];
+    const snapshot = await readHealth(reportText(headers, [known, alternate, unknown]));
+    expect(snapshot.rows).toHaveLength(3);
+    expect(snapshot.rows[0]).toMatchObject({ agedOver180: 125, estimatedExcessQuantity: 123,
+      estimatedStorageCostNextMonth: 20.25, estimatedAgedSurcharge: 1.25, available: 1000 });
+    expect(snapshot.rows[1]).toMatchObject({ agedOver180: 55, estimatedExcessQuantity: 123,
+      estimatedStorageCostNextMonth: null, estimatedAgedSurcharge: null, available: 1000 });
+    expect(snapshot.rows[2]).toMatchObject({ agedOver180: null, estimatedExcessQuantity: 123,
+      estimatedStorageCostNextMonth: null, estimatedAgedSurcharge: null, available: 1000 });
+    expect(snapshot).not.toHaveProperty("summary");
+  });
+
+  it("does not sum a partial AIS generation or erase other reported supplements", async () => {
+    const record = { ...HEALTH_CORE, currency: "USD", "estimated-excess-quantity": 77,
+      "estimated-storage-cost-next-month": 4, "quantity-to-be-charged-ais-181-210-days": 2,
+      "estimated-ais-181-210-days": "1.25" };
+    const snapshot = await readHealth(reportText(Object.keys(record), [record]));
+    expect(snapshot.rows[0]).toMatchObject({ available: 1000, agedOver180: null,
+      estimatedExcessQuantity: 77, estimatedStorageCostNextMonth: 4, estimatedAgedSurcharge: null });
+  });
+
+  it("rejects a consistent reported currency belonging to a different marketplace", async () => {
+    const record = { ...HEALTH_CORE, currency: "EUR", "estimated-storage-cost-next-month": 4 };
+    await expect(readHealth(reportText(Object.keys(record), [record]), US)).rejects.toMatchObject({
+      code: "REPORT_MISMATCH", message: "FBA 庫齡報表幣別與目前站點不一致，已停止加總。",
+    });
+  });
+
+  it.each([undefined, "", "2026-08-01"])("uses only canonical stock date when it is %s", async (date) => {
+    const record: ReportRecord = { ...HEALTH_CORE, "Inventory age snapshot date": "2026-08-25" };
+    if (date === undefined) delete record["snapshot-date"];
+    else record["snapshot-date"] = date;
+    const snapshot = await readHealth(reportText(Object.keys(record), [record]));
+    expect(snapshot.rows[0]?.snapshotDate).toBe(date || null);
+  });
+
+  it("keeps one reported sales period without supplying values for absent headers", async () => {
+    const snapshot = await readHealth(reportText(["sku", "available", "units-shipped-t30"], [HEALTH_CORE]));
+    expect(snapshot.rows[0]).toMatchObject({ available: 1000,
+      unitsShipped: { t7: null, t30: 300, t60: null, t90: null } });
+  });
+
+  it.each([
+    { headers: ["sku"] }, { headers: ["sku", "available"] }, { headers: ["sku", "units-shipped-t30"] },
+  ])(
+    "rejects an unrecognized core schema with headers $headers", async ({ headers }) => {
+      await expect(readHealth(reportText(headers, [HEALTH_CORE]))).rejects.toMatchObject({ code: "REPORT_FORMAT_UNSUPPORTED" });
+    },
+  );
+
+  it.each([
+    ["inv-age-0-to-30-days", "invalid"], ["inv-age-181-to-330-days", "-1"],
+    ["quantity-to-be-charged-ais-181-210-days", "1.5"], ["estimated-ais-181-210-days", "1.001"],
+    ["available", "unknown"], ["units-shipped-t90", "-1"],
+    ["recommended-removal-quantity", "x"], ["days-of-supply", "x"],
+    ["snapshot-date", "2026-02-30"], ["asin", " B000000001"], ["sku", " HEALTH-ONE"],
+  ])("rejects nonempty invalid %s even when optional evidence is unavailable", async (field, value) => {
+    const record = { ...HEALTH_CORE, [field]: value };
+    await expect(readHealth(reportText(Object.keys(record), [record]))).rejects.toMatchObject({ code: "REPORT_FORMAT_UNSUPPORTED" });
+  });
+
+  it.each([
+    ["sku", "seller-sku"], ["available", "Available"], ["title", "item-name"],
+    ["currency", "currency-code"], ["inv-age-0-to-30-days", "inv_age_0_to_30_days"],
+  ])("rejects duplicate or ambiguous %s / %s headers", async (first, second) => {
+    const record = { ...HEALTH_CORE, [first]: "", [second]: "" };
+    await expect(readHealth(reportText(Object.keys(record), [record]))).rejects.toMatchObject({ code: "REPORT_FORMAT_UNSUPPORTED" });
+  });
+
+  it("rejects duplicate identities and malformed row structure", async () => {
+    const valid = reportText(Object.keys(HEALTH_CORE), [HEALTH_CORE]);
+    for (const document of [
+      reportText(Object.keys(HEALTH_CORE), [HEALTH_CORE, HEALTH_CORE]),
+      `${valid}\textra`, `${valid}\n\"unfinished`,
+    ]) {
+      await expect(readHealth(document)).rejects.toMatchObject({ code: "REPORT_FORMAT_UNSUPPORTED" });
+    }
+  });
+
+  it.each([
+    [US, "inv-age-365-plus-days"], [JP, "inv-age-366-to-455-days"],
+    [US, "estimated-ais-365-plus-days"], [JP, "estimated-ais-366-455-days"],
+  ] as const)("rejects mismatched regional evidence in %s / %s", async (marketplaceId, field) => {
+    const record = { ...HEALTH_CORE, [field]: "" };
+    await expect(readHealth(reportText(Object.keys(record), [record]), marketplaceId)).rejects.toMatchObject({ code: "REPORT_MISMATCH" });
+  });
+
+  it("uses the same fixed report handles and rejects invalidation before publication", async () => {
+    const built = build({ document: reportText(Object.keys(HEALTH_CORE), [HEALTH_CORE]) });
+    const expectedContext = await built.context.capture(US);
+    const input = { marketplaceId: US, reportId: REPORT_ID, documentId: DOCUMENT_ID, expectedContext };
+    const snapshot = await built.subject.readInventoryHealth(input);
+    expect(built.readDocument).toHaveBeenCalledWith({ intent: "aged-inventory", marketplaceId: US, signal: undefined },
+      { reportId: REPORT_ID, documentId: DOCUMENT_ID }, expectedContext);
+    expect(JSON.stringify(snapshot)).not.toContain(REPORT_ID);
+    expect(JSON.stringify(snapshot)).not.toContain(DOCUMENT_ID);
+    built.readDocument.mockImplementationOnce(async () => {
+      built.context.invalidate("account-changed");
+      return { mode: "live", text: reportText(Object.keys(HEALTH_CORE), [HEALTH_CORE]) };
+    });
+    await expect(built.subject.readInventoryHealth(input)).rejects.toMatchObject({ code: "SP_CONTEXT_INVALIDATED" });
+  });
+
+  it("validates demo handles before returning health evidence", async () => {
+    const valid = build({ document: "", mode: "demo" });
+    const input = { marketplaceId: US, reportId: REPORT_ID, documentId: DOCUMENT_ID };
+    const snapshot = await valid.subject.readInventoryHealth(input);
+    expect(snapshot).toMatchObject({ mode: "demo", marketplaceId: US });
+    expect(snapshot).not.toHaveProperty("summary");
+    expect(valid.readDocument).not.toHaveBeenCalled();
+    await expect(valid.subject.readInventoryHealth({ ...input, reportId: "report-lease.wrong" }))
+      .rejects.toMatchObject({ code: "REPORT_MISMATCH" });
+  });
+});
+
 describe("AgedInventoryReads", () => {
   it.each([false, true])("keeps stock supply separate from inbound-inclusive supply (reversed: %s)", async (reversed) => {
     const supplyHeaders = [

@@ -11,7 +11,9 @@
 
 ## 目前狀態
 
-- Issue #261 接續 0.1.67 原生驗收：這台 Mac 已完成正常退出、備份與可信 0.1.67 安裝，首頁顯示 Amazon 已連線；免原表價目表已完成 285 商品／283 一般售價，Listing 身分錯誤列已隔離並實際存出含圖 XLSX。全 FBA 效期同步則遇到「0–30 天」缺值並停止，未重試；0.1.68 將庫齡候選組的選擇改為按完整數值，保留未知及非重疊界線。來源、檢查與實機狀態見 [需求規格](specs/2026-09-health-age-values.md) 與 [分層帳本](releases/2026-09-health-age-values.md)，完整原始驗收範圍繼續保留。
+- Issue #263 接續 0.1.68 實機失敗：可信新版已安裝、首頁連線與圖片門檻重開保存已驗；第一次全 FBA 效期同步仍因 0–30 天缺值中斷，未重試。0.1.69 改以專用核心報表投影整理庫存、銷量與申報效期，補充庫齡未知保持 null，原嚴格庫齡入口不放寬。公開 reader→sync→coordinator 測試先重現相同錯誤；實作、檢查與交付狀態見 [規格](specs/2026-09-inventory-health-core-report.md) 與 [本輪帳本](releases/2026-09-inventory-health-core-report.md)。完整原始功能驗收持續保留。
+
+- Issue #261 已由 PR #262／main `7b202675a72fcc2cbe38dc3bb371f9664952f5dc` 合併 0.1.68：按整份報表的完整數量選擇非重疊庫齡組，處理空白細分與有效彙總並存的情況。3,813 tests、production audit 0、兩軸 review 各 0 open，四條 exact main CI、Pages HTML／11 個 JS／CSS、兩平台可信 artifact 與 Mac→Windows 下載卡上傳均已核對；使用者解鎖後已正常備份並安裝可信 0.1.68，vault／ledger 未變且 .67 App 保留；原生首頁截圖及後續完整輔助使用文字已證明 US／Amazon 已連線；圖片門檻 10 已跨正常退出／安裝／重開保存，並已恢復 8。全 FBA 效期與銷速本版首次同步仍以「0–30 天缺值」失敗結束，未重試，核心流程與庫齡缺值的關聯接續診斷；尚無完整原生結果。0.1.67 兩份實際 Excel 匯出及圖片門檻 1–10 已驗；變體掃描終態 285 FBA／74 未綁／1 未完成已觀察，0.1.68 已完成健檢 → 變體完整讀取 → 返回相同結果的導覽驗證，員工下載頁仍需登入。完整效期／銷速與其餘原始驗收範圍繼續保留，詳見 [需求規格](specs/2026-09-health-age-values.md) 與 [分層帳本](releases/2026-09-health-age-values.md)。
 
 - Issue #258 已由 PR #259／main `38f9bed050e0d9d33a7e69df8d34c410d547e069` 合併 0.1.67：免原表價目表只隔離單列 `LISTING_IDENTITY_MISMATCH`，效期健檢分清 Amazon 官方供應天數與日期欄的不同語意。最終 3,794 tests、production audit 0、兩軸 review 各 0 open，四條 exact main CI、Pages HTML／11 個 JS／CSS、兩平台可信 artifact 與 Mac→Windows 下載卡上傳均已核對；Windows 首次測試等待失敗經診斷後唯一重跑成功。後續已正常備份並安裝可信 0.1.67，首頁 Amazon 已連線。免原表價目表完成並實際存出含圖 XLSX；全 FBA 效期同步另遇到 0–30 天缺值，接續 Issue #261。0.1.66 啟動授權已由原生首頁與 Amazon 已連線畫面證明解除；兩項首次唯讀工作都已失敗，未重試。完整效期／銷速、其他原始實機驗收繼續保留；下載頁目前仍需員工登入，尚無 0.1.67 員工實際下載 bytes。每層證據見 [修正 spec](specs/2026-09-health-price-live-compat.md) 及 [帳本](releases/2026-09-health-price-live-compat.md)。
 

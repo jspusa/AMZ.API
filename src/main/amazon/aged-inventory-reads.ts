@@ -119,6 +119,20 @@ export interface AgedInventoryReadsPort {
   }>): Promise<AgedInventorySnapshot>;
 }
 
+export type InventoryHealthReportRow = Pick<AgedInventoryRow,
+  | "sellerSku" | "asin" | "title" | "available" | "unitsShipped"
+  | "estimatedExcessQuantity" | "currencyCode"
+  | "estimatedStorageCostNextMonth" | "estimatedAgedSurcharge" | "snapshotDate"
+> & { agedOver180: number | null };
+
+export type InventoryHealthReportSnapshot = Pick<AgedInventorySnapshot,
+  "mode" | "marketplaceId" | "fetchedAt"
+> & { rows: InventoryHealthReportRow[] };
+
+export interface InventoryHealthReportReadsPort extends Pick<AgedInventoryReadsPort, "begin" | "status"> {
+  readInventoryHealth(input: Parameters<AgedInventoryReadsPort["read"]>[0]): Promise<InventoryHealthReportSnapshot>;
+}
+
 type ParsedAgedInventoryReport = {
   rows: AgedInventoryRow[];
   storageCostCents: Array<number | null>;
@@ -475,10 +489,7 @@ function validateAgedInventoryRegionSchema(
   }
 }
 
-function parseAgedInventoryReportData(
-  text: string,
-  marketplaceId: MarketplaceId,
-): ParsedAgedInventoryReport {
+function inventoryReportTable(text: string) {
   if (text.length > MAX_REPORT_CHARACTERS) {
     reportFormatUnsupported(
       "Amazon FBA 庫齡報表內容超過安全大小上限。",
@@ -514,6 +525,30 @@ function parseAgedInventoryReportData(
     });
   }
 
+  return { rows, headerIndexes, skuIndex };
+}
+
+function reportSellerSku(row: string[], skuIndex: number, seen: ReadonlySet<string>): string {
+  const sellerSku = row[skuIndex] ?? "";
+  if (
+    !sellerSku || sellerSku.length > 40 || sellerSku !== sellerSku.trim() ||
+    /[\u0000-\u001f\u007f\u200b-\u200f\u202a-\u202e\u2060\ufeff]/u.test(sellerSku)
+  ) {
+    throw new SpApiError(
+      "Amazon FBA 庫齡報表有商品列缺少或無法原樣辨識 Seller SKU。",
+      { status: 502, code: "REPORT_FORMAT_UNSUPPORTED" },
+    );
+  }
+  if (seen.has(sellerSku)) {
+    throw new SpApiError(
+      "Amazon FBA 庫齡報表含有重複 Seller SKU，已停止顯示。",
+      { status: 502, code: "REPORT_FORMAT_UNSUPPORTED" },
+    );
+  }
+  return sellerSku;
+}
+
+function inventoryAgeColumns(headerIndexes: ReadonlyMap<string, number>) {
   const ageColumns = (
     definitions: Array<Omit<ReportAgeColumn, "index">>,
   ): ReportAgeColumn[] =>
@@ -521,22 +556,6 @@ function parseAgedInventoryReportData(
       ...item,
       index: reportColumn(headerIndexes, [item.header]),
     }));
-  const completeAgeColumns = (candidates: ReportAgeColumn[][]): ReportAgeColumn[] => {
-    const present = candidates.filter((columns) => columns.every((item) => item.index >= 0));
-    for (const columns of present) {
-      let complete = true;
-      // Keep one bucket shape across the report. Missing detail can use another
-      // fully reported range, but malformed nonempty values must still fail.
-      for (const row of rows.slice(1)) {
-        for (const item of columns) {
-          if (reportIntegerCell(row, item.index, item.label) === null) complete = false;
-        }
-      }
-      if (complete) return columns;
-    }
-    // Preserve the missing-value error when no complete evidence route exists.
-    return present[0] ?? [];
-  };
   const recentDetailedAgeColumns = ageColumns([
     {
       key: "0-30",
@@ -624,44 +643,14 @@ function parseAgedInventoryReportData(
     },
   ])[0];
 
-  const selectedRecentAgeColumns = completeAgeColumns([
-    recentDetailedAgeColumns,
-    [recentAggregateAgeColumn],
-  ]);
-  const hasRegionalTail = regionalTailAgeColumns.every(
-    (item) => item.index >= 0,
-  );
-  const hasGlobalTail = globalTailAgeColumn.index >= 0;
+  return {
+    recentDetailedAgeColumns, recentAggregateAgeColumn, midAgeColumn,
+    standardBaseAgeColumns, alternateBaseAgeColumns,
+    regionalTailAgeColumns, globalTailAgeColumn,
+  };
+}
 
-  // Amazon publishes overlapping aggregate and detailed bucket generations.
-  // Select exactly one complete route so the same units cannot be counted twice.
-  const selectedBaseAgeColumns = completeAgeColumns([
-    standardBaseAgeColumns,
-    alternateBaseAgeColumns,
-  ]);
-  const selectedTailAgeColumns = hasRegionalTail
-    ? regionalTailAgeColumns
-    : hasGlobalTail
-      ? [globalTailAgeColumn]
-      : [];
-  if (
-    !selectedRecentAgeColumns.length ||
-    midAgeColumn.index < 0 ||
-    !selectedBaseAgeColumns.length ||
-    !selectedTailAgeColumns.length
-  ) {
-    throw new SpApiError(
-      "Amazon FBA 庫齡報表缺少完整且不重疊的庫齡區間，已停止顯示。",
-      { status: 502, code: "REPORT_FORMAT_UNSUPPORTED" },
-    );
-  }
-  const selectedAgeColumns = [
-    ...selectedRecentAgeColumns,
-    midAgeColumn,
-    ...selectedBaseAgeColumns,
-    ...selectedTailAgeColumns,
-  ];
-
+function inventorySurchargeColumns(headerIndexes: ReadonlyMap<string, number>) {
   const surchargeColumns = (
     definitions: Array<{ key: string; label: string }>,
   ): ReportSurchargeColumn[] =>
@@ -689,6 +678,87 @@ function parseAgedInventoryReportData(
   const globalSurchargeTail = surchargeColumns([
     { key: "365-plus", label: "AIS 365 天以上（Amazon 欄位）" },
   ]);
+  return { commonSurchargeColumns, regionalSurchargeTail, globalSurchargeTail };
+}
+
+function inventoryEvidenceColumns(headerIndexes: ReadonlyMap<string, number>) {
+  return {
+    fnSkuIndex: reportColumn(headerIndexes, ["fnsku", "fulfillment-channel-sku"]),
+    asinIndex: reportColumn(headerIndexes, ["asin"]),
+    titleIndex: reportColumn(headerIndexes, ["product-name", "item-name", "title"]),
+    conditionIndex: reportColumn(headerIndexes, ["condition"]),
+    availableIndex: reportColumn(headerIndexes, ["available"]),
+    shippedIndexes: [7, 30, 60, 90].map(days => reportColumn(headerIndexes, [`units-shipped-t${days}`])),
+    excessIndex: reportColumn(headerIndexes, ["estimated-excess-quantity"]),
+    removalIndex: reportColumn(headerIndexes, ["recommended-removal-quantity"]),
+    // Inbound-inclusive supply is a separate metric, not stock supply evidence.
+    daysOfSupplyIndex: reportColumn(headerIndexes, ["days-of-supply"]),
+    currencyIndex: reportColumn(headerIndexes, ["currency", "currency-code"]),
+    storageCostIndex: reportColumn(headerIndexes, ["estimated-storage-cost-next-month"]),
+    storageVolumeIndex: reportColumn(headerIndexes, ["storage-volume"]),
+    alertIndex: reportColumn(headerIndexes, ["alert"]),
+    recommendedActionIndex: reportColumn(headerIndexes, ["recommended-action"]),
+    // An inventory-age date cannot establish stock and sales snapshot freshness.
+    snapshotDateIndex: reportColumn(headerIndexes, ["snapshot-date"]),
+  };
+}
+
+function parseAgedInventoryReportData(
+  text: string,
+  marketplaceId: MarketplaceId,
+): ParsedAgedInventoryReport {
+  const { rows, headerIndexes, skuIndex } = inventoryReportTable(text);
+  const {
+    recentDetailedAgeColumns, recentAggregateAgeColumn, midAgeColumn,
+    standardBaseAgeColumns, alternateBaseAgeColumns,
+    regionalTailAgeColumns, globalTailAgeColumn,
+  } = inventoryAgeColumns(headerIndexes);
+  const completeAgeColumns = (candidates: ReportAgeColumn[][]): ReportAgeColumn[] => {
+    const present = candidates.filter((columns) => columns.every((item) => item.index >= 0));
+    for (const columns of present) {
+      let complete = true;
+      // Keep one bucket shape across the report. Missing detail can use another
+      // fully reported range, but malformed nonempty values must still fail.
+      for (const row of rows.slice(1)) {
+        for (const item of columns) {
+          if (reportIntegerCell(row, item.index, item.label) === null) complete = false;
+        }
+      }
+      if (complete) return columns;
+    }
+    // Preserve the missing-value error when no complete evidence route exists.
+    return present[0] ?? [];
+  };
+
+  const selectedRecentAgeColumns = completeAgeColumns([
+    recentDetailedAgeColumns,
+    [recentAggregateAgeColumn],
+  ]);
+  const hasRegionalTail = regionalTailAgeColumns.every(item => item.index >= 0);
+  const hasGlobalTail = globalTailAgeColumn.index >= 0;
+  // Amazon publishes overlapping aggregate and detailed bucket generations.
+  // Select exactly one complete route so the same units cannot be counted twice.
+  const selectedBaseAgeColumns = completeAgeColumns([
+    standardBaseAgeColumns,
+    alternateBaseAgeColumns,
+  ]);
+  const selectedTailAgeColumns = hasRegionalTail
+    ? regionalTailAgeColumns
+    : hasGlobalTail ? [globalTailAgeColumn] : [];
+  if (
+    !selectedRecentAgeColumns.length || midAgeColumn.index < 0 ||
+    !selectedBaseAgeColumns.length || !selectedTailAgeColumns.length
+  ) {
+    throw new SpApiError(
+      "Amazon FBA 庫齡報表缺少完整且不重疊的庫齡區間，已停止顯示。",
+      { status: 502, code: "REPORT_FORMAT_UNSUPPORTED" },
+    );
+  }
+  const selectedAgeColumns = [
+    ...selectedRecentAgeColumns, midAgeColumn,
+    ...selectedBaseAgeColumns, ...selectedTailAgeColumns,
+  ];
+  const { commonSurchargeColumns, regionalSurchargeTail, globalSurchargeTail } = inventorySurchargeColumns(headerIndexes);
   const everySurchargeColumnPresent = (items: ReportSurchargeColumn[]) =>
     items.every((item) => item.quantityIndex >= 0 && item.estimatedIndex >= 0);
   const allSurchargeCandidates = [
@@ -718,41 +788,11 @@ function parseAgedInventoryReportData(
     );
   }
 
-  const fnSkuIndex = reportColumn(headerIndexes, [
-    "fnsku",
-    "fulfillment-channel-sku",
-  ]);
-  const asinIndex = reportColumn(headerIndexes, ["asin"]);
-  const titleIndex = reportColumn(headerIndexes, [
-    "product-name",
-    "item-name",
-    "title",
-  ]);
-  const conditionIndex = reportColumn(headerIndexes, ["condition"]);
-  const availableIndex = reportColumn(headerIndexes, ["available"]);
-  const shippedIndexes = [7, 30, 60, 90].map(days => reportColumn(headerIndexes, [`units-shipped-t${days}`]));
-  const excessIndex = reportColumn(headerIndexes, [
-    "estimated-excess-quantity",
-  ]);
-  const removalIndex = reportColumn(headerIndexes, [
-    "recommended-removal-quantity",
-  ]);
-  // Inbound-inclusive supply is a separate metric, not stock supply evidence.
-  const daysOfSupplyIndex = reportColumn(headerIndexes, ["days-of-supply"]);
-  const currencyIndex = reportColumn(headerIndexes, [
-    "currency",
-    "currency-code",
-  ]);
-  const storageCostIndex = reportColumn(headerIndexes, [
-    "estimated-storage-cost-next-month",
-  ]);
-  const storageVolumeIndex = reportColumn(headerIndexes, ["storage-volume"]);
-  const alertIndex = reportColumn(headerIndexes, ["alert"]);
-  const recommendedActionIndex = reportColumn(headerIndexes, [
-    "recommended-action",
-  ]);
-  // An inventory-age date cannot establish stock and sales snapshot freshness.
-  const snapshotDateIndex = reportColumn(headerIndexes, ["snapshot-date"]);
+  const {
+    fnSkuIndex, asinIndex, titleIndex, conditionIndex, availableIndex, shippedIndexes,
+    excessIndex, removalIndex, daysOfSupplyIndex, currencyIndex, storageCostIndex,
+    storageVolumeIndex, alertIndex, recommendedActionIndex, snapshotDateIndex,
+  } = inventoryEvidenceColumns(headerIndexes);
 
   const result: AgedInventoryRow[] = [];
   const storageCostCents: Array<number | null> = [];
@@ -765,26 +805,7 @@ function parseAgedInventoryReportData(
   );
   const seen = new Set<string>();
   for (const row of rows.slice(1)) {
-    const sellerSku = row[skuIndex] ?? "";
-    if (
-      !sellerSku ||
-      sellerSku.length > 40 ||
-      sellerSku !== sellerSku.trim() ||
-      /[\u0000-\u001f\u007f\u200b-\u200f\u202a-\u202e\u2060\ufeff]/u.test(
-        sellerSku,
-      )
-    ) {
-      throw new SpApiError(
-        "Amazon FBA 庫齡報表有商品列缺少或無法原樣辨識 Seller SKU。",
-        { status: 502, code: "REPORT_FORMAT_UNSUPPORTED" },
-      );
-    }
-    if (seen.has(sellerSku)) {
-      throw new SpApiError(
-        "Amazon FBA 庫齡報表含有重複 Seller SKU，已停止顯示。",
-        { status: 502, code: "REPORT_FORMAT_UNSUPPORTED" },
-      );
-    }
+    const sellerSku = reportSellerSku(row, skuIndex, seen);
 
     const ageBuckets = selectedAgeColumns.map((item) => ({
       key: item.key,
@@ -1036,6 +1057,138 @@ function agedInventoryExpirationBoundary(): AgedInventorySnapshot["expiration"] 
   };
 }
 
+function liveInventoryHealthReportSnapshot(input: Readonly<{
+  marketplaceId: MarketplaceId;
+  document: string;
+  fetchedAt: string;
+}>): InventoryHealthReportSnapshot {
+  const { rows, headerIndexes, skuIndex } = inventoryReportTable(input.document);
+  const columns = inventoryEvidenceColumns(headerIndexes);
+  if (columns.availableIndex < 0 || columns.shippedIndexes.every(index => index < 0)) {
+    reportFormatUnsupported("Amazon FBA 庫存與銷量報表缺少可辨識的庫存或銷量欄位。");
+  }
+  const age = inventoryAgeColumns(headerIndexes);
+  const allAgeColumns = [
+    ...age.recentDetailedAgeColumns, age.recentAggregateAgeColumn, age.midAgeColumn,
+    ...age.standardBaseAgeColumns, ...age.alternateBaseAgeColumns,
+    ...age.regionalTailAgeColumns, age.globalTailAgeColumn,
+  ];
+  const surcharge = inventorySurchargeColumns(headerIndexes);
+  const allSurchargeColumns = [
+    ...surcharge.commonSurchargeColumns,
+    ...surcharge.regionalSurchargeTail, ...surcharge.globalSurchargeTail,
+  ];
+  const regional = REGIONAL_AGED_INVENTORY_MARKETPLACES.has(input.marketplaceId);
+  const regionalAgePresent = age.regionalTailAgeColumns.every(item => item.index >= 0);
+  const regionalSurchargePresent = surcharge.regionalSurchargeTail.every(item =>
+    item.quantityIndex >= 0 && item.estimatedIndex >= 0);
+  if (regional
+    ? (age.globalTailAgeColumn.index >= 0 && !regionalAgePresent) ||
+      (surcharge.globalSurchargeTail.some(item => item.quantityIndex >= 0 || item.estimatedIndex >= 0) && !regionalSurchargePresent)
+    : age.regionalTailAgeColumns.some(item => item.index >= 0) ||
+      surcharge.regionalSurchargeTail.some(item => item.quantityIndex >= 0 || item.estimatedIndex >= 0)
+  ) {
+    throw new SpApiError(
+      "Amazon FBA 庫齡報表的區域庫齡欄位與目前站點不一致，已停止顯示。",
+      { status: 409, code: "REPORT_MISMATCH" },
+    );
+  }
+  const tailAgeColumns = regional ? age.regionalTailAgeColumns : [age.globalTailAgeColumn];
+  const expectedSurchargeColumns = [
+    ...surcharge.commonSurchargeColumns,
+    ...(regional ? surcharge.regionalSurchargeTail : surcharge.globalSurchargeTail),
+  ];
+  const seen = new Set<string>();
+  const result: InventoryHealthReportRow[] = [];
+  for (const row of rows.slice(1)) {
+    const sellerSku = reportSellerSku(row, skuIndex, seen);
+    // Validate every recognized value, including unselected generations. Missing
+    // optional evidence is allowed; malformed evidence cannot hide behind it.
+    const ageValues = new Map(allAgeColumns.map(item => [
+      item.key, reportIntegerCell(row, item.index, item.label),
+    ]));
+    const completeAgeRoute = (items: ReportAgeColumn[]) =>
+      items.every(item => ageValues.get(item.key) != null);
+    const baseAgeColumns = [age.standardBaseAgeColumns, age.alternateBaseAgeColumns]
+      .find(completeAgeRoute);
+    const agedOver180 = baseAgeColumns && completeAgeRoute(tailAgeColumns)
+      ? safeIntegerTotal([...baseAgeColumns, ...tailAgeColumns].map(item => ageValues.get(item.key)!), "超過 180 天庫齡數量")
+      : null;
+
+    const currencyCode = reportCurrencyCell(row, columns.currencyIndex);
+    const storageVolume = reportDecimalCell(row, columns.storageVolumeIndex, "Amazon storage volume");
+    const reportedStorageCost = reportMoneyCents(row, columns.storageCostIndex, "下月預估倉儲成本");
+    const storageCost = columns.storageCostIndex < 0 ? null : reportedStorageCost ?? (storageVolume === 0 ? 0 : null);
+    const surchargeValues = new Map(allSurchargeColumns.map(item => {
+      const quantity = reportIntegerCell(row, item.quantityIndex, `${item.label}計費數量`);
+      const reportedCharge = reportMoneyCents(row, item.estimatedIndex, `${item.label}預估附加費`);
+      const charge = item.estimatedIndex < 0 ? null : reportedCharge ?? (quantity === 0 ? 0 : null);
+      return [item.key, { quantity, charge }] as const;
+    }));
+    const completeSurcharge = expectedSurchargeColumns.every(item => {
+      const value = surchargeValues.get(item.key)!;
+      return item.quantityIndex >= 0 && item.estimatedIndex >= 0 &&
+        value.quantity !== null && value.charge !== null;
+    });
+    const estimatedAgedSurcharge = completeSurcharge
+      ? safeMoneyTotal(expectedSurchargeColumns.map(item => surchargeValues.get(item.key)!.charge!), "單一 SKU AIS 預估附加費")
+      : null;
+    if (((storageCost ?? 0) > 0 || [...surchargeValues.values()].some(value => (value.charge ?? 0) > 0)) && !currencyCode) {
+      reportFormatUnsupported("Amazon FBA 庫齡報表有費用但缺少幣別，已停止加總。");
+    }
+    // These recognized numeric fields remain validated even though health has
+    // no consumer for their values.
+    reportIntegerCell(row, columns.removalIndex, "建議移除數量");
+    reportDecimalCell(row, columns.daysOfSupplyIndex, "可售天數");
+    const asin = columns.asinIndex < 0 ? "" : row[columns.asinIndex] ?? "";
+    if (asin && !/^[A-Z0-9]{10}$/.test(asin)) {
+      reportFormatUnsupported("Amazon FBA 庫存與銷量報表有商品列無法原樣辨識 ASIN。");
+    }
+    const snapshotDate = columns.snapshotDateIndex < 0 ? null : row[columns.snapshotDateIndex]?.trim() || null;
+    if (snapshotDate !== null) {
+      const timestamp = Date.parse(`${snapshotDate}T00:00:00Z`);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(snapshotDate) || !Number.isFinite(timestamp) || new Date(timestamp).toISOString().slice(0, 10) !== snapshotDate) {
+        reportFormatUnsupported("Amazon FBA 庫存與銷量報表的庫存快照日期格式無效。");
+      }
+    }
+    result.push({
+      sellerSku, asin, title: columns.titleIndex < 0 ? "" : row[columns.titleIndex]?.trim() ?? "",
+      available: reportIntegerCell(row, columns.availableIndex, "可售庫存"),
+      unitsShipped: {
+        t7: reportIntegerCell(row, columns.shippedIndexes[0]!, "7天出貨量"),
+        t30: reportIntegerCell(row, columns.shippedIndexes[1]!, "30天出貨量"),
+        t60: reportIntegerCell(row, columns.shippedIndexes[2]!, "60天出貨量"),
+        t90: reportIntegerCell(row, columns.shippedIndexes[3]!, "90天出貨量"),
+      },
+      agedOver180,
+      estimatedExcessQuantity: reportIntegerCell(row, columns.excessIndex, "Amazon 預估冗餘"),
+      currencyCode,
+      estimatedStorageCostNextMonth: storageCost === null ? null : storageCost / 100,
+      estimatedAgedSurcharge, snapshotDate,
+    });
+    seen.add(sellerSku);
+  }
+  const currencies = new Set(result.map(row => row.currencyCode).filter(value => value !== null));
+  if (currencies.size > 1) {
+    reportFormatUnsupported("同一站點的 FBA 庫齡報表包含多種幣別，已停止加總。");
+  }
+  const marketplace = marketplaceById(input.marketplaceId);
+  if (!marketplace) {
+    throw new SpApiError("FBA 庫齡報表站點無法辨識。", {
+      status: 409,
+      code: "REPORT_MISMATCH",
+    });
+  }
+  const currencyCode = [...currencies][0] ?? null;
+  if (currencyCode && currencyCode !== marketplace.currency) {
+    throw new SpApiError("FBA 庫齡報表幣別與目前站點不一致，已停止加總。", {
+      status: 409,
+      code: "REPORT_MISMATCH",
+    });
+  }
+  return { mode: "live", marketplaceId: input.marketplaceId, fetchedAt: input.fetchedAt, rows: result };
+}
+
 function liveAgedInventorySnapshot(input: Readonly<{
   marketplaceId: MarketplaceId;
   document: string;
@@ -1208,7 +1361,7 @@ function demoAgedInventorySnapshot(
  * schema selection, parsing, evidence projection and demo/live behavior stay
  * behind this boundary.
  */
-export class AgedInventoryReads implements AgedInventoryReadsPort {
+export class AgedInventoryReads implements AgedInventoryReadsPort, InventoryHealthReportReadsPort {
   private readonly reports: ReportsPort;
   private readonly context: SpExecutionContextAdapter;
   private readonly now: () => Date;
@@ -1291,6 +1444,34 @@ export class AgedInventoryReads implements AgedInventoryReadsPort {
   async read(
     input: Parameters<AgedInventoryReadsPort["read"]>[0],
   ): Promise<AgedInventorySnapshot> {
+    return this.readProjection(input,
+      document => liveAgedInventorySnapshot({ marketplaceId: input.marketplaceId, document, fetchedAt: this.now().toISOString() }),
+      () => demoAgedInventorySnapshot(input.marketplaceId, this.now()),
+    );
+  }
+
+  async readInventoryHealth(
+    input: Parameters<AgedInventoryReadsPort["read"]>[0],
+  ): Promise<InventoryHealthReportSnapshot> {
+    return this.readProjection(input,
+      document => liveInventoryHealthReportSnapshot({ marketplaceId: input.marketplaceId, document, fetchedAt: this.now().toISOString() }),
+      () => {
+        const snapshot = demoAgedInventorySnapshot(input.marketplaceId, this.now());
+        return { mode: snapshot.mode, marketplaceId: snapshot.marketplaceId, fetchedAt: snapshot.fetchedAt,
+          rows: snapshot.rows.map(({ sellerSku, asin, title, available, agedOver180, unitsShipped,
+            estimatedExcessQuantity, currencyCode, estimatedStorageCostNextMonth, estimatedAgedSurcharge, snapshotDate }) =>
+            ({ sellerSku, asin, title, available, agedOver180, unitsShipped,
+              estimatedExcessQuantity, currencyCode, estimatedStorageCostNextMonth, estimatedAgedSurcharge, snapshotDate })),
+        };
+      },
+    );
+  }
+
+  private async readProjection<T>(
+    input: Parameters<AgedInventoryReadsPort["read"]>[0],
+    live: (document: string) => T,
+    demo: () => T,
+  ): Promise<T> {
     assertNotAborted(input.signal);
     const context = await this.executionContext(
       input.marketplaceId,
@@ -1315,7 +1496,7 @@ export class AgedInventoryReads implements AgedInventoryReadsPort {
       }
       return this.settleInContext(context, () => {
         assertNotAborted(input.signal);
-        return demoAgedInventorySnapshot(input.marketplaceId, this.now());
+        return demo();
       });
     }
 
@@ -1333,11 +1514,7 @@ export class AgedInventoryReads implements AgedInventoryReadsPort {
     }
     return this.settleInContext(context, () => {
       assertNotAborted(input.signal);
-      return liveAgedInventorySnapshot({
-        marketplaceId: input.marketplaceId,
-        document: document.text,
-        fetchedAt: this.now().toISOString(),
-      });
+      return live(document.text);
     });
   }
 }
