@@ -11,6 +11,10 @@
 
 ## 目前狀態
 
+- 使用者已解鎖，可信 0.1.72 已正常備份安裝，ASAR 符合 artifact、vault／ledger 保留且原生 Amazon 已連線。一次完整效期同步保留 284 個 FBA 核心品號與 33 個銷售偏慢／待核對，但效期仍 partial：固定 `FBA_INBOUND_UPSTREAM_UNAVAILABLE` 訊息對應 HTTP 400／422 請求驗證錯誤，不能推定登入或權限失效，未重試。原鎖定阻礙已解除，見 [.72 新實機證據](releases/2026-09-empty-inbound-plan-name.md)。另修正 Issue #271 八欄健康表被全站五欄樣式擠壓的問題，為獨立 renderer 發布，沿用 .72 Notebook Key；[規格](specs/2026-09-inventory-health-table-layout.md)與[交付帳本](releases/2026-09-inventory-health-table-layout.md)。完整原始效期目標仍持續，已驗的圖片、Vine、偏好、價目表及變體不重做。
+
+- 0.1.72 空名稱修正已由 PR #270／main `ad5a1e7080ed72025b50c774f9c11e52ec0fc998` 發布：3,886 本機 tests、audit 0、兩軸 review、四條 exact main CI 與 Pages 12 檔 bytes 全通過。Windows 初次既有 LocalStore 測試逾時，確認相同 code tree 的 PR Windows 已成功、test／owner 未變與定點通過後，唯一失敗 job 重跑成功，沒有改 timeout 或 production。兩平台可信 artifact／fuses 已核對，Mac→Windows 上傳的實際 server complete manifest receipt 均符合可信檔案。員工登入已恢復，.72 兩個一般下載按鈕的 download event 與新本機檔案 bytes／hash 均已核對；不要再重整或要求重新登入。可信 .72 DMG 已唯讀掛載，原生 App 仍 .71：CUA 仍回報 Mac 鎖定且自動解鎖失敗，原解鎖請求待完成。此次自動接續是新鎖定阻礙的第 2 個 goal turn，實際下載驗證為本輪新進度。完整效期目標尚未完成，接續 [.72 帳本](releases/2026-09-empty-inbound-plan-name.md) 與 `/tmp/amz-api-v0172-verified/active-release.json`，不重做已驗功能、不為驗收送 Amazon mutation。
+
 - 0.1.71 最終來源 PR #269／main `26f2f693299721e3e759467a58b680e9c7bca04f` 已完成檢查、兩軸 review、四條 exact main CI、Pages 12 檔 bytes、兩平台 artifact 及 Mac→Windows upload。使用者解鎖後已正常備份並安裝可信 .71，ASAR 符合 artifact，vault／ledger 換版時未變，原生 Amazon 已連線。一次同步已確認真正卡點是「入庫計畫名稱空字串」；284 個 FBA 核心品號仍可讀、效期 partial，未重試。人工公布欄 4 項、原人工效期與促銷月曆保留。員工登入後兩張下載卡版本／hash 正確，但下載開始訊息尚未有新本機檔案證據。接續 Issue #263 的 [.72 空名稱修正契約](specs/2026-09-empty-inbound-plan-name.md) 與[交付帳本](releases/2026-09-empty-inbound-plan-name.md)，不能把解析修正當成完整效期目標已驗收。
 
 - Issue #263 接續 .70 原生 partial：全 FBA 核心已取得 284 列，但入庫效期 generic `FBA_EXPIRY_FORMAT_UNSUPPORTED` 尚無欄位原因。0.1.71 先補固定安全診斷，保留全部解析／checkpoint／context 與行事曆政策；不是實際根因修復。公開 reader → coordinator → sync 已先紅，最終檢查、交付與 live 原因仍待。見 [spec](specs/2026-09-inbound-expiry-diagnostics.md) 與 [本輪帳本](releases/2026-09-inbound-expiry-diagnostics.md)。

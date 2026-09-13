@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useId, useRef, useState } from "react";
 import {
   isInventoryHealthSnapshot,
   inventoryHealthCalendarRows,
@@ -117,6 +117,7 @@ export default function InventoryHealthPanel({ marketplaceId, mode }: {
   const [query, setQuery] = useState("");
   const [limit, setLimit] = useState(100);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const scrollHintId = useId();
   const generation = useRef(0);
   const saveBusy = useRef(false);
   const invalidated = useRef(false);
@@ -265,20 +266,22 @@ export default function InventoryHealthPanel({ marketplaceId, mode }: {
       </div>
       <input type="search" disabled={saving} aria-label="搜尋庫存健康品項" placeholder="搜尋品號、ASIN 或品名" value={query}
         onChange={event => { setQuery(event.target.value); setLimit(100); }} />
-      <div className="inventory-health-table"><table>
-        <thead><tr><th scope="col">品項／批次</th><th scope="col">全品號可售庫存／預估清完</th><th scope="col">最早申報效期</th><th scope="col">目標清完日</th><th scope="col">本批確認餘量</th><th scope="col">已回報最快平均銷速</th><th scope="col">累計清售缺口</th><th scope="col">核對</th></tr></thead>
+      <p className="inventory-health-scroll-hint" id={scrollHintId}>欄位未完整顯示時，可左右捲動；鍵盤選取表格後按 ← →。</p>
+      <div className="inventory-health-table" role="region" aria-label="FBA 效期與清售風險明細" aria-describedby={scrollHintId} tabIndex={0}><table>
+        <colgroup><col className="inventory-health-col-product" /><col className="inventory-health-col-stock" /><col className="inventory-health-col-date" /><col className="inventory-health-col-date" /><col className="inventory-health-col-quantity" /><col className="inventory-health-col-velocity" /><col className="inventory-health-col-quantity" /><col className="inventory-health-col-review" /></colgroup>
+        <thead><tr><th scope="col">品項／批次</th><th scope="col">全品號可售庫存／預估清完</th><th scope="col">最早申報效期</th><th scope="col">目標清完日</th><th scope="col" aria-label="本批確認餘量">本批確認<br />餘量</th><th scope="col" aria-label="已回報最快平均銷速">已回報最快<br />平均銷速</th><th scope="col" aria-label="累計清售缺口">累計清售<br />缺口</th><th scope="col">核對</th></tr></thead>
         <tbody>{filtered.slice(0, limit).map(row => <Fragment key={row.id}>
           <tr><td><strong>{row.title || row.sellerSku}</strong><small>{row.sellerSku}</small><small>{row.expiryDate ? `效期 ${row.expiryDate}` : "效期待確認"}</small></td>
-            <td>{count(row.available, "庫存未提供", 0)} 件<small>{row.stockRisk === "no-sales" ? "已回報期間無出貨，清完天數無法估算" : row.wholeSkuClearanceDays === null ? "清完天數未知" : `約 ${count(row.wholeSkuClearanceDays)} 天清完`}</small>
+            <td><span className="inventory-health-value">{count(row.available, "庫存未提供", 0)} 件</span><small>{row.stockRisk === "no-sales" ? "已回報期間無出貨，清完天數無法估算" : row.wholeSkuClearanceDays === null ? "清完天數未知" : `約 ${count(row.wholeSkuClearanceDays)} 天清完`}</small>
               <small>{row.stockRisk === "may-outlast-expiry" ? "☆ 全庫存可能晚於申報效期清完；批次待核對" : row.stockRisk === "slow-selling" ? "☆ 預估超過 180 天才清完" : "全品號估算，不是效期批次餘量"}</small></td>
-            <td>{(row.earliestDeclaredExpiryDate === undefined ? row.expiryDate : row.earliestDeclaredExpiryDate) ?? "尚未取得"}<small>歷史入庫申報，現存批次待確認</small></td>
-            <td>{row.stopSaleDate ?? row.expiryDate ?? "待確認"}<small>{row.daysRemaining === null ? "期限未知" : row.daysRemaining <= 0 ? "已到處理期限" : `剩 ${row.daysRemaining} 天`}</small></td>
-            <td>{count(row.confirmedRemaining, "待確認餘量", 0)}</td><td>{(row.estimatedDailyUnits ?? row.dailyUnits) === null ? "銷速未知" : `${count(row.estimatedDailyUnits ?? row.dailyUnits)} 件／日`}</td>
-            <td>{row.projectedShortfall === null ? "待確認" : `${count(row.projectedShortfall, "待確認", 0)} 件`}
+            <td><span className="inventory-health-value inventory-health-date">{(row.earliestDeclaredExpiryDate === undefined ? row.expiryDate : row.earliestDeclaredExpiryDate) ?? "尚未取得"}</span><small>歷史入庫申報，現存批次待確認</small></td>
+            <td><span className="inventory-health-value inventory-health-date">{row.stopSaleDate ?? row.expiryDate ?? "待確認"}</span><small>{row.daysRemaining === null ? "期限未知" : row.daysRemaining <= 0 ? "已到處理期限" : `剩 ${row.daysRemaining} 天`}</small></td>
+            <td><span className="inventory-health-value">{count(row.confirmedRemaining, "待確認餘量", 0)}</span></td><td><span className="inventory-health-value">{(row.estimatedDailyUnits ?? row.dailyUnits) === null ? "銷速未知" : `${count(row.estimatedDailyUnits ?? row.dailyUnits)} 件／日`}</span></td>
+            <td><span className="inventory-health-value">{row.projectedShortfall === null ? "待確認" : `${count(row.projectedShortfall, "待確認", 0)} 件`}</span>
               {calendarIds.has(row.id) && <small>★ 列入行事曆</small>}</td>
             <td><button type="button" disabled={saving} aria-label={`核對批次：${row.id}`} aria-expanded={expandedId === row.id}
               onClick={() => setExpandedId(expandedId === row.id ? null : row.id)}>核對批次</button></td></tr>
-          {expandedId === row.id && <tr><td colSpan={8} className="inventory-health-details">
+          {expandedId === row.id && <tr><td colSpan={8} className="inventory-health-details"><div className="inventory-health-details-content">
             <p>{row.reason}</p><dl>
               <div><dt>來源</dt><dd>{row.sourceLabel ?? row.sourceRef}</dd></div><div><dt>來源更新</dt><dd>{row.sourceUpdatedAt}</dd></div>
               <div><dt>庫存報表日期</dt><dd>{row.snapshotDate ?? "未提供"}</dd></div><div><dt>入庫申報數量</dt><dd>{count(row.declaredQuantity, "未提供", 0)}（不是批次餘量）</dd></div>
@@ -290,7 +293,7 @@ export default function InventoryHealthPanel({ marketplaceId, mode }: {
             <BatchConfirmation key={`${row.id}:${snapshot.fetchedAt}`} row={row} saving={saving}
               disabled={snapshot.stale || !snapshot.sourceComplete || row.available === null || row.snapshotDate === null || syncing}
               onSave={value => saveConfirmation(row, value)} onClose={() => setExpandedId(null)} />
-          </td></tr>}
+          </div></td></tr>}
         </Fragment>)}</tbody>
       </table></div>
       {!filtered.length && <p className="inventory-health-empty">{query ? "沒有符合搜尋的品項。" : filter === "clearance-risk" ? "目前沒有已確認的清售風險；資料缺漏請查看「待確認」。" : "目前沒有此範圍的品項。"}</p>}

@@ -1,11 +1,13 @@
 .inventory-health-panel {
+  container-type: inline-size;
   min-width: 0; margin-bottom: 24px; padding: 18px; border: 1px solid var(--line);
   border-radius: 14px; color: var(--ink); background: var(--surface); font-size: .85rem;
 }
+.aged-inventory-audit-drawer:has(.inventory-health-panel) { width: min(1480px, calc(100vw - 32px)); }
 .inventory-health-panel > header {
   display: flex; justify-content: space-between; align-items: flex-start; gap: 16px;
 }
-.inventory-health-panel h3 { margin: 0; font-size: 1rem; }
+.inventory-health-panel h3 { margin: 0; color: var(--ink); font-size: 1rem; }
 .inventory-health-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .inventory-health-panel p { line-height: 1.65; margin: 8px 0; }
 .inventory-health-panel :is(header p, small, dt, .inventory-health-source-status, .inventory-health-method, .inventory-health-empty) { color: var(--muted); }
@@ -14,7 +16,7 @@
   border-radius: 8px; background: var(--surface); color: var(--ink); font: inherit; cursor: pointer;
 }
 .inventory-health-panel button:disabled { opacity: .55; cursor: not-allowed; }
-.inventory-health-panel :is(button, input):focus-visible { outline: 2px solid currentColor; outline-offset: 3px; }
+.inventory-health-panel :is(button, input, [tabindex="0"]):focus-visible { outline: 2px solid currentColor; outline-offset: 3px; }
 .inventory-health-panel input {
   box-sizing: border-box; min-width: 0; min-height: 36px; padding: 8px 10px;
   border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--ink); font: inherit;
@@ -28,13 +30,26 @@
 .inventory-health-summary span { grid-column: 1 / -1; }
 .inventory-health-summary strong { font-size: 1.2rem; font-variant-numeric: tabular-nums; }
 .inventory-health-summary small { align-self: end; }
-.inventory-health-table { max-width: 100%; overflow-x: auto; }
-.inventory-health-panel table { width: 100%; min-width: 760px; border-collapse: collapse; text-align: left; font-size: .8rem; }
-.inventory-health-panel :is(th, td) { padding: 12px 9px; border-bottom: 1px solid var(--line); vertical-align: top; }
-.inventory-health-panel td:first-child { min-width: 150px; max-width: 240px; overflow-wrap: anywhere; }
-.inventory-health-panel td small { display: block; margin-top: 5px; }
-.inventory-health-panel th { font-weight: 600; white-space: nowrap; }
+.inventory-health-panel .inventory-health-scroll-hint { margin: 0 0 10px; color: var(--muted); font-size: .75rem; }
+.inventory-health-table { max-width: 100%; overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; }
+.inventory-health-panel table { width: 100%; min-width: 76rem; table-layout: fixed; border-collapse: separate; border-spacing: 0; text-align: left; font-size: .85rem; }
+/* This eight-column table must not inherit the global five-column order widths. */
+.inventory-health-panel th { width: auto; font-size: .8rem; font-weight: 600; white-space: normal; letter-spacing: normal; text-transform: none; }
+.inventory-health-col-product { width: 22%; }
+.inventory-health-col-stock { width: 18%; }
+.inventory-health-col-date { width: 11%; }
+.inventory-health-col-quantity, .inventory-health-col-review { width: 9%; }
+.inventory-health-col-velocity { width: 11%; }
+.inventory-health-panel :is(th, td) { padding: 14px 12px; border-bottom: 1px solid var(--line); vertical-align: top; line-height: 1.6; }
+.inventory-health-panel :is(th, td) + :is(th, td) { border-left: 1px solid var(--line); }
+.inventory-health-panel td { color: var(--ink); font-size: inherit; }
+.inventory-health-panel td:first-child { min-width: 0; max-width: none; overflow-wrap: anywhere; }
+.inventory-health-panel td small { display: block; margin-top: 6px; font-size: .75rem; line-height: 1.6; white-space: normal; overflow: visible; text-overflow: clip; overflow-wrap: anywhere; }
+.inventory-health-value { font-variant-numeric: tabular-nums; }
+.inventory-health-date, .inventory-health-table td > button { white-space: nowrap; }
+.inventory-health-table td > button { padding-inline: 10px; }
 .inventory-health-panel td.inventory-health-details { max-width: none; padding: 16px 12px; }
+.inventory-health-details-content { position: sticky; left: 12px; width: calc(100cqi - 26px); max-width: 100%; }
 .inventory-health-details dl { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px 16px; margin: 16px 0; }
 .inventory-health-details :is(dt, dd) { margin: 0; overflow-wrap: anywhere; line-height: 1.6; }
 .inventory-health-details dt { font-size: .75rem; }
@@ -47,9 +62,12 @@
 .inventory-health-confirmation p { color: var(--muted); font-size: .75rem; }
 .inventory-health-method { margin-top: 16px; font-size: .75rem; }
 .inventory-health-method summary { cursor: pointer; }
+:root[data-ui-mode="dark"] .inventory-health-panel { --ink: var(--night-ink); --muted: var(--night-muted); --surface: var(--night-surface); --line: var(--night-line); }
 @media (max-width: 600px) {
+  .aged-inventory-audit-drawer:has(.inventory-health-panel) { width: 100%; }
   .inventory-health-panel { padding: 12px; }
   .inventory-health-panel > header { flex-direction: column; }
   .inventory-health-summary { gap: 6px; }
   .inventory-health-summary > button { padding: 8px; font-size: .75rem; }
+  .inventory-health-details dl, .inventory-health-confirmation-fields { grid-template-columns: 1fr; }
 }
