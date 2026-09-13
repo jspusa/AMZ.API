@@ -60,8 +60,6 @@ import {
 } from "./operations-board-publisher";
 import { SupplyBossOperationsBoard } from "./supply-boss-operations-board";
 import { HostedListingImages } from "./hosted-listing-images";
-import { ListingImageLogin } from "./listing-image-login";
-import { ListingImageCredentialVault } from "./listing-image-credential-vault";
 import { DesktopInstallGate, DesktopUpdater } from "./desktop-updater";
 import { LocalStore, LocalStoreCorruptionError } from "./local-store";
 import { sellerCentralInventoryUrl } from "./seller-central-inventory";
@@ -130,7 +128,6 @@ let credentialVault: CredentialVault | null = null;
 let advertisingCredentialVault: AdvertisingCredentialVault | null = null;
 let operationsBoard: SupplyBossOperationsBoard | null = null;
 let hostedImages: HostedListingImages | null = null;
-let listingImageLogin: ListingImageLogin | null = null;
 let advertisingApi: AdvertisingApiClient | null = null;
 let desktopUpdater: DesktopUpdater | null = null;
 let updateStatus: UpdateStatus = { state: "idle" };
@@ -219,15 +216,13 @@ async function confirmSensitiveAction(
 ): Promise<void> {
   await nativeConfirmationGate.run(async () => {
     const confirmationWindow =
-      listingImageLogin?.confirmationWindow() ?? (
-        operationsBoardEditorWindow && !operationsBoardEditorWindow.isDestroyed()
-          ? operationsBoardEditorWindow
-          : credentialEditorWindow && !credentialEditorWindow.isDestroyed()
-          ? credentialEditorWindow
-          : advertisingCredentialEditorWindow && !advertisingCredentialEditorWindow.isDestroyed()
-            ? advertisingCredentialEditorWindow
-            : mainWindow
-      );
+      operationsBoardEditorWindow && !operationsBoardEditorWindow.isDestroyed()
+        ? operationsBoardEditorWindow
+        : credentialEditorWindow && !credentialEditorWindow.isDestroyed()
+        ? credentialEditorWindow
+        : advertisingCredentialEditorWindow && !advertisingCredentialEditorWindow.isDestroyed()
+          ? advertisingCredentialEditorWindow
+          : mainWindow;
     await requestNativeConfirmation(reason, {
       biometricMethod: () => {
         if (process.platform === "darwin" && systemPreferences.canPromptTouchID()) {
@@ -1151,24 +1146,7 @@ if (!hasSingleInstanceLock) {
       resolve(userData, "ads-credentials.enc"),
     );
     operationsBoard = new SupplyBossOperationsBoard();
-    hostedImages = new HostedListingImages({ requestLogin: (assertCurrent) => {
-      if (!listingImageLogin) throw new Error("圖片登入尚未就緒。");
-      return listingImageLogin.request(assertCurrent);
-    } });
-    listingImageLogin = new ListingImageLogin({
-      parent: () => mainWindow,
-      preload: fileURLToPath(new URL("../preload/credentialEditor.cjs", import.meta.url)),
-      service: hostedImages,
-      vault: new ListingImageCredentialVault({
-        path: resolve(userData, "listing-image-credentials.enc"),
-        codec: {
-          isAvailable: () => safeStorage.isAsyncEncryptionAvailable(),
-          encrypt: value => safeStorage.encryptStringAsync(value),
-          decrypt: async bytes => (await safeStorage.decryptStringAsync(bytes)).result,
-        },
-      }),
-      approve: reason => confirmSensitiveAction(reason, { requireBiometric: true }),
-    });
+    hostedImages = new HostedListingImages();
     advertisingApi = new AdvertisingApiClient(
       advertisingCredentialVault,
       fetch,
@@ -1184,7 +1162,6 @@ if (!hasSingleInstanceLock) {
     apiRouter = new ApiRouter({
       store: localStore,
       onContextInvalidated: () => {
-        listingImageLogin?.close();
         hostedImages?.clear();
         mainWindow?.webContents.send("fba:context-invalidated");
       },

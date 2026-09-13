@@ -351,7 +351,7 @@ export default function ConnectionPanel({
             <details className="optional-credential-section">
               <summary><div><span>•••</span><strong>進階選配狀態</strong><small>R2 與補貨 Skill 也只能在 Notebook 鑰匙安全輸入</small></div><i>＋</i></summary>
               <div className="advanced-credential-block">
-                <div className="advanced-credential-heading"><strong>Cloudflare R2 圖片上傳</strong><small>{summary?.imageStorageConfigured ? `已連線 · ${summary.imagePublicBaseUrl}` : "未設定仍可拖拉預覽與貼公開 URL"}</small></div>
+                <div className="advanced-credential-heading"><strong>Cloudflare R2 圖片上傳</strong><small>{summary?.imageStorageConfigured ? `選配設定已保存 · ${summary.imagePublicBaseUrl}` : "免設定即可拖入並準備公開圖片"}</small></div>
               </div>
               <div className="advanced-credential-block">
                 <div className="advanced-credential-heading"><strong>補貨 Skill 接點</strong><small>{summary?.replenishmentSkillConfigured ? "已保存" : "內建補貨計算已可直接使用"}</small></div>

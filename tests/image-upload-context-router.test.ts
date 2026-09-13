@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 
 const s3Spies = vi.hoisted(() => ({
@@ -18,8 +19,7 @@ vi.mock("@aws-sdk/client-s3", () => ({
 import { createScriptedSpExecutionContextAdapter } from
   "../src/main/amazon/sp-execution-context";
 import { ApiRouter } from "../src/main/api-router";
-import { NATIVE_CONFIRMATION_CANCELLED_MESSAGE } from "../src/main/native-confirmation";
-import { HostedListingImages } from "../src/main/hosted-listing-images";
+import { HostedListingImages, LISTING_IMAGE_SERVICE_ORIGIN } from "../src/main/hosted-listing-images";
 import type { CredentialVault } from "../src/main/credential-vault";
 import type { LocalStore } from "../src/main/local-store";
 
@@ -35,26 +35,35 @@ function validPng(): Uint8Array {
 }
 
 describe("listing image upload execution context", () => {
-  it.each([false, true])("returns an actionable cancelled-login response while preserving context rejection (drift=%s)", async drift => {
+  it.each([false, true])("prepares through the router without credentials or approval and rejects stale replies (drift=%s)", async drift => {
     s3Spies.send.mockClear();
     s3Spies.destroy.mockClear();
-    const transport = vi.fn<typeof fetch>(async () => { throw new Error("No network is expected after cancelling the login sheet"); });
-    const mutation = vi.fn(async () => { throw new Error("Image preparation must not enter Amazon mutations"); });
-    const read = vi.fn(async () => { throw new Error("Image preparation must not read Amazon listings"); });
+    const bytes = validPng();
+    const id = "11111111-1111-4111-8111-111111111111";
+    const sha256 = createHash("sha256").update(bytes).digest("hex");
+    const url = `${LISTING_IMAGE_SERVICE_ORIGIN}/listing-images/v2/${id}/${sha256}.png`;
+    const mutation = vi.fn(async () => { throw new Error("Preparation must not enter Amazon mutations"); });
+    const read = vi.fn(async () => { throw new Error("Preparation must not read Amazon listings"); });
     const clear = vi.fn();
     const approveWrite = vi.fn(async () => undefined);
+    const getImageStorage = vi.fn(async () => { throw new Error("Preparation must not unlock credentials"); });
     let router!: ApiRouter;
-    const requestLogin = vi.fn(async () => {
-      // Cancelling native approval rejects without creating a session.
-      if (drift) router.invalidateContext("lock-screen");
-      throw new Error(NATIVE_CONFIRMATION_CANCELLED_MESSAGE);
+    const transport = vi.fn<typeof fetch>(async (input, init) => {
+      expect(new Headers(init?.headers).has("authorization")).toBe(false);
+      if (init?.method === "PUT") {
+        expect(String(input)).toBe(`${LISTING_IMAGE_SERVICE_ORIGIN}/api/listing-images/v2/${id}`);
+        expect(Buffer.from(init.body as Uint8Array)).toEqual(Buffer.from(bytes));
+        if (drift) router.invalidateContext("lock-screen");
+        return Response.json({ operationId: id, sha256, url, width: 1000, height: 1000, size: bytes.length, contentType: "image/png" });
+      }
+      expect(String(input)).toBe(url);
+      return new Response(Buffer.from(bytes), { headers: { "content-type": "image/png" } });
     });
-    const service = new HostedListingImages({ requestLogin, fetch: transport });
+    const service = new HostedListingImages({ fetch: transport, uuid: () => id });
     router = new ApiRouter({
       store: {} as LocalStore,
-      vault: { getImageStorage: async () => null } as unknown as CredentialVault,
-      approveWrite,
-      hostedImages: service,
+      vault: { getImageStorage } as unknown as CredentialVault,
+      approveWrite, hostedImages: service,
       listingImageMutations: { handle: mutation, read, clear },
       spExecutionContext: createScriptedSpExecutionContextAdapter(marketplaceId => ({
         marketplaceId, mode: "live", accountScope: "opaque-image-upload-account",
@@ -62,21 +71,16 @@ describe("listing image upload execution context", () => {
     });
     try {
       const response = await router.handle({
-        requestId: `image-login-cancel-${drift ? "changed" : "current"}`,
+        requestId: `image-preparation-${drift ? "changed" : "current"}`,
         method: "POST", path: "/api/uploads/listing-images", query: {}, headers: {},
-        body: { kind: "multipart", fields: { marketplaceId: US, sellerSku: "IMAGE-CONTEXT-SKU" }, file: { name: "IMAGE-CONTEXT-SKU_01_主圖.png", type: "image/png", bytes: validPng() } },
+        body: { kind: "multipart", fields: { marketplaceId: US, sellerSku: "IMAGE-CONTEXT-SKU" }, file: { name: "IMAGE-CONTEXT-SKU_01_主圖.png", type: "image/png", bytes } },
       });
-      expect(response.status).toBe(409);
+      expect(response.status).toBe(drift ? 409 : 200);
       expect(response.body.kind).toBe("json");
       if (response.body.kind !== "json") throw new Error("Expected public JSON response");
-      if (drift) expect(response.body.value).toMatchObject({ code: "SP_CONTEXT_INVALIDATED" });
-      else expect(response.body.value).toEqual({
-        code: "IMAGE_LOGIN_CANCELLED",
-        message: "圖片服務身分驗證已取消或未通過；檔案仍保留在工作台。",
-      });
-      expect(requestLogin).toHaveBeenCalledOnce();
-      expect(service.authenticated()).toBe(false);
-      expect(transport).not.toHaveBeenCalled();
+      expect(response.body.value).toMatchObject(drift ? { code: "SP_CONTEXT_INVALIDATED" } : { amazonUrl: url, readyForAmazon: true });
+      expect(transport).toHaveBeenCalledTimes(drift ? 1 : 2);
+      expect(getImageStorage).not.toHaveBeenCalled();
       expect(mutation).not.toHaveBeenCalled();
       expect(read).not.toHaveBeenCalled();
       expect(approveWrite).not.toHaveBeenCalled();

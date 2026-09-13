@@ -241,39 +241,8 @@ export class LocalImageUpload implements LocalImageUploadPort {
     const key = `listing-images/${marketplaceId}/${skuHash}/${this.uuid()}.${extension}`;
     const previewUrl =
       `data:${contentType};base64,${Buffer.from(file.bytes).toString("base64")}`;
-    const storage = await this.vault.getImageStorage();
-    await this.context.assertCurrent(context);
     let amazonUrl: string | null = null;
-    if (storage) {
-      const policy = storagePolicy(storage);
-      if (!policy) {
-        return invalid(
-          "R2 endpoint 未通過安全檢查。",
-          422,
-          "INVALID_IMAGE_STORAGE",
-        );
-      }
-      await this.context.assertCurrent(context);
-      await this.objectStore.put({
-        endpoint: policy.endpoint,
-        credentials: {
-          accessKeyId: storage.accessKeyId,
-          secretAccessKey: storage.secretAccessKey,
-        },
-        bucket: storage.bucket,
-        key,
-        bytes: file.bytes,
-        contentType,
-        metadata: {
-          marketplace: marketplaceId,
-          sku: skuHash,
-          width: String(dimensions.width),
-          height: String(dimensions.height),
-        },
-      });
-      await this.context.assertCurrent(context);
-      amazonUrl = `${policy.publicBaseUrl}/${key}`;
-    } else if (this.hostedImages) {
+    if (this.hostedImages) {
       let hosted: Awaited<ReturnType<HostedListingImagePort["prepare"]>>;
       try {
         hosted = await this.hostedImages.prepare({
@@ -290,6 +259,41 @@ export class LocalImageUpload implements LocalImageUploadPort {
       }
       await this.context.assertCurrent(context);
       amazonUrl = hosted.url;
+    } else {
+      // Compatibility for compositions that explicitly provide their own R2
+      // store. Production hosted preparation never reads encrypted settings.
+      const storage = await this.vault.getImageStorage();
+      await this.context.assertCurrent(context);
+      if (storage) {
+        const policy = storagePolicy(storage);
+        if (!policy) {
+          return invalid(
+            "R2 endpoint 未通過安全檢查。",
+            422,
+            "INVALID_IMAGE_STORAGE",
+          );
+        }
+        await this.context.assertCurrent(context);
+        await this.objectStore.put({
+          endpoint: policy.endpoint,
+          credentials: {
+            accessKeyId: storage.accessKeyId,
+            secretAccessKey: storage.secretAccessKey,
+          },
+          bucket: storage.bucket,
+          key,
+          bytes: file.bytes,
+          contentType,
+          metadata: {
+            marketplace: marketplaceId,
+            sku: skuHash,
+            width: String(dimensions.width),
+            height: String(dimensions.height),
+          },
+        });
+        await this.context.assertCurrent(context);
+        amazonUrl = `${policy.publicBaseUrl}/${key}`;
+      }
     }
     return json({
       key,

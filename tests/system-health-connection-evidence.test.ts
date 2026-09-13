@@ -69,7 +69,7 @@ describe("system health connection evidence", () => {
 
     const payload = response.body.value as {
       mode: string;
-      checks: Array<{ id: string; label: string; detail: string }>;
+      checks: Array<{ id: string; label: string; state: string; detail: string; action: string | null }>;
       notice: string;
     };
     const spApi = payload.checks.find((item) => item.id === "sp-api");
@@ -78,6 +78,10 @@ describe("system health connection evidence", () => {
     expect(spApi?.label).toBe("Amazon SP-API 憑證設定");
     expect(spApi?.detail).toContain("只核對本機設定");
     expect(spApi?.detail).toContain("未代表即時驗證 Amazon 連線");
+    expect(payload.checks.find((item) => item.id === "image-storage")).toMatchObject({
+      state: "ready", action: null,
+      detail: expect.stringContaining("只有最後送出 Amazon 更新時才需原生確認"),
+    });
     expect(payload.notice).toContain("未代表即時驗證 Amazon 連線");
   });
 });

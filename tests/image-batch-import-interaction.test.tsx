@@ -109,6 +109,8 @@ describe("image batch import through the image workspace", () => {
     const name = `${sellerSku}_07_成分GA_模板.png`;
     await drop([name]);
     await act(async () => { await button("檢查並套用 1 張").props.onClick(); });
+    expect(output()).not.toContain("圖片服務登入");
+    expect(output()).toContain("只有最後送出 Amazon 圖片更新時才需 Touch ID／Windows Hello");
     const slot = renderer!.root.findAll(node => node.type === "article" && String(node.props.className).startsWith("image-slot "))[6];
     await act(async () => { slot.findAllByType("button").find(node => node.children.join("") === "→")!.props.onClick({ stopPropagation() {} }); });
     await act(async () => { button("收起對照").props.onClick(); });

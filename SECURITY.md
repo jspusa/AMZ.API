@@ -82,4 +82,8 @@
 
 ## 預設圖片代管
 
-Supply Boss 圖片服務只接 main-owned 固定 origin/path 的受限 JPEG／PNG 上傳，不接 renderer 指定路徑、bucket 或第三方 URL。員工以下載頁密碼 verifier 在獨立圖片登入端點取得 `amz-api-listing-images` audience；下載、board、snapshot-admin token 不能互換權限。密碼只在 packaged 本機無網路 sheet 輸入，驗證且經原生授權後保存至獨立 OS safeStorage 加密的 `listing-image-credentials.enc`。後續只有 Touch ID／Windows Hello 通過後，main 才解密並向固定圖片登入端點驗證；無生物辨識能力、取消、加密不可用或 context 漂移均 fail closed，沒有一般確認按鈕或明文 fallback。不得從 browser／download／board session 匯出秘密，亦不永久保存 image token；token 只留 main 記憶體，安全環境失效時清除。圖片更新不再要求重打 SKU，但仍由 main 的 exact Write Binding、fresh Preview、原生 SKU／位置摘要與 durable claim 授權一次 PATCH。伺服器只保留 opaque operation ID、圖片 bytes 與型別／尺寸／hash；公開 GET 嚴格限制在圖片 namespace，不能讀取下載檔、公告或安全紀錄。main 匿名讀回精確 bytes 後才開放 Amazon 預檢，保存結果不明禁止自動重傳。既有自有 R2 設定仍可使用；新功能不把其 credentials 搬到 Site。
+Production main 預設先使用 `HostedListingImages` 的固定 Supply Boss v2 圖片路徑；拖入、上傳及準備不要求密碼、Touch ID／Windows Hello，也不讀取圖片登入資料或 R2 vault。圖片專用登入視窗、IPC 與 vault owner 已退休；既有 `listing-image-credentials.enc` 原檔保留，不讀取、不解密、不刪除。自有 R2 port 只在未提供 hosted owner 的 composition 保留，不作預設優先路徑或 hosted 失敗後的 fallback。不得從 browser／download／board session 取用秘密，也不得在 source 嵌入共用 secret。
+
+Server v2 是有固定額度上限的匿名 image-only 服務，不是員工或裝置身分驗證。main 只向固定 `/api/listing-images/v2/{UUIDv4}` PUT／GET；UUID 只識別冪等操作，不是登入 token，請求不帶帳號、Seller SKU、Amazon 憑證或 Authorization。server 先保留 bounded quota，再接收受限 JPEG／PNG bytes；圖片 metadata、hash 與大小須符合內容。公開圖片僅使用固定 `/listing-images/v2/{UUID}/{sha}.{ext}`，不接受 renderer 指定 bucket、路徑或第三方來源，v2 namespace 不能讀取下載檔、公告或安全紀錄。既有 v1 圖片驗證路由、下載、board 與 snapshot-admin 驗證邊界保留，不因新增匿名 v2 放寬。
+
+每個操作只 PUT 一次；保存結果不明只 GET 查詢既有操作，不自動重傳或因 context 清除而建立另一個操作。main 以原檔的型別／尺寸／大小／hash 核對 receipt，再匿名 bounded GET 驗證精確 bytes，成功後才開放 Amazon 預檢。最後 Amazon 更新仍由與文案相同的 native gate，配合 main 的 exact Write Binding、fresh Preview、原生 SKU／位置摘要及 durable claim 授權一次 PATCH，不要求重打 SKU。完整規格見 [免登入圖片準備](docs/specs/2026-09-passwordless-image-preparation.md)。
