@@ -1,6 +1,6 @@
 # 0.1.67 效期報表與價目表相容性修正
 
-Issue [#258](https://github.com/jspusa/AMZ.API/issues/258)，[需求規格](../specs/2026-09-health-price-live-compat.md)。Source base `f91d236683c437ca6ba873ed1593121e3c865748`，分支 `codex/health-price-live-compat-20260913`。[PR #259](https://github.com/jspusa/AMZ.API/pull/259) 已合併至 release source `38f9bed050e0d9d33a7e69df8d34c410d547e069`。0.1.67 的網站、兩平台可信產物與受保護下載卡上傳均已完成；這台 Mac 仍安裝 0.1.66，新版安裝、完整原生驗收與員工下載 bytes 尚待完成。
+Issue [#258](https://github.com/jspusa/AMZ.API/issues/258)，[需求規格](../specs/2026-09-health-price-live-compat.md)。Source base `f91d236683c437ca6ba873ed1593121e3c865748`，分支 `codex/health-price-live-compat-20260913`。[PR #259](https://github.com/jspusa/AMZ.API/pull/259) 已合併至 release source `38f9bed050e0d9d33a7e69df8d34c410d547e069`。0.1.67 的網站、兩平台可信產物與受保護下載卡上傳均已完成；這台 Mac 已完成可信 0.1.67 安裝，後續原生發現與完整未完成範圍見 [0.1.68 接續帳本](2026-09-health-age-values.md)；員工下載 bytes 尚待完成。
 
 ## 原生發現
 
@@ -17,8 +17,8 @@ Public seam 已重現單筆 `409 LISTING_IDENTITY_MISMATCH` 中斷價格工作�
 | ★ Source／聚焦驗證 | 已完成兩個 owner 的窄修正，新增 40 個 public 回歸；健康 56 tests、價格相關 116 tests 通過 |
 | ★ 全案 check／audit／兩軸 review | 最終 head `0ae39e47e180238e8b243714bb64e7ffed2aacff` 的 `VITEST_MAX_WORKERS=4 npm run check` 通過 323 files／3,794 tests、型別與 build；production audit 0、diff check 通過。Standards／Spec 自 base 至該 head 均 0 open，包含後續 CI 等待修正 |
 | ★ 同來源 CI／Pages／Mac／Windows artifact | main/push Validate `34708837585`、Pages `34708837576`、Mac `34708837619`、Windows `34708837581` 均 success。Windows 為診斷後唯一重跑的 attempt 2，其餘 attempt 1；Pages artifact `10301999270` 的 HTML／全部 11 個 JS／CSS 與線上 bytes 相同；Mac artifact `10302588753`、Windows artifact `10302119819` 已核對 |
-| ☆ 0.1.67 Mac 安裝 | 可信 DMG 已唯讀掛載，bundle 版本、ASAR、universal 與 deep/strict adhoc codesign 均核對；尚未退出或替換目前 0.1.66。原生工具最新回報 Mac locked／自動解鎖失敗 |
-| ☆ 修正後原生結果 | 待新版完整效期／銷速與免原表 XLSX |
+| ★ 0.1.67 Mac 安裝 | 正常退出 0.1.66、完成 0700 userData 備份後，從可信 DMG 安裝 0.1.67 universal；ASAR 與可信 artifact 相符，deep/strict adhoc codesign、vault／ledger bytes 保留均已核對，舊 App 保留 |
+| ★ 價目表原生完成／☆ 效期結果 | 無原表生成 285 商品、283 一般售價，身分錯誤列隔離後仍完成並實際存出含圖 XLSX，最終內容／視覺檢查接續進行；效期同步遇到新的 0–30 天缺值，未重試，交由 Issue #261 |
 | ★ 下載卡上傳 | Mac→Windows 依序 uploader exit 0、complete 回覆成功；保留 `macos-dmg`／`windows-installer` 卡片 ID、平台與名稱，改為 0.1.67 及下列可信 bytes／hash |
 | ☆ 員工下載實體檔 | 目前下載頁仍為登入畫面，尚未啟動 0.1.67 員工下載。上傳成功不代表登入後卡片顯示或實體下載已驗 |
 
@@ -35,13 +35,13 @@ PR head `0ae39e47e180238e8b243714bb64e7ffed2aacff` 的 Validate `34708491579`／
 
 Mac ASAR `3a77b3faa0965665975c0883afe07f59b4e6a459f2dc947f99f37131749095e3`；Windows ASAR `550989864068585367d78e8f6d8162ceb9771d9838f93e1835c280e614e909f7`。兩平台 package 均為 0.1.67／update channel disabled；Mac 的 arm64／x86_64 與兩架構 8 項 fuses、Windows 的 AMD64 N-API addon／唯一 unpacked 路徑／packed manifest hash／8 項 fuses 均核對。CI 不代表真人 Touch ID／Windows Hello 或 live Amazon。
 
-本機證據集中於 `/tmp/amz-api-v0167-verified/`：`source-merge.json`、`local-validation.json`、`review.json`、Pages bytes 核對、兩平台 CI／artifact／bundle 檢查，以及 `portal-upload-verification.json`。`native-pending.json` 保留目前實際安裝 0.1.66、無 Amazon Preview／mutation 與未完成範圍。安裝 helper 只能指向 clean、exact release source 的 checkout，不能用後續 docs commit 冒充產物來源。
+本機證據集中於 `/tmp/amz-api-v0167-verified/`：`source-merge.json`、`local-validation.json`、`review.json`、Pages bytes 核對、兩平台 CI／artifact／bundle 檢查，以及 `portal-upload-verification.json`。`installation-verification.json` 已記錄 0.1.67 安裝；`native-acceptance-20260913.json`／`native-pending.json` 保留無 Amazon Preview／mutation 與未完成範圍。安裝 helper 只能指向 clean、exact release source 的 checkout，不能用後續 docs commit 冒充產物來源。
 
 ## 原始目標仍待核對
 
 全 FBA 效期與銷速結果、低庫齡商品、人工效期／促銷保留、只納入已確認正清售缺口的行事曆；免原表價目表實際 XLSX；健檢至變體並返回；圖片門檻選取／結果／匯出；0.1.66 新圖片加密登入及後續生物辨識、免重打 SKU 的原生確認頁；員工登入後兩平台下載 bytes。
 
-0.1.65 的外觀偏好重開保存、Vine 11 筆進行中及九張圖片直接準備證據繼續有效，詳見前版帳本。Mac 最新仍由工具回報鎖定／自動解鎖失敗，已請使用者解鎖以接續安裝；下載頁目前仍需員工登入。不得因本輪發布完成而將完整目標縮小結案。
+0.1.65 的外觀偏好重開保存、Vine 11 筆進行中及九張圖片直接準備證據繼續有效，詳見前版帳本。使用者解鎖後已接續安裝及原生驗收，後續狀態以 0.1.68 接續帳本為準；下載頁目前仍需員工登入。不得因本輪發布完成而將完整目標縮小結案。
 
 ## CI 失敗與處理
 
