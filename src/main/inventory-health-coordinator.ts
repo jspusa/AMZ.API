@@ -175,7 +175,11 @@ export class InventoryHealthCoordinator {
       const oldStocks = new Map(previous?.rows.map(r => [r.sellerSku, r]) ?? []);
       const stockBySku = new Map(stocks.map(r => [r.sellerSku, r]));
       const lots = new Map<string, InventoryExpiryRecord>();
-      for (const old of previousLots.values()) lots.set(old.id, { ...old, confirmedRemaining: null, confirmedForSnapshot: null });
+      // Incomplete traversal keeps user confirmations dormant until their source
+      // is reproved; clearing them between slices would lose later-plan balances.
+      for (const old of previousLots.values()) lots.set(old.id, incoming.complete
+        ? { ...old, confirmedRemaining: null, confirmedForSnapshot: null }
+        : old);
       for (const record of incoming.records) {
         const old = previousLots.get(record.id);
         const same = old && old.sourceUpdatedAt === record.sourceUpdatedAt && old.declaredQuantity === record.declaredQuantity;

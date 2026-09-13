@@ -16,7 +16,7 @@
 4. 已驗證 context／request 的單一計畫明細或商品讀取，若收到 terminal HTTP 400／404／422 且為 adapter 固定 `FBA_INBOUND_UPSTREAM_UNAVAILABLE`，只證明該來源不可讀。保存固定 unavailable 狀態與 plan metadata，丟棄該計畫尚未完整的商品暫存，繼續其他計畫；不保存 raw error、不猜原因、不重送同一請求。錯誤 body 的格式不能授予成功或具體原因。
 5. 計畫清單失敗、auth／context／abort、throttle／network／server failure、成功 payload 格式錯誤、pagination 漂移／重複與上限仍停止。catch 後先再核對 context 與 abort，才能隔離來源錯誤。
 6. 完成遍歷與來源完整是不同狀態：`traversalComplete=true` 可搭配 `complete=false`／unavailablePlanCount。coordinator 保存已完成來源後停止切片，sync 顯示終態 partial 與無法讀取計畫數，GET／重新讀取本機不會重新列表或重送。新一次明確同步可重新評估不可讀來源。
-7. checkpoint schema 2 保存詳細階段、來源與游標、完整 cache 及 unavailable plan；沿用 request／record／plan／token／bytes 上限、原子加密保存與 exact context。schema 1 必須先完整驗證，再開啟新掃描；舊 profile 的人工資料保留。中途切片不把半份計畫發布為完整，重開可接續且不重讀同輪已拒絕來源。
+7. checkpoint schema 2 保存詳細階段、來源與游標、完整 cache 及 unavailable plan；沿用 request／record／plan／token／bytes 上限、原子加密保存與 exact context。schema 1 必須先依舊格式完整驗證，再開啟新掃描；schema 2 的所有計畫狀態均要求嚴格 RFC3339。舊 profile 的人工資料保留，未完成切片期間保留但停用既有確認餘量；完整掃描只重新啟用同版本、同申報量且庫存快照未變的來源，淘汰來源的確認量清空。中途切片不把半份計畫發布為完整，重開可接續且不重讀同輪已拒絕來源。
 8. 任一無法讀取的計畫仍使來源不完整。未知計畫涉及哪些 SKU 不可推定，自動行事曆與批次確認仍保持原全域完整性門檻。人工公布欄與促銷保留；缺日期／餘量保持未知，不以歷史入庫量或庫齡補算。
 
 ## 官方依據與界線

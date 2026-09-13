@@ -328,4 +328,46 @@ describe("shipment-based declared expiry source", () => {
     else await expect(h.run()).rejects.toMatchObject({ code: "FBA_EXPIRY_FORMAT_UNSUPPORTED" });
     expect(h.calls).toHaveLength(pages + 2);
   });
+
+  it.each(["September 1, 2026 00:00:00 GMT", "2026-09-01", "2026-02-31T00:00:00Z"])("rejects malformed list revision %s before a future plan rejection can be isolated", async lastUpdatedAt => {
+    const h = harness([{ ...plan(0), lastUpdatedAt }], request => { if (request.kind === "plan") throw unavailable(400); });
+    await expect(h.run()).rejects.toMatchObject({ code: "FBA_EXPIRY_FORMAT_UNSUPPORTED", status: 502 });
+    expect(h.calls.map(request => request.kind)).toEqual(["plans"]);
+  });
+
+  it.each(["cached", "current", "pending", "unavailable"] as const)("rejects malformed schema 2 %s plan revisions before external reads", async state => {
+    const first = await harness([plan(0)]).run();
+    const checkpoint = structuredClone(first.checkpoint!);
+    const cached = checkpoint.cachedPlans[0]!;
+    const lastUpdatedAt = "September 1, 2026 00:00:00 GMT";
+    const malformed = { ...cached, lastUpdatedAt, records: cached.records.map(record => ({ ...record, sourceUpdatedAt: lastUpdatedAt })) };
+    checkpoint.cachedPlans = [];
+    if (state === "cached") checkpoint.cachedPlans = [malformed];
+    if (state === "current") {
+      checkpoint.phase = "partial";
+      checkpoint.currentPlan = { ...malformed, sourceIndex: 0, itemCursor: "next-page", itemTokens: ["next-page"] };
+    }
+    if (state === "pending") {
+      checkpoint.phase = "partial";
+      checkpoint.pendingPlans = [{ ...plan(0), lastUpdatedAt, status: "SHIPPED" }];
+    }
+    if (state === "unavailable") checkpoint.unavailablePlans = [{ ...plan(0), lastUpdatedAt, status: "SHIPPED", reason: "upstream-unavailable", upstreamStatus: 400 }];
+    expect(() => parseFbaExpiryCheckpoint(checkpoint)).toThrowError(expect.objectContaining({ code: "FBA_EXPIRY_FORMAT_UNSUPPORTED" }));
+    const h = harness([plan(0)], request => { if (request.kind === "plan") throw unavailable(400); });
+    await expect(h.run(checkpoint)).rejects.toMatchObject({ code: "FBA_EXPIRY_FORMAT_UNSUPPORTED" });
+    expect(h.calls).toEqual([]);
+  });
+
+  it("retains schema 1 timestamp validation only for bounded migration into a new traversal", async () => {
+    const first = await harness([plan(0)]).run();
+    const lastUpdatedAt = "September 1, 2026 00:00:00 GMT";
+    const legacy = { ...first.checkpoint!, schemaVersion: 1, cachedPlans: first.checkpoint!.cachedPlans.map(({ itemSources: _sources, ...value }) => ({
+      ...value, lastUpdatedAt, records: value.records.map(record => ({ ...record, sourceUpdatedAt: lastUpdatedAt })),
+    })) };
+    const migrated = parseFbaExpiryCheckpoint(legacy)!;
+    expect(migrated).toMatchObject({ schemaVersion: 2, phase: "partial", cachedPlans: [], pendingPlans: [], currentPlan: null, unavailablePlans: [] });
+    const h = harness([plan(0)]);
+    expect((await h.run(legacy)).complete).toBe(true);
+    expect(h.calls.map(request => request.kind)).toEqual(["plans", "plan", "shipment-items"]);
+  });
 });

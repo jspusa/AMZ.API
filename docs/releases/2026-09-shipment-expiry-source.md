@@ -15,7 +15,10 @@ Issue #278，完整目標 #263 保持開啟；[功能規格](../specs/2026-09-sh
 - 個別已驗證來源的 HTTP 400／404／422 明確保留為 incomplete，其他可讀來源繼續；auth／context／abort／限流／network／成功資料格式錯誤仍停止。
 - sourceComplete 與遍歷終態分开；終態 partial 保存已讀資料並停止，不由 GET 或本機重讀觸發另一輪。
 - transport 新測試先 RED（固定路徑缺少 shipments/items），修正後 17 個 production adapter tests 通過：`/tmp/amz-shipment-expiry-transport-red.log`、`/tmp/amz-shipment-expiry-transport-green.log`。
-- sync 的不可讀來源數測試先 RED（終態沒有說明來源數）；完整 reader／coordinator 整合、check／audit、兩軸 review 尚待完成。
+- sync 的不可讀來源數測試先 RED（終態沒有說明來源數），修正後通過。
+- Standards 審查發現跨切片遷移會遺失尚未重新讀到來源的確認餘量；4 個 RED 修正後 13 個整合測試通過，覆蓋 60 計畫／182 請求、重開、來源淘汰及庫存／日期／銷速失效。
+- Spec 審查發現部分清單／checkpoint 時間沒有嚴格驗證；7 個 RED 修正後相關 131 個測試通過。schema 1 保留舊格式驗證後重掃，schema 2 所有入口均要求 RFC3339。
+- 兩軸獨立複查均為 0 個未解發現。最終 `npm run check` 通過 325 files／4,029 tests、typecheck、build 及原 stylesheet fingerprint；`npm audit --omit=dev` 為 0。日誌：`/tmp/amz-shipment-expiry-final-check.log`、`/tmp/amz-shipment-expiry-final-audit.log`。
 
 ## 發布與驗收界線
 

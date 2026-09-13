@@ -116,11 +116,12 @@ const digest = (value: readonly unknown[]) => createHash("sha256").update(JSON.s
 const scopeFingerprint = (context: SpExecutionContext) => digest([context.accountScope, context.mode, context.marketplaceId]);
 const sourceRef = (context: SpExecutionContext, planId: string) => `inbound-${digest([context.accountScope, context.marketplaceId, planId]).slice(0, 20)}`;
 const sourceLabel = (plan: PlanSummary) => `${plan.name ?? "入庫計畫"} · ${plan.inboundPlanId}`;
-function summary(raw: unknown): PlanSummary {
+function summary(raw: unknown, revisionFormat: "rfc3339" | "legacy" = "rfc3339"): PlanSummary {
   if (!isPlainRecord(raw)) invalid("planShape");
   const inboundPlanId = text(raw.inboundPlanId, 38, "planId");
   if (!/^[a-zA-Z0-9-]{38}$/.test(inboundPlanId)) invalid("planId", "identifierFormat");
   const lastUpdatedAt = date(raw.lastUpdatedAt, "planUpdatedAt");
+  if (revisionFormat === "rfc3339") revisionInstant(lastUpdatedAt);
   // Amazon can return an empty display name; keep the existing unnamed-plan
   // representation and label without changing any plan or item identity.
   const name = raw.name === undefined || raw.name === "" ? undefined : text(raw.name, 400, "planName");
@@ -151,27 +152,27 @@ function savedRecords(raw: unknown, plan: PlanSummary, maximumQuantity = 500000)
 type LegacyCheckpoint = Omit<FbaExpiryCheckpoint, "schemaVersion" | "cachedPlans" | "currentPlan" | "unavailablePlans"> & {
   schemaVersion: 1; cachedPlans: LegacyCachedPlan[]; currentPlan: LegacyCurrentPlan | null;
 };
-function parseLegacyCheckpoint(value: unknown, maximumQuantity = 500000): LegacyCheckpoint | null {
+function parseLegacyCheckpoint(value: unknown, maximumQuantity = 500000, revisionFormat: "rfc3339" | "legacy" = "rfc3339"): LegacyCheckpoint | null {
   if (value === null || value === undefined) return null;
   if (!isPlainRecord(value) || value.schemaVersion !== 1 || !/^[a-f0-9]{64}$/.test(String(value.scopeFingerprint)) ||
     !["partial", "complete"].includes(String(value.phase)) || typeof value.planPagesComplete !== "boolean" ||
     !Array.isArray(value.cachedPlans) || value.cachedPlans.length > MAX_PLANS || !Array.isArray(value.pendingPlans) || value.pendingPlans.length > 30) invalid("checkpoint");
   const cachedPlans = value.cachedPlans.map(raw => {
     if (!isPlainRecord(raw)) invalid("checkpoint");
-    const plan = summary(raw);
+    const plan = summary(raw, revisionFormat);
     if (plan.status !== "ACTIVE" && plan.status !== "SHIPPED") invalid("checkpointIntegrity");
     return { ...plan, records: savedRecords(raw.records, plan, maximumQuantity) };
   });
   let currentPlan: LegacyCurrentPlan | null = null;
   if (value.currentPlan !== null) {
     if (!isPlainRecord(value.currentPlan)) invalid("checkpoint");
-    const plan = summary(value.currentPlan);
+    const plan = summary(value.currentPlan, revisionFormat);
     if (plan.status !== "ACTIVE" && plan.status !== "SHIPPED") invalid("checkpointIntegrity");
     currentPlan = { ...plan, itemCursor: value.currentPlan.itemCursor === null ? null : text(value.currentPlan.itemCursor, 1024, "checkpoint"),
       itemTokens: strings(value.currentPlan.itemTokens, 200, 1024), records: savedRecords(value.currentPlan.records, plan, maximumQuantity) };
     if (currentPlan.itemCursor !== null && !currentPlan.itemTokens.includes(currentPlan.itemCursor)) invalid("checkpointIntegrity");
   }
-  const pendingPlans = value.pendingPlans.map(summary);
+  const pendingPlans = value.pendingPlans.map(raw => summary(raw, revisionFormat));
   const seenPlanIds = strings(value.seenPlanIds, MAX_PLANS, 38);
   if (seenPlanIds.some(id => !/^[a-zA-Z0-9-]{38}$/.test(id))) invalid("checkpoint");
   const seenPlanTokens = strings(value.seenPlanTokens, 200, 1024);
@@ -294,7 +295,7 @@ export function parseFbaExpiryCheckpoint(value: unknown): FbaExpiryCheckpoint | 
   try { bytes = Buffer.byteLength(JSON.stringify(value)); } catch { invalid("checkpoint"); }
   if (bytes > MAX_CHECKPOINT_BYTES) invalid("limits");
   if (value.schemaVersion === 1) {
-    const previous = parseLegacyCheckpoint(value)!;
+    const previous = parseLegacyCheckpoint(value, 500000, "legacy")!;
     // Schema 1 did not prove selected shipment coverage. Keep the coordinator's
     // independent manual lots, but require a new source traversal and cache.
     return { schemaVersion: 2, scopeFingerprint: previous.scopeFingerprint, startedAt: previous.startedAt,
