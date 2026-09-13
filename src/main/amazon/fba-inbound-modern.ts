@@ -30,6 +30,7 @@ export type ModernFbaInboundTransportRequest =
   | { kind: "plans"; paginationToken: string | null }
   | { kind: "plan"; inboundPlanId: string }
   | { kind: "plan-items"; inboundPlanId: string; paginationToken: string | null }
+  | { kind: "shipment-items"; inboundPlanId: string; shipmentId: string; paginationToken: string | null }
   | { kind: "shipment"; inboundPlanId: string; shipmentId: string };
 
 export type ModernFbaInboundTransportResult = {

@@ -20,10 +20,16 @@ const RAW = " refresh_token=DIAGNOSTIC_CANARY https://private.invalid/secret ";
 
 function harness(envelope: (kind: "plans" | "plan-items") => unknown, mismatch = false) {
   const context = createScriptedSpExecutionContextAdapter(() => ({ marketplaceId: US, mode: "live", accountScope: "synthetic-expiry-diagnostics" }));
+  let listedPlans: typeof PLAN[] = [];
   const read = vi.fn<FbaInboundExternalReadAdapter["read"]>(async request => {
-    if (request.source !== "modern" || (request.request.kind !== "plans" && request.request.kind !== "plan-items")) throw new Error("Unexpected read kind");
+    if (request.source !== "modern" || (request.request.kind !== "plans" && request.request.kind !== "plan" && request.request.kind !== "plan-items")) throw new Error("Unexpected read kind");
+    const operation = request.request;
+    const value = operation.kind === "plan"
+      ? listedPlans.find(plan => plan.inboundPlanId === operation.inboundPlanId)
+      : envelope(operation.kind);
+    if (operation.kind === "plans" && value && typeof value === "object" && "inboundPlans" in value && Array.isArray(value.inboundPlans)) listedPlans = value.inboundPlans;
     const identity = fbaInboundExternalReadIdentity(request);
-    return { identity: mismatch ? { ...identity, source: "v0" } as typeof identity : identity, envelope: envelope(request.request.kind), requestId: null };
+    return { identity: mismatch ? { ...identity, source: "v0" } as typeof identity : identity, envelope: value, requestId: null };
   });
   const expiry = new FbaExpiryReads({ context, adapter: { read }, now: () => NOW });
   return { context, expiry, read, run: async (checkpoint?: unknown) => expiry.read({ context: await context.capture(US), signal: new AbortController().signal, checkpoint }) };
@@ -38,7 +44,7 @@ async function failure(work: Promise<unknown>) {
 
 describe("FBA expiry fixed public diagnostics", () => {
   it.each([
-    { label: "empty display name", name: "", status: "completed", error: null, readCalls: 2 },
+    { label: "empty display name", name: "", status: "completed", error: null, readCalls: 3 },
     { label: "whitespace-only display name", name: " ", status: "partial", error: { code: "FBA_EXPIRY_FORMAT_UNSUPPORTED", message: `${NAME_MESSAGE}（首尾空白）` }, readCalls: 1 },
   ])("handles $label through the real expiry and health sync owners", async expected => {
     const h = harness(kind => kind === "plans" ? { inboundPlans: [{ ...PLAN, name: expected.name }] } : { items: [ITEM] });
@@ -98,7 +104,7 @@ describe("FBA expiry fixed public diagnostics", () => {
     const error = await failure(h.run());
     expect(error).toMatchObject({ status: 502, code: "FBA_EXPIRY_FORMAT_UNSUPPORTED", message });
     expect(JSON.stringify(error)).not.toMatch(/DIAGNOSTIC_CANARY|private\.invalid|refresh_token/);
-    expect(h.read).toHaveBeenCalledTimes(2);
+    expect(h.read).toHaveBeenCalledTimes(3);
   });
 
   it.each([
@@ -123,12 +129,13 @@ describe("FBA expiry fixed public diagnostics", () => {
   ])("keeps name %j evidence and checkpoint format valid across reopen", async (name, sourceLabel) => {
     const h = harness(kind => kind === "plans" ? { inboundPlans: [{ ...PLAN, name }] } : { items: [ITEM] });
     const result = await h.run();
-    expect(result).toMatchObject({ complete: true, records: [{ sellerSku: ITEM.msku, expiryDate: ITEM.expiration, declaredQuantity: ITEM.quantity, confirmedRemaining: null, sourceLabel }], checkpoint: { schemaVersion: 1, phase: "complete" } });
+    expect(result).toMatchObject({ complete: true, traversalComplete: true, unavailablePlanCount: 0, records: [{ sellerSku: ITEM.msku, expiryDate: ITEM.expiration, declaredQuantity: ITEM.quantity, confirmedRemaining: null, sourceLabel }], checkpoint: { schemaVersion: 2, phase: "complete", unavailablePlans: [] } });
     if (name === "") expect(result.checkpoint!.cachedPlans[0]).not.toHaveProperty("name");
     expect(parseFbaExpiryCheckpoint(JSON.parse(JSON.stringify(result.checkpoint)))).toEqual(result.checkpoint);
     const reopened = new FbaExpiryReads({ context: h.context, adapter: { read: h.read }, now: () => NOW });
     expect(await reopened.read({ context: await h.context.capture(US), signal: new AbortController().signal, checkpoint: JSON.parse(JSON.stringify(result.checkpoint)) })).toEqual(result);
-    expect(h.read).toHaveBeenCalledTimes(3);
+    expect(h.read).toHaveBeenCalledTimes(5);
+    expect(h.read.mock.calls.map(([request]) => request.request.kind)).toEqual(["plans", "plan", "plan-items", "plans", "plan"]);
   });
 
   it.each([

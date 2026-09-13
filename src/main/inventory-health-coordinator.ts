@@ -10,6 +10,7 @@ import { parseFbaExpiryCheckpoint, type FbaExpiryCheckpoint, type FbaExpiryEvide
 import { assessInventoryHealth, type InventoryHealthEvidence, type InventoryExpiryRecord } from "./amazon/inventory-health";
 import { isDateOnly, marketplaceCalendar } from "./amazon/marketplace-calendar";
 import { SpExecutionContextError, type SpExecutionContext, type SpExecutionContextAdapter } from "./amazon/sp-execution-context";
+import { SpApiError } from "./amazon/sp-api-error";
 
 type Profile = InventoryHealthEvidence & { expiryCheckpoint?: FbaExpiryCheckpoint | null };
 type HealthRefreshInput = { context: SpExecutionContext; snapshot: InventoryHealthReportSnapshot; signal: AbortSignal; onProgress?: (records: number) => void; onSourceError?: (error: unknown) => void };
@@ -156,6 +157,12 @@ export class InventoryHealthCoordinator {
         // Previously saved slices remain usable evidence, but failure suspends calendar forecasts.
       } finally { clearTimeout(timer); }
       checkpoint = incoming.checkpoint ?? checkpoint;
+      if (incoming.traversalComplete && !incoming.complete && Number.isSafeInteger(incoming.unavailablePlanCount) &&
+        incoming.unavailablePlanCount! > 0 && incoming.unavailablePlanCount! <= 6000) {
+        input.onSourceError?.(new SpApiError(`已完成可讀來源的效期整理；仍有 ${incoming.unavailablePlanCount} 個入庫計畫無法讀取，批次清售提醒暫停。`, {
+          status: 502, code: "FBA_EXPIRY_SOURCES_UNAVAILABLE",
+        }));
+      }
     await this.serial(async () => {
       await this.fence(input.context, revision); throwIfAborted(input.signal);
       if (this.refreshOrder.get(refreshKey) !== refreshOrder) return;
@@ -168,7 +175,11 @@ export class InventoryHealthCoordinator {
       const oldStocks = new Map(previous?.rows.map(r => [r.sellerSku, r]) ?? []);
       const stockBySku = new Map(stocks.map(r => [r.sellerSku, r]));
       const lots = new Map<string, InventoryExpiryRecord>();
-      for (const old of previousLots.values()) lots.set(old.id, { ...old, confirmedRemaining: null, confirmedForSnapshot: null });
+      // Incomplete traversal keeps user confirmations dormant until their source
+      // is reproved; clearing them between slices would lose later-plan balances.
+      for (const old of previousLots.values()) lots.set(old.id, incoming.complete
+        ? { ...old, confirmedRemaining: null, confirmedForSnapshot: null }
+        : old);
       for (const record of incoming.records) {
         const old = previousLots.get(record.id);
         const same = old && old.sourceUpdatedAt === record.sourceUpdatedAt && old.declaredQuantity === record.declaredQuantity;
@@ -189,7 +200,7 @@ export class InventoryHealthCoordinator {
       if (incoming.complete) this.verifiedScopes.add(key);
       });
       input.onProgress?.(incoming.records.length);
-      if (incoming.complete || failed || !checkpoint || Date.now() - startedAt >= 20 * 60000) return;
+      if ((incoming.traversalComplete ?? incoming.complete) || failed || !checkpoint || Date.now() - startedAt >= 20 * 60000) return;
     }
   }
   async read(request: ApiRequest): Promise<ApiResponse> {
