@@ -52,181 +52,203 @@ function salesTrendFixture(): SalesTrendSnapshot {
   };
 }
 
-afterEach(() => {
-  vi.unstubAllGlobals();
-  delete (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
-    .IS_REACT_ACT_ENVIRONMENT;
+let activeRenderer: ReactTestRenderer | null = null;
+
+afterEach(async () => {
+  // Unmount before removing the DOM/Bridge stubs, including when an assertion
+  // fails, so pending component effects cannot escape into the following case.
+  try {
+    if (activeRenderer) await act(async () => activeRenderer!.unmount());
+  } finally {
+    activeRenderer = null;
+    vi.unstubAllGlobals();
+    delete (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
+      .IS_REACT_ACT_ENVIRONMENT;
+  }
 });
 
-describe("dashboard audit workspace interactions", () => {
-  it("opens and returns from every home audit without creating a modal", async () => {
-    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
-      .IS_REACT_ACT_ENVIRONMENT = true;
+async function mountDashboard() {
+  (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
+    .IS_REACT_ACT_ENVIRONMENT = true;
 
-    const animationFrames = new Map<number, FrameRequestCallback>();
-    const timeouts = new Map<number, () => void>();
-    let nextAnimationFrame = 1;
-    let nextTimer = 1;
-    let currentScrollY = 0;
-    const requestAnimationFrame = vi.fn((callback: FrameRequestCallback) => {
-      const id = nextAnimationFrame++;
-      animationFrames.set(id, callback);
-      return id;
-    });
-    const cancelAnimationFrame = vi.fn((id: number) => {
-      animationFrames.delete(id);
-    });
-    const setTimeoutMock = vi.fn((callback: () => void) => {
-      const id = nextTimer++;
-      timeouts.set(id, callback);
-      return id;
-    });
-    const clearTimeoutMock = vi.fn((id: number) => {
-      timeouts.delete(id);
-    });
-    const scrollTo = vi.fn((_left: number, top: number) => {
-      currentScrollY = top;
-    });
-    const launchFocus = Object.fromEntries(
-      AUDIT_SUITE_SECTIONS.map(({ id }) => [id, vi.fn()]),
-    ) as Record<AuditSuiteSectionId, ReturnType<typeof vi.fn>>;
-    const headingFocus = Object.fromEntries(
-      AUDIT_SUITE_SECTIONS.map(({ label }) => [label, vi.fn()]),
-    ) as Record<string, ReturnType<typeof vi.fn>>;
-    const menuFocus = { "產品區": vi.fn(), "價格區": vi.fn(), "營運區": vi.fn() };
-    const priceHeadingFocus = vi.fn();
-    let renderer: ReactTestRenderer | null = null;
-    const querySelector = vi.fn((selector: string) => {
-      const sectionId = selector.match(
-        /^\[data-audit-workspace-launch="([^"]+)"\]$/u,
-      )?.[1] as AuditSuiteSectionId | undefined;
-      const launchIsRendered = sectionId && renderer?.root.findAllByProps({
-        "data-audit-workspace-launch": sectionId,
-      }).length === 1;
-      return sectionId && launchIsRendered && launchFocus[sectionId]
-        ? { focus: launchFocus[sectionId] }
-        : null;
-    });
-    const documentElement = {
-      style: { scrollBehavior: "smooth" },
-      setAttribute: vi.fn(),
-    };
-    const sectionTargets = new Map([
-      "home-performance", "home-bulletin", "home-audits", "home-intelligence", "workspace-top",
-    ].map((id) => [id, { focus: vi.fn(), scrollIntoView: vi.fn() }]));
-    const windowMock = {
-      get scrollY() {
-        return currentScrollY;
+  const animationFrames = new Map<number, FrameRequestCallback>();
+  const timeouts = new Map<number, () => void>();
+  let nextAnimationFrame = 1;
+  let nextTimer = 1;
+  let currentScrollY = 0;
+  const requestAnimationFrame = vi.fn((callback: FrameRequestCallback) => {
+    const id = nextAnimationFrame++;
+    animationFrames.set(id, callback);
+    return id;
+  });
+  const cancelAnimationFrame = vi.fn((id: number) => {
+    animationFrames.delete(id);
+  });
+  const setTimeoutMock = vi.fn((callback: () => void) => {
+    const id = nextTimer++;
+    timeouts.set(id, callback);
+    return id;
+  });
+  const clearTimeoutMock = vi.fn((id: number) => {
+    timeouts.delete(id);
+  });
+  const scrollTo = vi.fn((_left: number, top: number) => {
+    currentScrollY = top;
+  });
+  const launchFocus = Object.fromEntries(
+    AUDIT_SUITE_SECTIONS.map(({ id }) => [id, vi.fn()]),
+  ) as Record<AuditSuiteSectionId, ReturnType<typeof vi.fn>>;
+  const headingFocus = Object.fromEntries(
+    AUDIT_SUITE_SECTIONS.map(({ label }) => [label, vi.fn()]),
+  ) as Record<string, ReturnType<typeof vi.fn>>;
+  const menuFocus = { "產品區": vi.fn(), "價格區": vi.fn(), "營運區": vi.fn() };
+  const priceHeadingFocus = vi.fn();
+  let renderer: ReactTestRenderer | null = null;
+  const querySelector = vi.fn((selector: string) => {
+    const sectionId = selector.match(
+      /^\[data-audit-workspace-launch="([^"]+)"\]$/u,
+    )?.[1] as AuditSuiteSectionId | undefined;
+    const launchIsRendered = sectionId && renderer?.root.findAllByProps({
+      "data-audit-workspace-launch": sectionId,
+    }).length === 1;
+    return sectionId && launchIsRendered && launchFocus[sectionId]
+      ? { focus: launchFocus[sectionId] }
+      : null;
+  });
+  const documentElement = {
+    style: { scrollBehavior: "smooth" },
+    setAttribute: vi.fn(),
+  };
+  const sectionTargets = new Map([
+    "home-performance", "home-bulletin", "home-audits", "home-intelligence", "workspace-top",
+  ].map((id) => [id, { focus: vi.fn(), scrollIntoView: vi.fn() }]));
+  const windowMock = {
+    get scrollY() {
+      return currentScrollY;
+    },
+    set scrollY(value: number) {
+      currentScrollY = value;
+    },
+    fbaOS: {
+      app: {
+        version: vi.fn(async () => "0.1.46"),
+        openExternal: vi.fn(async () => undefined),
+        openSellerCentralInventory: vi.fn(async () => undefined),
       },
-      set scrollY(value: number) {
-        currentScrollY = value;
+      credentials: {
+        test: vi.fn(async () => ({
+          ok: true,
+          testedAt: "2026-09-01T00:00:00.000Z",
+          marketplaceId: DEFAULT_MARKETPLACE_ID,
+          regions: {},
+        })),
       },
-      fbaOS: {
-        app: {
-          version: vi.fn(async () => "0.1.46"),
-          openExternal: vi.fn(async () => undefined),
-          openSellerCentralInventory: vi.fn(async () => undefined),
-        },
-        credentials: {
-          test: vi.fn(async () => ({
-            ok: true,
-            testedAt: "2026-09-01T00:00:00.000Z",
-            marketplaceId: DEFAULT_MARKETPLACE_ID,
-            regions: {},
-          })),
-        },
-      },
-      location: { hash: "" },
-      localStorage: {
-        getItem: vi.fn(() => null),
-        setItem: vi.fn(),
-      },
-      requestAnimationFrame,
-      cancelAnimationFrame,
-      scrollTo,
-      setTimeout: setTimeoutMock,
-      clearTimeout: clearTimeoutMock,
-      setInterval: vi.fn(() => 1),
-      clearInterval: vi.fn(),
-      addEventListener: vi.fn(),
-      removeEventListener: vi.fn(),
-      confirm: vi.fn(() => true),
-    };
-    vi.stubGlobal("window", windowMock);
-    vi.stubGlobal("document", {
-      documentElement,
-      visibilityState: "visible",
-      querySelector,
-      getElementById: vi.fn((id: string) => sectionTargets.get(id) ?? null),
-      addEventListener: vi.fn(),
-      removeEventListener: vi.fn(),
-    });
-    const fetchMock = vi.fn(() => new Promise<Response>(() => undefined));
-    vi.stubGlobal("fetch", fetchMock);
+    },
+    location: { hash: "" },
+    localStorage: {
+      getItem: vi.fn(() => null),
+      setItem: vi.fn(),
+    },
+    requestAnimationFrame,
+    cancelAnimationFrame,
+    scrollTo,
+    setTimeout: setTimeoutMock,
+    clearTimeout: clearTimeoutMock,
+    setInterval: vi.fn(() => 1),
+    clearInterval: vi.fn(),
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    confirm: vi.fn(() => true),
+  };
+  vi.stubGlobal("window", windowMock);
+  vi.stubGlobal("document", {
+    documentElement,
+    visibilityState: "visible",
+    querySelector,
+    getElementById: vi.fn((id: string) => sectionTargets.get(id) ?? null),
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+  });
+  const fetchMock = vi.fn(() => new Promise<Response>(() => undefined));
+  vi.stubGlobal("fetch", fetchMock);
 
-    const flushAnimationFrames = async () => {
-      await act(async () => {
-        let safety = 0;
-        while (animationFrames.size > 0) {
-          if (safety++ > 20) throw new Error("Animation frames did not settle");
-          const pending = [...animationFrames.entries()];
-          animationFrames.clear();
-          pending.forEach(([, callback]) => callback(0));
-        }
-      });
-    };
-    const flushTimeouts = async () => {
-      await act(async () => {
-        let safety = 0;
-        while (timeouts.size > 0) {
-          if (safety++ > 20) throw new Error("Timers did not settle");
-          const pending = [...timeouts.entries()];
-          timeouts.clear();
-          pending.forEach(([, callback]) => callback());
-        }
-      });
-    };
-
+  const flushAnimationFrames = async () => {
     await act(async () => {
-      renderer = create(createElement(Dashboard, {
-        initialSalesTrend: salesTrendFixture(),
-        initialMarketplaceId: DEFAULT_MARKETPLACE_ID,
-      }), {
-        createNodeMock: (element) => {
-          if (element.type === "div" && element.props.className === "sales-trend-plot") {
-            return { getBoundingClientRect: () => ({ width: 760 }) };
-          }
-          if (element.type === "h2" && element.props.id === "price-list-title") {
-            return { focus: priceHeadingFocus };
-          }
-          if (
-            element.type === "h1" &&
-            typeof element.props.children === "string" &&
-            headingFocus[element.props.children]
-          ) {
-            return { focus: headingFocus[element.props.children] };
-          }
-          if (element.type === "nav") {
-            return { contains: () => false, querySelectorAll: () => [] };
-          }
-          if (element.type === "button" && element.props["aria-label"] in menuFocus) {
-            return { focus: menuFocus[element.props["aria-label"] as keyof typeof menuFocus] };
-          }
-          if (element.type === "h2") return { focus: vi.fn() };
-          return {};
-        },
-      });
+      let safety = 0;
+      while (animationFrames.size > 0) {
+        if (safety++ > 20) throw new Error("Animation frames did not settle");
+        const pending = [...animationFrames.entries()];
+        animationFrames.clear();
+        pending.forEach(([, callback]) => callback(0));
+      }
     });
-    await flushTimeouts();
-    const root = renderer!.root;
+  };
+  const flushTimeouts = async () => {
+    await act(async () => {
+      let safety = 0;
+      while (timeouts.size > 0) {
+        if (safety++ > 20) throw new Error("Timers did not settle");
+        const pending = [...timeouts.entries()];
+        timeouts.clear();
+        pending.forEach(([, callback]) => callback());
+      }
+    });
+  };
+
+  await act(async () => {
+    activeRenderer = renderer = create(createElement(Dashboard, {
+      initialSalesTrend: salesTrendFixture(),
+      initialMarketplaceId: DEFAULT_MARKETPLACE_ID,
+    }), {
+      createNodeMock: (element) => {
+        if (element.type === "div" && element.props.className === "sales-trend-plot") {
+          return { getBoundingClientRect: () => ({ width: 760 }) };
+        }
+        if (element.type === "h2" && element.props.id === "price-list-title") {
+          return { focus: priceHeadingFocus };
+        }
+        if (
+          element.type === "h1" &&
+          typeof element.props.children === "string" &&
+          headingFocus[element.props.children]
+        ) {
+          return { focus: headingFocus[element.props.children] };
+        }
+        if (element.type === "nav") {
+          return { contains: () => false, querySelectorAll: () => [] };
+        }
+        if (element.type === "button" && element.props["aria-label"] in menuFocus) {
+          return { focus: menuFocus[element.props["aria-label"] as keyof typeof menuFocus] };
+        }
+        if (element.type === "h2") return { focus: vi.fn() };
+        return {};
+      },
+    });
+  });
+  await flushTimeouts();
+  const root = renderer!.root;
+  return {
+    root, fetchMock, windowMock, sectionTargets, flushAnimationFrames,
+    flushTimeouts, scrollTo, launchFocus, headingFocus, menuFocus,
+    priceHeadingFocus, querySelector,
+  };
+}
+
+describe("dashboard audit workspace interactions", () => {
+  it("changes the image minimum without dispatching a health check", async () => {
+    const { root, fetchMock } = await mountDashboard();
     const minimumSelect = root.findByProps({ "aria-label": "首頁圖片健檢最低張數" });
     expect(minimumSelect.props.value).toBe(8);
     const beforeMinimumChange = fetchMock.mock.calls.length;
     await act(async () => minimumSelect.props.onChange({ currentTarget: { value: "6" } }));
     expect(root.findByProps({ "aria-label": "首頁圖片健檢最低張數" }).props.value).toBe(6);
     expect(fetchMock.mock.calls.length).toBe(beforeMinimumChange);
+  });
 
-
+  it("moves skip-link and menu shortcut focus without changing the trusted URL or fetching", async () => {
+    const {
+      root, fetchMock, sectionTargets, windowMock, flushAnimationFrames,
+    } = await mountDashboard();
     expect(root.findAllByProps({ "aria-label": "首頁區段" })).toHaveLength(0);
     const requestsBeforeSectionNavigation = fetchMock.mock.calls.length;
     for (const link of [root.findByProps({ className: "workspace-skip-link" })]) {
@@ -278,7 +300,16 @@ describe("dashboard audit workspace interactions", () => {
           .toBe(intelligenceView);
       }
     }
+  });
 
+  it("opens and returns from all audits and lazy workspaces in the same dashboard", async () => {
+    const {
+      root, windowMock, scrollTo, flushAnimationFrames, headingFocus,
+      flushTimeouts, querySelector, launchFocus, menuFocus, priceHeadingFocus,
+      sectionTargets,
+    } = await mountDashboard();
+    // Keep the complete audit -> home -> lazy workspace journey in one instance:
+    // remounting between these phases would hide stale workspace state.
     const expectedNavigationGroup: Record<AuditSuiteSectionId, string> = {
       content: "產品區", image: "產品區", aplus: "產品區", variation: "產品區",
       subscription: "價格區", businessPricing: "價格區", advertising: "營運區",
@@ -424,6 +455,5 @@ describe("dashboard audit workspace interactions", () => {
       .toHaveBeenLastCalledWith({ preventScroll: true });
     expect(windowMock.location.hash).toBe("");
 
-    await act(async () => renderer!.unmount());
   });
 });

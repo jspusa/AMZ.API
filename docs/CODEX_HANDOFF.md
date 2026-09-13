@@ -11,6 +11,8 @@
 
 ## 目前狀態
 
+- 0.1.71 診斷 PR #267 已合併至 `2147d35243f109c99d5da2d745523feda28e9ec7`；Validate／Pages／Windows 與对应 bytes 已驗。Mac 兩次因相同兩項既有測試超過 5 秒失敗，尚無 Mac artifact／安裝／原生診斷。Issue #268 以[測試執行改善](specs/2026-09-macos-test-stability.md) 接續，保留全部功能與安全斷言，不提高 timeout、不改 production 或版本；新 final source 必須重新完成各層交付。完整效期及原始目標仍未完成。
+
 - Issue #263 接續 .70 原生 partial：全 FBA 核心已取得 284 列，但入庫效期 generic `FBA_EXPIRY_FORMAT_UNSUPPORTED` 尚無欄位原因。0.1.71 先補固定安全診斷，保留全部解析／checkpoint／context 與行事曆政策；不是實際根因修復。公開 reader → coordinator → sync 已先紅，最終檢查、交付與 live 原因仍待。見 [spec](specs/2026-09-inbound-expiry-diagnostics.md) 與 [本輪帳本](releases/2026-09-inbound-expiry-diagnostics.md)。
 
 - Issue #265／PR #266 已合併 0.1.70，release-code `82d2739c708c3c371e4ece80721de742d9dac6b3`：圖片準備免密碼與生物辨識，僅最後更新 Amazon 沿用文案共用原生批准且不重打 SKU；包含 .69 效期核心修正。3,834 tests、audit 0、兩軸 final review、四條 exact main CI、Pages 全 bytes、兩平台可信 artifact、Mac→Windows 下載卡 receipt、Supply Boss v8 及原始 JPEG 公開 bytes 均已驗。可信 .70 已安裝，.68 App／備份與 vault／ledger 保留；08:14 UTC 原生首頁已顯示 US／Amazon 已連線，先前系統啟動等待解除。原生 AFA12AM 原始 07 圖正確套用第 7 格，ready 1／staged 0，全程無準備密碼或生物辨識提示；一次安全 Preview 通過，最後確認頁核對 exact 商品及位置且無 SKU 重打欄，未按送出／未原生批准／零 PATCH。首次全 FBA 健康同步取得 284 核心列與 29 銷速偏慢／待核對，但入庫效期仍 `FBA_EXPIRY_FORMAT_UNSUPPORTED`，整體 partial，未重試；284 批次待核對、無已確認正缺口，自動行事曆不納入未知。接續效期來源診斷、人工公告完整核對及員工登入後實際下載，完整目標不結案。原始已驗 Excel、偏好、Vine、門檻及變體導覽不重置。完整需求與分層證據見 [spec](specs/2026-09-passwordless-image-preparation.md) 與 [帳本](releases/2026-09-passwordless-image-preparation.md)。
