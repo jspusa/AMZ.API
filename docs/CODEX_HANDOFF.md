@@ -11,7 +11,7 @@
 
 ## 目前狀態
 
-- 0.1.71 最終發布來源為 PR #269／main `26f2f693299721e3e759467a58b680e9c7bca04f`。Issue #268 的[測試執行改善](specs/2026-09-macos-test-stability.md) 保留全部斷言與同一 Dashboard 的健檢到 lazy 工作區流程；3,875 本機 tests、audit 0、兩軸 review、四條 exact main CI 均通過，新 Mac 第一次建置成功。Pages 12 檔 bytes、Mac／Windows artifact、ASAR／addon／fuses 已核對，Mac→Windows 安裝檔上傳 complete HTTP 成功。現有 uploader 未保留 server complete manifest，因此這只證明上傳確認與送出的可信 bytes；員工登入後的獨立 manifest／實際下載 hash 仍待。可信 .71 DMG 已唯讀掛載並可安裝，但目前 App 仍是 .70；安裝前 CUA 回報 Mac 鎖定且自動解鎖失敗，已請使用者解鎖，尚未退出 App／備份／換版。原生效期原因與完整目標仍未完成；接續 [本輪帳本](releases/2026-09-inbound-expiry-diagnostics.md) 和 `/tmp/amz-api-v0171-r2-verified/active-release.json`，不可使用初次失敗來源 `2147d35` 的 artifact。
+- 0.1.71 最終來源 PR #269／main `26f2f693299721e3e759467a58b680e9c7bca04f` 已完成檢查、兩軸 review、四條 exact main CI、Pages 12 檔 bytes、兩平台 artifact 及 Mac→Windows upload。使用者解鎖後已正常備份並安裝可信 .71，ASAR 符合 artifact，vault／ledger 換版時未變，原生 Amazon 已連線。一次同步已確認真正卡點是「入庫計畫名稱空字串」；284 個 FBA 核心品號仍可讀、效期 partial，未重試。人工公布欄 4 項、原人工效期與促銷月曆保留。員工登入後兩張下載卡版本／hash 正確，但下載開始訊息尚未有新本機檔案證據。接續 Issue #263 的 [.72 空名稱修正契約](specs/2026-09-empty-inbound-plan-name.md) 與[交付帳本](releases/2026-09-empty-inbound-plan-name.md)，不能把解析修正當成完整效期目標已驗收。
 
 - Issue #263 接續 .70 原生 partial：全 FBA 核心已取得 284 列，但入庫效期 generic `FBA_EXPIRY_FORMAT_UNSUPPORTED` 尚無欄位原因。0.1.71 先補固定安全診斷，保留全部解析／checkpoint／context 與行事曆政策；不是實際根因修復。公開 reader → coordinator → sync 已先紅，最終檢查、交付與 live 原因仍待。見 [spec](specs/2026-09-inbound-expiry-diagnostics.md) 與 [本輪帳本](releases/2026-09-inbound-expiry-diagnostics.md)。
 

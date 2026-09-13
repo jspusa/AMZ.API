@@ -37,8 +37,11 @@ async function failure(work: Promise<unknown>) {
 }
 
 describe("FBA expiry fixed public diagnostics", () => {
-  it("identifies the rejected plan name through the real expiry and health sync owners", async () => {
-    const h = harness(kind => kind === "plans" ? { inboundPlans: [{ ...PLAN, name: "" }] } : { items: [ITEM] });
+  it.each([
+    { label: "empty display name", name: "", status: "completed", error: null, readCalls: 2 },
+    { label: "whitespace-only display name", name: " ", status: "partial", error: { code: "FBA_EXPIRY_FORMAT_UNSUPPORTED", message: `${NAME_MESSAGE}（首尾空白）` }, readCalls: 1 },
+  ])("handles $label through the real expiry and health sync owners", async expected => {
+    const h = harness(kind => kind === "plans" ? { inboundPlans: [{ ...PLAN, name: expected.name }] } : { items: [ITEM] });
     const health = new InventoryHealthCoordinator({ context: h.context, expiry: h.expiry, now: () => NOW });
     const stock: InventoryHealthReportSnapshot = { marketplaceId: US, mode: "live", fetchedAt: NOW.toISOString(), rows: [{ sellerSku: ITEM.msku, asin: ITEM.asin, title: "Synthetic", available: 1000, agedOver180: null, estimatedExcessQuantity: null, currencyCode: null, estimatedStorageCostNextMonth: null, estimatedAgedSurcharge: null, snapshotDate: "2026-07-01", unitsShipped: { t7: 70, t30: 300, t60: 600, t90: 900 } }] };
     const receipt: ReportsRuntimeReceipt = { reportId: "report-lease.synthetic", documentId: "report-document.synthetic", status: "DONE", ready: true, mode: "live", notice: "ready" };
@@ -50,14 +53,23 @@ describe("FBA expiry fixed public diagnostics", () => {
     await vi.waitFor(async () => {
       const response = await sync.observe(get);
       job = (response.body.value as { job: InventoryHealthSyncJob | null }).job;
-      expect(job?.status).toBe("partial");
+      expect(job?.status).not.toBe("running");
+      expect(job).not.toBeNull();
     }, { timeout: 1000, interval: 5 });
-    expect(job).toMatchObject({ error: { code: "FBA_EXPIRY_FORMAT_UNSUPPORTED", message: `${NAME_MESSAGE}（空字串）` } });
+    expect(job).toMatchObject({ status: expected.status, error: expected.error });
     const snapshot = (await health.read({ ...get, path: "/api/inventory-health" })).body.value as { snapshot: InventoryHealthSnapshot };
     expect(snapshot.snapshot.rows[0]).toMatchObject({ available: 1000, wholeSkuClearanceDays: 100, calendarEligible: false });
-    expect(snapshot.snapshot.sourceComplete).toBe(false);
+    expect(snapshot.snapshot.sourceComplete).toBe(expected.status === "completed");
+    if (expected.status === "completed") {
+      expect(snapshot.snapshot.rows).toHaveLength(1);
+      expect(snapshot.snapshot.rows[0]).toMatchObject({
+        sellerSku: ITEM.msku, asin: ITEM.asin, expiryDate: ITEM.expiration,
+        declaredQuantity: ITEM.quantity, sourceLabel: `入庫計畫 · ${PLAN.inboundPlanId}`,
+        confirmedRemaining: null, projectedShortfall: null, calendarEligible: false,
+      });
+    }
     await sync.observe(get);
-    expect(h.read).toHaveBeenCalledTimes(1);
+    expect(h.read).toHaveBeenCalledTimes(expected.readCalls);
     expect(begin).toHaveBeenCalledTimes(1);
   });
 
@@ -105,13 +117,28 @@ describe("FBA expiry fixed public diagnostics", () => {
     expect(JSON.stringify(error)).not.toMatch(/DIAGNOSTIC_CANARY|private\.invalid|refresh_token/);
   });
 
-  it("keeps valid evidence and the checkpoint format unchanged", async () => {
-    const h = harness(kind => kind === "plans" ? { inboundPlans: [PLAN] } : { items: [ITEM] });
+  it.each([
+    ["Synthetic inbound", `Synthetic inbound · ${PLAN.inboundPlanId}`],
+    ["", `入庫計畫 · ${PLAN.inboundPlanId}`],
+  ])("keeps name %j evidence and checkpoint format valid across reopen", async (name, sourceLabel) => {
+    const h = harness(kind => kind === "plans" ? { inboundPlans: [{ ...PLAN, name }] } : { items: [ITEM] });
     const result = await h.run();
-    expect(result).toMatchObject({ complete: true, records: [{ sellerSku: ITEM.msku, expiryDate: ITEM.expiration, declaredQuantity: ITEM.quantity, confirmedRemaining: null }], checkpoint: { schemaVersion: 1, phase: "complete" } });
+    expect(result).toMatchObject({ complete: true, records: [{ sellerSku: ITEM.msku, expiryDate: ITEM.expiration, declaredQuantity: ITEM.quantity, confirmedRemaining: null, sourceLabel }], checkpoint: { schemaVersion: 1, phase: "complete" } });
+    if (name === "") expect(result.checkpoint!.cachedPlans[0]).not.toHaveProperty("name");
     expect(parseFbaExpiryCheckpoint(JSON.parse(JSON.stringify(result.checkpoint)))).toEqual(result.checkpoint);
-    expect(await h.run(result.checkpoint)).toEqual(result);
+    const reopened = new FbaExpiryReads({ context: h.context, adapter: { read: h.read }, now: () => NOW });
+    expect(await reopened.read({ context: await h.context.capture(US), signal: new AbortController().signal, checkpoint: JSON.parse(JSON.stringify(result.checkpoint)) })).toEqual(result);
     expect(h.read).toHaveBeenCalledTimes(3);
+  });
+
+  it.each([
+    [null, "缺值或非文字"], [false, "缺值或非文字"], [12, "缺值或非文字"],
+    [" ", "首尾空白"], ["Synthetic ", "首尾空白"],
+    ["Synthetic\u0000", "不安全控制字元"], ["X".repeat(401), "超過長度上限"],
+  ])("keeps nonempty or nontext plan name %j validation unchanged", async (name, detail) => {
+    const h = harness(kind => kind === "plans" ? { inboundPlans: [{ ...PLAN, name }] } : { items: [ITEM] });
+    expect(await failure(h.run())).toMatchObject({ code: "FBA_EXPIRY_FORMAT_UNSUPPORTED", message: `${NAME_MESSAGE}（${detail}）` });
+    expect(h.read).toHaveBeenCalledTimes(1);
   });
 
   it("distinguishes malformed checkpoints, contradictory records, context and read limits", async () => {

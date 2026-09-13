@@ -28,3 +28,7 @@
 - Windows artifact `10314943627`：Installer 102,057,863 bytes，SHA-256 `dcafdae35ea56943f6ae22d48c1496f3cc547d792bc459bcb22680aa6b7c59a0`；archive、ZIP、manifest、ASAR／unpacked addon、AMD64／N-API、8 項 fuses 均已驗。不代表 Windows 安裝或真人 Hello。
 - Mac→Windows 兩份 protected upload 均收到 complete HTTP 成功，送出檔案 metadata 與可信 artifact 相符。uploader 的既有完成輸出是 client 預期值，未保存 server 返回的 public manifest，不能冒充獨立 server manifest receipt；登入後下載與 hash 仍待。第一個 Mac upload 指令僅因 `/tmp`／`/private/tmp` 路徑 preflight 拒絕，尚未讀 stdin／建立 upload；使用 canonical path 後正常完成，沒有重送已提交工作。
 - .71 DMG 已掛載於 `/private/tmp/amz-api-v0171-r2-verified/mounted`；尚未備份／退出／替換已安裝 .70。安裝就緒時 CUA 仍回報 Mac 鎖定且自動解鎖失敗，解鎖問題已送給使用者；下載頁仍顯示登入入口。下一步為正常退出 App、執行既有 .70 備份與可信 .71 install helper，再用一次原生同步取得固定安全效期原因。不能把 `.71` 的診斷實作、CI 或上傳視為效期根因已修復。
+
+## 使用者解鎖後的原生定位
+
+2026-09-13 已正常備份並安裝 exact final source 的可信 .71，啟動 Amazon 已連線。觀察同一次 running → partial 同步（agent 未按同步，亦未重試），首次固定診斷確認入庫計畫名稱是空字串；284 核心品號／32 偏慢或待核對／284 未知批次／0 已確認風險。人工 4 項公告、原效期與促銷月曆均保留。員工登入後兩卡版本與完整 hash 已驗，Mac→Windows 各點一次並顯示下載開始；尚無對應新本機 bytes。證據 `/tmp/amz-api-v0171-r2-verified/native-acceptance-20260913.json`。真正修復接續 [.72 帳本](2026-09-empty-inbound-plan-name.md)；.71 的診斷目標完成，完整原始目標仍待。

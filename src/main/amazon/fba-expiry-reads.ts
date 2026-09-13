@@ -103,7 +103,9 @@ function summary(raw: unknown): PlanSummary {
   const inboundPlanId = text(raw.inboundPlanId, 38, "planId");
   if (!/^[a-zA-Z0-9-]{38}$/.test(inboundPlanId)) invalid("planId", "identifierFormat");
   const lastUpdatedAt = date(raw.lastUpdatedAt, "planUpdatedAt");
-  const name = raw.name === undefined ? undefined : text(raw.name, 400, "planName");
+  // Amazon can return an empty display name; keep the existing unnamed-plan
+  // representation and label without changing any plan or item identity.
+  const name = raw.name === undefined || raw.name === "" ? undefined : text(raw.name, 400, "planName");
   if (!["ACTIVE", "VOIDED", "SHIPPED", "ERRORED"].includes(String(raw.status))) invalid("planStatus");
   return { inboundPlanId, ...(name === undefined ? {} : { name }), lastUpdatedAt, status: raw.status as PlanSummary["status"] };
 }
