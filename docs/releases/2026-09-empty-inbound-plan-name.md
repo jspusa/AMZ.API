@@ -7,3 +7,18 @@
 - 人工公布欄仍 4 項，原人工效期 2027-04-30、即期品與促銷新增控制、既有促銷月曆均保留。圖片門檻仍 8。
 - 員工登入後兩張 .71 下載卡的版本與完整 hash 符合可信 artifact，Mac→Windows 各點一次並顯示下載開始；本機尚未找到此輪新檔，不能把開始訊息當作實際下載驗證。`.71` 證據為 `/tmp/amz-api-v0171-r2-verified/native-acceptance-20260913.json`。
 - .72 實作與 public seam 回歸進行中；尚未有 .72 CI、artifact、上傳、安裝或真實同步結果。
+
+## 修正、發布與等待實機
+
+- 真實 reader → coordinator → sync 回歸先重現空名稱 partial／固定原因，再確認空名稱讀到合成商品日期並完成；缺名稱／正常名稱、checkpoint 重開、100 次讀取分段與 101 頁商品接續均通過。只有 `name === ""` 使用既有缺名稱表示，未變更其他解析、安全或行事曆政策。
+- 本機 `npm run check` 322 files／3,886 tests、typecheck／build／樣式驗證與 production audit 0 通過。第一次全檢發現兩個舊版本斷言，更新為 .72 後完整通過。Standards／Spec 對 `ae63057a1c9d8356727ce5fed3d40a166b5db505` 各 0 open。
+- PR #270 已合併，final main `ad5a1e7080ed72025b50c774f9c11e52ec0fc998` 與 reviewed head 的 tree 都是 `578860951ce17c945ff0a4acb285211b44005819`。Validate `34751386188`、Pages `34751386145`、Mac `34751386120` 與 Windows `34751386204` 均已成功；全部 main push。
+- Windows 第一次只因既有 `bounds durable operation inspections to the newest 32 exact entries` 測試 5 秒逾時而失敗，其 test／owner bytes 與 .71 完全相同。相同 tree 的 PR Windows 已成功，該案例 1,194 ms；一次定點本機 786 ms。完成診斷後只重跑一次既有失敗 job，attempt 2 全部 322 files 通過（3,882 passed／4 skipped），該案例 1,034 ms。沒有修改 timeout、測試或 production。排程／磁碟延遲只是符合證據的推論，沒有原失敗時刻的量測。
+- Pages artifact `10316111501` 的 HTML＋全部 11 個 JS／CSS，共 12 檔皆 HTTP 200、bytes／hash 一致。
+- Mac artifact `10316560781`：DMG 247,921,653 bytes，SHA-256 `7f959cf5cb5c5c78a80d40fe489893e174c3f0de69c3d6bafe979a8c146b7563`；ASAR `73fd82b82b82d83ab9793d8c54d470b0756bf9d8f37e07f64a9af95681b42154`。Archive、ZIP／manifest、universal、deep strict signature、兩種 architecture 的 8 項 fuses 與 disabled updater 均已驗。
+- Windows attempt 2 artifact `10316680950`：Installer 102,057,911 bytes，SHA-256 `97a620f8b2863a3579ef0bda3e37b89fd5184d10b624004ec7e4c629432d9713`；archive／ZIP／manifest、ASAR／unpacked addon、AMD64／N-API 及 8 項 fuses 均已驗。不是實機 Windows Hello 證據。
+- Mac→Windows 各上傳一次，這次 uploader 已保留並驗證伺服器實際 complete manifest，兩份 card receipt 與可信 artifact bytes／hash 一致。根目錄 `/tmp/amz-api-v0172-verified/` 保存所有分層證據。
+- .71 員工下載已在本輪實際完成：先登記 Playwright download waiter 再按一般按鈕，兩份新本機檔案的大小、穩定性與 SHA-256 相符；證據 `/tmp/amz-api-v0171-r2-verified/portal-authenticated-download-verification.json`，取代上方早先尚無新檔的狀態。
+- .72 上傳後重新整理下載頁，頁面暫存登入被清除並回到登入表單；因此 .72 的員工實際下載仍待登入。不能沿用 .71 下載 hash 或把 complete manifest 當成登入後下載證據。未擷取 token，未把 admin upload secret 用於員工登入。
+- 可信 .72 DMG 已唯讀掛載於 `/private/tmp/amz-api-v0172-verified/mounted`，尚未退出／備份／替換目前 .71。準備安裝時 CUA 回報 Mac 鎖定且自動解鎖失敗，已請使用者解鎖；其後仍同樣鎖定，沒有繞過 UI 控制限制。新鎖定阻礙是本次 resumed run 的第一個 goal turn，不因同回合多次觀察累加。
+- 待解鎖後正常退出、以既有 helper 備份並安裝，再完成一次原生效期同步、申報日期／來源／多日期與全庫存清售天數抽查、本機重新讀取及未知批次行事曆排除。若出現另一項具體錯誤仍保留 partial 接續修正。完整原始目標尚未驗收完成。
