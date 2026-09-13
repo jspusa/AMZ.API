@@ -22,3 +22,10 @@
 - .72 上傳後重新整理下載頁，頁面暫存登入被清除並回到登入表單；因此 .72 的員工實際下載仍待登入。不能沿用 .71 下載 hash 或把 complete manifest 當成登入後下載證據。未擷取 token，未把 admin upload secret 用於員工登入。
 - 可信 .72 DMG 已唯讀掛載於 `/private/tmp/amz-api-v0172-verified/mounted`，尚未退出／備份／替換目前 .71。準備安裝時 CUA 回報 Mac 鎖定且自動解鎖失敗，已請使用者解鎖；其後仍同樣鎖定，沒有繞過 UI 控制限制。新鎖定阻礙是本次 resumed run 的第一個 goal turn，不因同回合多次觀察累加。
 - 待解鎖後正常退出、以既有 helper 備份並安裝，再完成一次原生效期同步、申報日期／來源／多日期與全庫存清售天數抽查、本機重新讀取及未知批次行事曆排除。若出現另一項具體錯誤仍保留 partial 接續修正。完整原始目標尚未驗收完成。
+
+## 員工實際下載完成，等待原生安裝
+
+- 2026-09-13 10:40 UTC 接續觀察下載頁「已安全登入」，兩卡均為 .72 且完整 SHA-256 正確。保留目前登入文件，沒有重新整理；先登記 download waiter 再按 Mac／Windows 一般下載按鈕，各一次，兩個事件均收到。
+- 新本機 Mac 檔 `/Users/jasper/Downloads/AMZ.API-0.1.72-universal.dmg` 為 247,921,653 bytes；Windows 檔 `/Users/jasper/Downloads/AMZ.API-Notebook-Key-Windows-x64-Setup (4).exe` 為 102,057,911 bytes。兩檔均在本輪下載起點後建立、穩定且 SHA-256 完全符合上列各自可信 artifact。
+- 分開保存 CUA 登入／事件證據 `portal-browser-download-evidence.json` 與檔案證據 `portal-authenticated-download-verification.json`，均在 `/tmp/amz-api-v0172-verified/`。檔案驗證器本身不聲稱能驗登入；兩層證據合併完成 .72 員工下載驗收，取代上方待登入的歷史狀態。沒有擷取憑證或下載簽名網址。
+- 原生 CUA 再次回報 Mac 鎖定且無法自動解鎖，.72 尚未安裝，完整原生效期同步仍待。這是新鎖定的第 2 個 goal turn，不按同回合觀察次數累加；本輪下載是實際新進度。保留原解鎖請求，不再要求員工登入，也不重做成功的上傳、下載或圖片驗收。若下一個 goal turn 新鮮核對仍為同一鎖定、且已無獨立工作可推進，依三回合門檻標記 goal blocked。
