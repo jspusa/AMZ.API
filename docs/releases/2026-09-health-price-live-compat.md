@@ -18,7 +18,7 @@ Public seam 已重現單筆 `409 LISTING_IDENTITY_MISMATCH` 中斷價格工作�
 | ★ 全案 check／audit／兩軸 review | 最終 head `0ae39e47e180238e8b243714bb64e7ffed2aacff` 的 `VITEST_MAX_WORKERS=4 npm run check` 通過 323 files／3,794 tests、型別與 build；production audit 0、diff check 通過。Standards／Spec 自 base 至該 head 均 0 open，包含後續 CI 等待修正 |
 | ★ 同來源 CI／Pages／Mac／Windows artifact | main/push Validate `34708837585`、Pages `34708837576`、Mac `34708837619`、Windows `34708837581` 均 success。Windows 為診斷後唯一重跑的 attempt 2，其餘 attempt 1；Pages artifact `10301999270` 的 HTML／全部 11 個 JS／CSS 與線上 bytes 相同；Mac artifact `10302588753`、Windows artifact `10302119819` 已核對 |
 | ★ 0.1.67 Mac 安裝 | 正常退出 0.1.66、完成 0700 userData 備份後，從可信 DMG 安裝 0.1.67 universal；ASAR 與可信 artifact 相符，deep/strict adhoc codesign、vault／ledger bytes 保留均已核對，舊 App 保留 |
-| ★ 價目表原生完成／☆ 效期結果 | 無原表生成 285 商品、283 一般售價，身分錯誤列隔離後仍完成並實際存出含圖 XLSX，最終內容／視覺檢查接續進行；效期同步遇到新的 0–30 天缺值，未重試，交由 Issue #261 |
+| ★ 價目表原生完成／☆ 效期結果 | 無原表生成 285 商品、283 一般售價，身分錯誤列隔離後仍完成並實際存出含圖 XLSX，實體 XLSX 的列數／數值／圖片 anchors 與文字版面均已核對，預覽圖片像素的限制見接續帳本；效期同步遇到新的 0–30 天缺值，未重試，交由 Issue #261 |
 | ★ 下載卡上傳 | Mac→Windows 依序 uploader exit 0、complete 回覆成功；保留 `macos-dmg`／`windows-installer` 卡片 ID、平台與名稱，改為 0.1.67 及下列可信 bytes／hash |
 | ☆ 員工下載實體檔 | 目前下載頁仍為登入畫面，尚未啟動 0.1.67 員工下載。上傳成功不代表登入後卡片顯示或實體下載已驗 |
 
