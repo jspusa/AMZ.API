@@ -1,4 +1,12 @@
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, extname, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
@@ -308,6 +316,11 @@ type SourceImport = Readonly<{
   importedNames: readonly string[];
 }>;
 
+const sourceImportCache = new Map<string, Readonly<{
+  sourceText: string;
+  imports: readonly SourceImport[];
+}>>();
+
 function repositoryPath(absolutePath: string): string {
   return relative(REPOSITORY_ROOT, absolutePath).split(sep).join("/");
 }
@@ -316,19 +329,26 @@ function absolutePath(repositoryRelativePath: string): string {
   return resolve(REPOSITORY_ROOT, repositoryRelativePath);
 }
 
-function sourceImports(sourcePath: string): SourceImport[] {
+function sourceImports(sourcePath: string): readonly SourceImport[] {
+  const sourceText = readFileSync(sourcePath, "utf8");
+  const cached = sourceImportCache.get(sourcePath);
+  // Each guard still reads the current bytes; only unchanged parsing is shared.
+  if (cached?.sourceText === sourceText) return cached.imports;
   const source = ts.createSourceFile(
     sourcePath,
-    readFileSync(sourcePath, "utf8"),
+    sourceText,
     ts.ScriptTarget.Latest,
     true,
-    ts.ScriptKind.TS,
+    sourcePath.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
   );
   const imports: SourceImport[] = [];
 
   function append(specifier: ts.Expression, importedNames: readonly string[] = []): void {
     if (ts.isStringLiteralLike(specifier)) {
-      imports.push({ specifier: specifier.text, importedNames });
+      imports.push(Object.freeze({
+        specifier: specifier.text,
+        importedNames: Object.freeze([...importedNames]),
+      }));
     }
   }
 
@@ -361,7 +381,9 @@ function sourceImports(sourcePath: string): SourceImport[] {
   }
 
   visit(source);
-  return imports;
+  const result = Object.freeze(imports);
+  sourceImportCache.set(sourcePath, { sourceText, imports: result });
+  return result;
 }
 
 function resolveLocalImport(importer: string, specifier: string): string | null {
@@ -651,6 +673,52 @@ function sourceFiles(directory: string): string[] {
 }
 
 describe("SP execution-context architecture", () => {
+  it("reuses unchanged import evidence and reparses changed source bytes", () => {
+    const directory = mkdtempSync(resolve(tmpdir(), "amz-architecture-imports-"));
+    const sourcePath = resolve(directory, "fixture.ts");
+    try {
+      writeFileSync(sourcePath, 'import { Original } from "./original";');
+      const first = sourceImports(sourcePath);
+      expect(first).toEqual([
+        { specifier: "./original", importedNames: ["Original"] },
+      ]);
+      expect(sourceImports(sourcePath)).toBe(first);
+
+      writeFileSync(sourcePath, 'import { Modified } from "./modified";');
+      const modified = sourceImports(sourcePath);
+      expect(modified).not.toBe(first);
+      expect(modified).toEqual([
+        { specifier: "./modified", importedNames: ["Modified"] },
+      ]);
+      expect(sourceImports(sourcePath)).toBe(modified);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("collects static, re-export, import-equals, and nested runtime imports in TSX", () => {
+    const directory = mkdtempSync(resolve(tmpdir(), "amz-architecture-tsx-"));
+    const sourcePath = resolve(directory, "fixture.tsx");
+    try {
+      writeFileSync(sourcePath, `
+        import type { OrdersReadsPort as Port } from "./orders-reads";
+        export { OrdersReads } from "./orders-reads";
+        import adapter = require("./orders-reads-production");
+        const panel = <section>{import("./nested-page")}</section>;
+        function afterJsx() { return require("./after-jsx"); }
+      `);
+      expect(sourceImports(sourcePath)).toEqual([
+        { specifier: "./orders-reads", importedNames: ["OrdersReadsPort"] },
+        { specifier: "./orders-reads", importedNames: [] },
+        { specifier: "./orders-reads-production", importedNames: [] },
+        { specifier: "./nested-page", importedNames: [] },
+        { specifier: "./after-jsx", importedNames: [] },
+      ]);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it.each(NEW_SP_LEAF_MODULES)(
     "%s stays independent from legacy runtime modules",
     (entryPath) => {
