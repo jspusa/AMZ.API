@@ -11,7 +11,7 @@
 
 ## 目前狀態
 
-- Issue #273 接續 .72 的入庫請求 400／422 partial，0.1.73 僅加入已收到錯誤回應的有限安全診斷；不重試、不跳過計畫、不改來源完整度。初始 323 files／3,942 tests、audit 0 與兩軸 review 均通過，已無衝突整合表格 PR #272／main `993a789966d9dbc9f068d853e3830984051dd633`。最終交付與下一次可信原生診斷仍待，見[規格](specs/2026-09-inbound-request-diagnostics.md)及[分層帳本](releases/2026-09-inbound-request-diagnostics.md)。目前安裝仍為可信 .72，原生再次被 Mac 鎖定阻擋；先做完獨立發布工作，不重做 .72 同步或已驗原始功能。完整效期目標 #263 持續。
+- Issue #273／PR #274 已合併 .73 安全診斷至 `b64796da043592c6fd5b8d95930fcfbb6d29ae67`，僅有限解析已收到的 400／422；不重試、不跳過計畫、不改來源完整度。3,942 本機 tests、audit 0、兩軸 final review、main Validate／Pages／Windows 均通過，但 Mac 兩次在不同既有測試逾時，未產生 Mac artifact。Issue #275 僅調整 Mac Validate 排程，見[規格](specs/2026-09-macos-validation-scheduling.md)；新 final source 的全部交付證據仍待。鎖定阻礙已解除，原生 .72 正常 Reload 已確認八欄表格可讀、公告 4 項及門檻 8 保留；已正常退出並備份，等待可信 .73 安裝，不重跑 .72 同步。完整效期目標 #263 持續，見[診斷規格](specs/2026-09-inbound-request-diagnostics.md)及[分層帳本](releases/2026-09-inbound-request-diagnostics.md)。
 
 - 使用者已解鎖，可信 0.1.72 已正常備份安裝，ASAR 符合 artifact、vault／ledger 保留且原生 Amazon 已連線。一次完整效期同步保留 284 個 FBA 核心品號與 33 個銷售偏慢／待核對，但效期仍 partial：固定 `FBA_INBOUND_UPSTREAM_UNAVAILABLE` 訊息對應 HTTP 400／422 請求驗證錯誤，不能推定登入或權限失效，未重試。原鎖定阻礙已解除，見 [.72 新實機證據](releases/2026-09-empty-inbound-plan-name.md)。另修正 Issue #271 八欄健康表被全站五欄樣式擠壓的問題，為獨立 renderer 發布，沿用 .72 Notebook Key；[規格](specs/2026-09-inventory-health-table-layout.md)與[交付帳本](releases/2026-09-inventory-health-table-layout.md)。完整原始效期目標仍持續，已驗的圖片、Vine、偏好、價目表及變體不重做。
 

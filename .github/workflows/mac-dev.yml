@@ -40,6 +40,8 @@ jobs:
       - name: Install
         run: npm ci
       - name: Validate
+        env:
+          VITEST_MAX_WORKERS: "1"
         run: npm run check
       - name: Package universal test app
         run: >
