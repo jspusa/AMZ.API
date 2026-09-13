@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { assessInventoryHealth } from "../src/main/amazon/inventory-health";
+import { inventoryHealthCalendarRows, isInventoryHealthSnapshot } from "../src/shared/inventory-health";
 
 const now = new Date("2026-07-01T12:00:00Z");
 const row = {
@@ -34,6 +35,23 @@ describe("inventory health evidence and calendar eligibility", () => {
       estimatedDailyUnits: 10, earliestDeclaredExpiryDate: "2026-08-30", stockRisk: "may-outlast-expiry",
       status: "needs-review", projectedShortfall: null, calendarEligible: false });
   });
+  it("keeps unknown age separate from usable stock estimates and incomplete expiry evidence", () => {
+    const result = assessInventoryHealth({ ...input, sourceComplete: false,
+      rows: [{ ...row, agedOver180: null }],
+      lots: [{ ...lot, confirmedRemaining: null, confirmedForSnapshot: null }] });
+    expect(isInventoryHealthSnapshot(result)).toBe(true);
+    expect(result.rows[0]).toMatchObject({ agedOver180: null, wholeSkuClearanceDays: 100,
+      estimatedDailyUnits: 10, stockRisk: "may-outlast-expiry", projectedShortfall: null,
+      confirmedRemaining: null, calendarEligible: false });
+    expect(inventoryHealthCalendarRows(result)).toEqual([]);
+  });
+  it.each([-1, 0.5, Number.NaN, Number.POSITIVE_INFINITY, "0", undefined])(
+    "rejects invalid supplementary age %s at the shared snapshot boundary", agedOver180 => {
+      const result = assessInventoryHealth({ ...input, rows: [{ ...row, agedOver180: agedOver180 as number }] });
+      expect(isInventoryHealthSnapshot(result)).toBe(false);
+      expect(inventoryHealthCalendarRows(result)).toEqual([]);
+    },
+  );
   it("distinguishes reported zero sales, contradictory sales and stale estimates without infinity or invented zero", () => {
     const result = assessInventoryHealth({ ...input, rows: [{ ...row, agedOver180: 0, unitsShipped: { t7: 0, t30: 0, t60: 0, t90: 0 } }], lots: [] });
     expect(result.rows[0]).toMatchObject({ stockRisk: "no-sales", estimatedDailyUnits: 0, wholeSkuClearanceDays: null, earliestDeclaredExpiryDate: null, calendarEligible: false });

@@ -133,6 +133,7 @@ import {
 import {
   AgedInventoryReads,
   type AgedInventoryReadsPort,
+  type InventoryHealthReportReadsPort,
 } from "./amazon/aged-inventory-reads";
 import { FbaInboundReads } from "./amazon/fba-inbound-reads";
 import {
@@ -362,6 +363,7 @@ export class ApiRouter {
     inventoryHealthStore?: PrivateLocalJsonPort;
     vineStore?: PrivateLocalJsonPort;
     agedInventoryReads?: AgedInventoryReadsPort;
+    inventoryHealthReads?: InventoryHealthReportReadsPort;
     salesAndTrafficRead?: SalesAndTrafficDocumentReader;
     salesAndTrafficDemo?: Partial<SalesAndTrafficDemoSource>;
     advertisingStrategySources?: Partial<AdvertisingStrategySourceGateway>;
@@ -507,10 +509,11 @@ export class ApiRouter {
       reportsAdapter,
       advertising,
     });
-    const agedInventoryReads = input.agedInventoryReads ?? new AgedInventoryReads({
+    const defaultAgedInventoryReads = new AgedInventoryReads({
       reports: this.reportBroker,
       context: this.spExecutionContext,
     });
+    const agedInventoryReads = input.agedInventoryReads ?? defaultAgedInventoryReads;
     const defaultFbaInboundReads = new FbaInboundReads({
       adapter: fbaInboundExternalReadAdapterProduction,
       reports: this.reportBroker,
@@ -599,7 +602,7 @@ export class ApiRouter {
       expiry: new FbaExpiryReads({ context: this.spExecutionContext, adapter: fbaInboundExternalReadAdapterProduction }),
       store: input.inventoryHealthStore,
     });
-    this.inventoryHealthSync = new InventoryHealthSync({ context: this.spExecutionContext, reads: agedInventoryReads, health: this.inventoryHealth });
+    this.inventoryHealthSync = new InventoryHealthSync({ context: this.spExecutionContext, reads: input.inventoryHealthReads ?? defaultAgedInventoryReads, health: this.inventoryHealth });
     this.agedInventoryAuditOwner = input.agedInventoryAudit ??
       new AgedInventoryAudit({
         context: this.spExecutionContext,
