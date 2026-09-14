@@ -16,7 +16,7 @@ const receipt = {operationId:ID,sha256,url,width:1000,height:1000,size:bytes.len
 const data = () => ({bytes,contentType:"image/png" as const,width:1000,height:1000,contextKey:"test-account-US-SKU",assertCurrent:vi.fn(async()=>{})});
 const json = (value: unknown) => Response.json(value);
 
-function fixture(options: {lostPut?: boolean; publicStatus?: number; wrongBytes?: boolean; afterPut?: () => void; badReceipt?: boolean; expiresAt?: string} = {}) {
+function fixture(options: {lostPut?: boolean; publicStatus?: number; wrongBytes?: boolean; afterPut?: () => void; badReceipt?: boolean; expiresAt?: string; now?: () => number} = {}) {
   const calls: {path:string;method:string;headers:Headers}[] = [];
   const transport = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
     const path = new URL(String(input)).pathname;
@@ -30,12 +30,12 @@ function fixture(options: {lostPut?: boolean; publicStatus?: number; wrongBytes?
     }
     return new Response(Buffer.from(options.wrongBytes?new Uint8Array(32):bytes),{status:options.publicStatus ?? 200,headers:{"content-type":"image/png"}});
   });
-  const service = new HostedListingImages({fetch:transport as typeof fetch,uuid:()=>ID});
+  const service = new HostedListingImages({fetch:transport as typeof fetch,uuid:()=>ID,now:options.now});
   return {service,calls,transport};
 }
 
 describe("dedicated hosted image preparation",()=>{
-  it("prepares a fresh source on an explicit request when a verified image has less than two days left", async () => {
+  it("reuses a verified one-hour source until explicit preparation at the ten-minute margin", async () => {
     let now = Date.parse("2026-09-14T00:00:00.000Z");
     const nextId = "22222222-2222-4222-8222-222222222222";
     const ids = [ID, nextId];
@@ -44,26 +44,34 @@ describe("dedicated hosted image preparation",()=>{
       const path = new URL(String(input)).pathname;
       if (!path.startsWith("/api/")) return new Response(bytes, {headers:{"content-type":"image/png"}});
       const id = path.split("/").at(-1)!;
-      if (init?.method === "PUT") records.set(id, {...receipt,operationId:id,url:`${ORIGIN}/listing-images/v2/${id}/${sha256}.png`,expiresAt:new Date(now + 7 * 86400000).toISOString()});
+      if (init?.method === "PUT") records.set(id, {...receipt,operationId:id,url:`${ORIGIN}/listing-images/v2/${id}/${sha256}.png`,expiresAt:new Date(now + 60 * 60_000).toISOString()});
       return json(records.get(id));
     });
     const service = new HostedListingImages({fetch:transport as typeof fetch,uuid:()=>ids.shift()!,now:()=>now});
     await expect(service.prepare(data())).resolves.toMatchObject({key:ID});
-    now += 5 * 86400000 + 1;
-    await expect(service.prepare(data())).resolves.toMatchObject({key:nextId,expiresAt:new Date(now + 7 * 86400000).toISOString()});
+    now += 20 * 60_000;
+    await expect(service.prepare(data())).resolves.toMatchObject({key:ID});
+    expect(transport.mock.calls.filter(([, init])=>init?.method === "PUT")).toHaveLength(1);
+    now += 30 * 60_000;
+    await expect(service.prepare(data())).resolves.toMatchObject({key:nextId,expiresAt:new Date(now + 60 * 60_000).toISOString()});
     expect(transport.mock.calls.filter(([, init])=>init?.method === "PUT")).toHaveLength(2);
   });
   it("returns the server expiry only after validating the temporary image and bytes", async () => {
-    const expiresAt = new Date(Date.now() + 7 * 86400000).toISOString();
+    const expiresAt = new Date(Date.now() + 60 * 60_000).toISOString();
     const f = fixture({expiresAt});
     await expect(f.service.prepare(data())).resolves.toEqual({url, key:ID, expiresAt});
+  });
+  it("refuses the previous seven-day retention contract", async () => {
+    const f = fixture({expiresAt:new Date(Date.now() + 7 * 86400000).toISOString()});
+    await expect(f.service.prepare(data())).rejects.toThrow("暫存期限");
+    expect(f.calls.filter(call=>call.path.startsWith("/listing-images/"))).toHaveLength(0);
   });
   it.each(["not-a-date", "2020-01-01T00:00:00.000Z", "2099-01-01T00:00:00.000Z"])("rejects invalid or expired temporary receipts: %s", async expiresAt => {
     const f = fixture({expiresAt});
     await expect(f.service.prepare(data())).rejects.toThrow();
   });
   it("allows no-R2 local upload to return a byte-verified public image with no Amazon call",async()=>{
-    const f=fixture();
+    const f=fixture({expiresAt:new Date(Date.now() + 60 * 60_000).toISOString()});
     const route = new LocalImageUpload({
       context:createRouterRequestContextAdapter(createScriptedSpExecutionContextAdapter(marketplaceId=>({marketplaceId,mode:"demo",accountScope:"fixture-account"}))),
       vault:{getImageStorage:async()=>{throw new Error("preparation must not unlock credential storage");}},hostedImages:f.service,
@@ -116,19 +124,43 @@ describe("dedicated hosted image preparation",()=>{
     await expect(f.service.prepare(data())).resolves.toEqual({url,key:ID});
     expect(puts).toBe(2);
   });
-  it("keeps unknown outcomes GET-only even when status has not found the image yet", async () => {
-    const f = fixture();
+  it.each([404, 410])("keeps unknown outcomes GET-only after one-hour expiry when status returns %s", async status => {
+    let now = Date.parse("2026-09-14T00:00:00.000Z");
+    const f = fixture({now:()=>now});
     const normal = f.transport.getMockImplementation()!;
     let puts = 0;
     f.transport.mockImplementation(async (input, init) => {
       const path = new URL(String(input)).pathname;
       if (init?.method === "PUT") { puts++; throw new Error("unknown transport outcome"); }
-      if (path.startsWith("/api/") && !path.endsWith("/login")) return Response.json({}, {status:404});
+      if (path.startsWith("/api/") && !path.endsWith("/login")) return Response.json({}, {status});
       return normal(input, init);
     });
     await expect(f.service.prepare(data())).rejects.toThrow();
+    now += 2 * 60 * 60_000;
+    f.service.clear();
+    await expect(f.service.prepare(data())).rejects.toThrow();
+    f.service.clear();
     await expect(f.service.prepare(data())).rejects.toThrow();
     expect(puts).toBe(1);
+    expect(f.transport.mock.calls.map(([, init]) => init?.method)).toEqual(["PUT", "GET", "GET", "GET"]);
+  });
+  it("allows a new explicit preparation after server expiry only when the previous source was byte-verified", async () => {
+    const f = fixture({expiresAt:new Date(Date.now() + 60 * 60_000).toISOString()});
+    const normal = f.transport.getMockImplementation()!;
+    await expect(f.service.prepare(data())).resolves.toMatchObject({url,key:ID});
+    let expired = true;
+    f.transport.mockImplementation(async(input,init)=>{
+      if (new URL(String(input)).pathname.startsWith("/api/") && init?.method === "GET" && expired) {
+        expired = false;
+        return Response.json({}, {status:410});
+      }
+      return normal(input,init);
+    });
+    await expect(f.service.prepare(data())).rejects.toThrow();
+    expect(f.transport.mock.calls.filter(([,init])=>init?.method === "PUT")).toHaveLength(1);
+    f.service.clear();
+    await expect(f.service.prepare(data())).resolves.toMatchObject({url,key:ID});
+    expect(f.transport.mock.calls.filter(([,init])=>init?.method === "PUT")).toHaveLength(2);
   });
   it("keeps a reserved but unfinished upload GET-only across repeated preparation", async () => {
     const f = fixture();
@@ -171,8 +203,31 @@ describe("dedicated hosted image preparation",()=>{
 });
 
 describe("public local image preparation diagnostics", () => {
+  it.each([undefined, "2026-09-21T00:00:00.000Z", "2026-09-14T00:10:00.000Z"])("never marks an unusable hosted receipt ready for either upload flow: %s", async expiresAt => {
+    const context = createRouterRequestContextAdapter(createScriptedSpExecutionContextAdapter(marketplaceId => ({marketplaceId, mode:"demo", accountScope:"fixture-account"})));
+    const route = new LocalImageUpload({context, vault:{getImageStorage:async()=>null}, hostedImages:{prepare:async()=>({url,key:ID,expiresAt})}, now:()=>Date.parse("2026-09-14T00:00:00.000Z")});
+    for (const fields of [{}, {batchMode:"true"}] as Record<string,string>[]) {
+      const response = await route.uploadImage({requestId:"invalid-retention",method:"POST",path:"/api/uploads/listing-images",query:{},headers:{},body:{kind:"multipart",fields:{marketplaceId:"ATVPDKIKX0DER",sellerSku:"TEST-IMAGE-SKU",...fields},file:{name:"TEST-IMAGE-SKU_01.png",type:"image/png",bytes}}});
+      expect(response.status).toBe(409);
+      expect(JSON.stringify(response.body)).not.toContain('"readyForAmazon":true');
+    }
+  });
+  it("accepts a one-hour source and refuses it when ten minutes remain", async () => {
+    let now = Date.now();
+    const expiresAt = new Date(now + 60 * 60_000).toISOString();
+    const f = fixture({expiresAt});
+    const context = createRouterRequestContextAdapter(createScriptedSpExecutionContextAdapter(marketplaceId => ({marketplaceId, mode:"demo", accountScope:"fixture-account"})));
+    const route = new LocalImageUpload({context, vault:{getImageStorage:async()=>null}, hostedImages:f.service, now:()=>now});
+    const response = await route.uploadImage({requestId:"one-hour-preparation",method:"POST",path:"/api/uploads/listing-images",query:{},headers:{},body:{kind:"multipart",fields:{marketplaceId:"ATVPDKIKX0DER",sellerSku:"TEST-IMAGE-SKU",batchMode:"true"},file:{name:"TEST-IMAGE-SKU_01.png",type:"image/png",bytes}}});
+    expect(response.status).toBe(200);
+    const target = {urls:[url],context:await context.capture("ATVPDKIKX0DER"),sellerSku:"TEST-IMAGE-SKU"};
+    await expect(route.assertPreparedImageUrls(target)).resolves.toBe(Date.parse(expiresAt));
+    now += 50 * 60_000;
+    await expect(route.assertPreparedImageUrls(target)).rejects.toMatchObject({code:"IMAGE_PREPARATION_EXPIRED"});
+    await expect(route.assertImagePreparation({...target,previousUrls:[null]})).rejects.toMatchObject({code:"IMAGE_PREPARATION_EXPIRED"});
+  });
   it("keeps temporary batch preparation bound to the exact SKU and context without returning base64", async () => {
-    const expiresAt = new Date(Date.now() + 7 * 86400000).toISOString();
+    const expiresAt = new Date(Date.now() + 60 * 60_000).toISOString();
     const f = fixture({expiresAt});
     const context = createRouterRequestContextAdapter(createScriptedSpExecutionContextAdapter(marketplaceId => ({marketplaceId, mode:"demo", accountScope:"fixture-account"})));
     const route = new LocalImageUpload({context, vault:{getImageStorage:async()=>null}, hostedImages:f.service});
@@ -181,7 +236,7 @@ describe("public local image preparation diagnostics", () => {
     expect(response.body.kind === "json" && response.body.value).toMatchObject({amazonUrl:url, expiresAt, previewUrl:null});
     expect(JSON.stringify(response.body)).not.toContain("base64");
     const current = await context.capture("ATVPDKIKX0DER");
-    await expect(route.assertPreparedImageUrls({urls:[url],context:current,sellerSku:"TEST-IMAGE-SKU"})).resolves.toBeUndefined();
+    await expect(route.assertPreparedImageUrls({urls:[url],context:current,sellerSku:"TEST-IMAGE-SKU"})).resolves.toBe(Date.parse(expiresAt));
     await expect(route.assertPreparedImageUrls({urls:[url],context:current,sellerSku:"DIFFERENT-SKU"})).rejects.toThrow();
     for (const disguised of [url.replace("supply-boss", "SUPPLY-BOSS"), url.replace(".site/", ".site:443/")]) {
       await expect(route.assertImagePreparation({urls:[disguised],previousUrls:[null],context:current,sellerSku:"TEST-IMAGE-SKU"})).rejects.toThrow();

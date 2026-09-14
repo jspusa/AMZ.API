@@ -470,7 +470,7 @@ export class ApiRouter {
       operations: createListingImageMutationOperations(listingImageGatewayProduction),
       assertPreparedImageUrls: async (target) => {
         if (!this.imageUpload.assertPreparedImageUrls) throw new SpApiError("此 Notebook Key 尚未支援資料夾批次圖片準備。", {status:409,code:"IMAGE_RETENTION_UNAVAILABLE"});
-        await this.imageUpload.assertPreparedImageUrls(target);
+        return this.imageUpload.assertPreparedImageUrls(target);
       },
     });
     this.listingContentMutations = input.listingContentMutations ??

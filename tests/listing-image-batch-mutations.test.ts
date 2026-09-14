@@ -44,7 +44,7 @@ async function setup(overrides: Partial<Pick<ListingImageBatchDependencies, "rea
     commitOnce: vi.fn(async (patch, fence) => { await fence.assertCurrent(); canonical.set(patch.sellerSku, patch.requestedUrls); return { ok: true, status: 200, requestId: "batch-commit", retryAfter: null, payload: { status: "ACCEPTED", issues: [], submissionId: "batch-submission" } }; }),
     replaceDemoImages: vi.fn(),
   };
-  const assertPreparedImageUrls = vi.fn(async (_input: Parameters<ListingImageBatchDependencies["assertPreparedImageUrls"]>[0]) => undefined);
+  const assertPreparedImageUrls = vi.fn(async (_input: Parameters<ListingImageBatchDependencies["assertPreparedImageUrls"]>[0]) => (overrides.now ?? Date.now)() + 60 * 60_000);
   const owner = new ListingImageBatchMutations({ context, writeGate, operations: createListingImageMutationOperations(gateway), assertPreparedImageUrls, readbackDelaysMs: [0], ...overrides });
   return { owner, gateway, approveWrite, canonical, context, writeGate, assertPreparedImageUrls };
 }
@@ -67,6 +67,66 @@ async function terminal(owner: ListingImageBatchMutations, preview: ListingImage
 }
 
 describe("image folder batch main owner", () => {
+  it("ends review ten minutes before the earliest source expires even when the normal ticket is longer", async () => {
+    let now = Date.parse("2026-09-14T00:48:00.000Z");
+    const {owner,gateway,approveWrite} = await setup({now:()=>now,assertPreparedImageUrls:async()=>Date.parse("2026-09-14T01:00:00.000Z")});
+    const review = await previewSkus(owner);
+    expect(review.expiresAt).toBe("2026-09-14T00:50:00.000Z");
+    now = Date.parse("2026-09-14T00:50:00.000Z");
+    expect((await submit(owner,review)).status).toBe(410);
+    expect(approveWrite).not.toHaveBeenCalled();
+    expect(gateway.commitOnce).not.toHaveBeenCalled();
+  });
+  it("isolates every expired source after a slow thirty-SKU preview without native approval", async () => {
+    let now = Date.parse("2026-09-14T00:00:00.000Z");
+    const expiry = now + 60 * 60_000;
+    const {owner,gateway,approveWrite} = await setup({now:()=>now,assertPreparedImageUrls:async()=>expiry});
+    vi.mocked(gateway.validationPreview).mockImplementation(async()=>{
+      now += 2 * 60_000;
+      return {ok:true,status:200,requestId:null,retryAfter:null,payload:{status:"VALID",issues:[]}};
+    });
+    const review = await previewSkus(owner,Array.from({length:30},(_,index)=>`SKU${index}`));
+    expect(review.totals).toMatchObject({skus:30,ready:0,blocked:30});
+    expect(review.rows.every(row=>row.code === "IMAGE_PREPARATION_EXPIRED")).toBe(true);
+    expect(approveWrite).not.toHaveBeenCalled();
+    expect(gateway.commitOnce).not.toHaveBeenCalled();
+  });
+
+  it("checks expiry again for each submitted SKU and skips a newly expired source without another PATCH", async () => {
+    let now = Date.parse("2026-09-14T00:40:00.000Z");
+    const {owner,gateway,approveWrite} = await setup({now:()=>now,assertPreparedImageUrls:async()=>Date.parse("2026-09-14T01:00:00.000Z")});
+    const original = vi.mocked(gateway.commitOnce).getMockImplementation()!;
+    vi.mocked(gateway.commitOnce).mockImplementation(async(patch,fence)=>{
+      const result = await original(patch,fence);
+      now = Date.parse("2026-09-14T00:50:00.000Z");
+      return result;
+    });
+    const review = await previewSkus(owner);
+    expect((await submit(owner,review)).status).toBe(202);
+    const result = await terminal(owner,review);
+    expect(result.totals).toMatchObject({submitted:1,accepted:1});
+    expect(result.rows[1]).toMatchObject({state:"not-started",code:"IMAGE_PREPARATION_EXPIRED"});
+    expect(approveWrite).toHaveBeenCalledOnce();
+    expect(gateway.commitOnce).toHaveBeenCalledOnce();
+    await owner.handle({operation:"observe",request:request("GET",{},{marketplaceId,batchId:review.batchId})});
+    expect(gateway.commitOnce).toHaveBeenCalledOnce();
+  });
+
+  it("does not ask for native approval if source validity expires during fresh preapproval previews", async () => {
+    let now = Date.parse("2026-09-14T00:40:00.000Z");
+    const {owner,gateway,approveWrite} = await setup({now:()=>now,assertPreparedImageUrls:async()=>Date.parse("2026-09-14T01:00:00.000Z")});
+    const review = await previewSkus(owner);
+    vi.mocked(gateway.validationPreview).mockImplementation(async()=>{
+      now += 5 * 60_000;
+      return {ok:true,status:200,requestId:null,retryAfter:null,payload:{status:"VALID",issues:[]}};
+    });
+    expect((await submit(owner,review)).status).toBe(202);
+    const result = await terminal(owner,review);
+    expect(result).toMatchObject({phase:"stopped",totals:{submitted:0,ready:0,blocked:2}});
+    expect(approveWrite).not.toHaveBeenCalled();
+    expect(gateway.commitOnce).not.toHaveBeenCalled();
+  });
+
   it("previews exact complete replacements and discloses omitted old positions without authorizing any write", async () => {
     const { owner, gateway, approveWrite } = await setup();
     const response = await owner.handle({ operation: "preview", request: request("POST", { marketplaceId, replacementMode: "complete", rows: [
@@ -244,6 +304,7 @@ describe("image folder batch main owner", () => {
     const { owner, gateway, assertPreparedImageUrls } = await setup();
     assertPreparedImageUrls.mockImplementation(async () => {
       if (vi.mocked(gateway.validationPreview).mock.calls.length >= 3) throw new SpApiError("圖片已過期。", { status: 409, code: "IMAGE_PREPARATION_EXPIRED" });
+      return Date.now() + 60 * 60_000;
     });
     const preview = await previewSkus(owner, ["AFA12AM"]);
     await submit(owner, preview);

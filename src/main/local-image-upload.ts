@@ -11,6 +11,7 @@ import { invalid, json } from "./route-response";
 import { LISTING_IMAGE_SERVICE_ORIGIN, publicListingImagePreparationError, type HostedListingImagePort } from "./hosted-listing-images";
 import type { SpExecutionContext } from "./amazon/sp-execution-context";
 import { SpApiError } from "./amazon/sp-api-error";
+import { LISTING_IMAGE_MIN_VALIDITY_MS, LISTING_IMAGE_RETENTION_MS } from "../shared/listing-image-retention";
 
 type ImageContentType = "image/png" | "image/jpeg";
 
@@ -32,7 +33,7 @@ export interface ImageObjectStorePort {
 export interface LocalImageUploadPort {
   uploadImage(request: ApiRequest): Promise<ApiResponse>;
   clear?(): void;
-  assertPreparedImageUrls?(input: PreparedImageTarget): Promise<void>;
+  assertPreparedImageUrls?(input: PreparedImageTarget): Promise<number>;
   assertImagePreparation?(input: PreparedImageTarget & Readonly<{previousUrls: readonly (string | null)[]}>): Promise<void>;
 }
 
@@ -210,16 +211,19 @@ export class LocalImageUpload implements LocalImageUploadPort {
 
   clear(): void { this.preparedImages.clear(); }
 
-  async assertPreparedImageUrls(input: PreparedImageTarget): Promise<void> {
+  async assertPreparedImageUrls(input: PreparedImageTarget): Promise<number> {
     await this.context.assertCurrent(input.context);
     const scope = preparationScope(input.context, input.sellerSku);
+    let earliestExpiry = Infinity;
     for (const url of input.urls) {
       if (url === null) continue;
       const image = this.preparedImages.get(url);
-      if (!image || image.scope !== scope || image.expiresAt < this.now() + 48 * 3600000) {
-        throw new SpApiError("圖片尚未準備完成或暫存期限不足兩天；請重新準備原始圖片。", {status:409,code:"IMAGE_PREPARATION_EXPIRED"});
+      if (!image || image.scope !== scope || image.expiresAt <= this.now() + LISTING_IMAGE_MIN_VALIDITY_MS) {
+        throw new SpApiError("圖片尚未準備完成或暫存期限不足十分鐘；請重新準備原始圖片。", {status:409,code:"IMAGE_PREPARATION_EXPIRED"});
       }
+      earliestExpiry = Math.min(earliestExpiry, image.expiresAt);
     }
+    return earliestExpiry;
   }
 
   async assertImagePreparation(input: PreparedImageTarget & Readonly<{previousUrls: readonly (string | null)[]}>): Promise<void> {
@@ -302,12 +306,12 @@ export class LocalImageUpload implements LocalImageUploadPort {
       amazonUrl = hosted.url;
       expiresAt = hosted.expiresAt ?? null;
       const expiry = expiresAt === null ? NaN : Date.parse(expiresAt);
-      if (Number.isFinite(expiry) && new Date(expiry).toISOString() === expiresAt && expiry > this.now() && expiry <= this.now() + 7 * 86400000 + 60000) {
-        while (this.preparedImages.size >= 1000) this.preparedImages.delete(this.preparedImages.keys().next().value!);
-        this.preparedImages.set(amazonUrl, {scope:preparationScope(context,sellerSku),expiresAt:expiry});
-      } else if (batchMode) {
+      if (!Number.isFinite(expiry) || new Date(expiry).toISOString() !== expiresAt || expiry > this.now() + LISTING_IMAGE_RETENTION_MS + 60_000) {
         return invalid("圖片服務未提供有效暫存期限；請更新 Notebook Key 與圖片服務後重新準備。", 409, "IMAGE_RETENTION_UNAVAILABLE");
       }
+      if (expiry <= this.now() + LISTING_IMAGE_MIN_VALIDITY_MS) return invalid("圖片暫存期限不足十分鐘；請重新準備原始圖片。", 409, "IMAGE_PREPARATION_EXPIRED");
+      while (this.preparedImages.size >= 1000) this.preparedImages.delete(this.preparedImages.keys().next().value!);
+      this.preparedImages.set(amazonUrl, {scope:preparationScope(context,sellerSku),expiresAt:expiry});
     } else {
       // Compatibility for compositions that explicitly provide their own R2
       // store. Production hosted preparation never reads encrypted settings.
@@ -354,7 +358,7 @@ export class LocalImageUpload implements LocalImageUploadPort {
       expiresAt,
       readyForAmazon: Boolean(amazonUrl),
       notice: amazonUrl
-        ? expiresAt ? "圖片僅暫存 7 天，到期由定期清理工作刪除；請在本次工作完成核對，送出後仍需等待 Amazon 下載與驗證。" : "圖片已準備完成，可安全預檢；確認送出後仍需等待 Amazon 下載與驗證。"
+        ? expiresAt ? "圖片僅暫存 1 小時，到期由定期清理工作刪除；請在本次工作完成核對，送出後仍需等待 Amazon 下載與驗證。" : "圖片已準備完成，可安全預檢；確認送出後仍需等待 Amazon 下載與驗證。"
         : "圖片已在這台電腦完成格式與像素檢查；設定自己的 R2 公開網域後即可一鍵送交 Amazon。",
     });
   }

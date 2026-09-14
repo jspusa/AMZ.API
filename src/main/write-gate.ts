@@ -38,6 +38,8 @@ export type WriteBinding = Readonly<{
   family: WritePreviewFamily;
   previewKey: string;
   context: SpExecutionContext;
+  /** A main-owned source deadline may shorten, never extend, the family TTL. */
+  previewExpiresAt?: number;
   intents: readonly [WriteIntent, ...WriteIntent[]];
 }>;
 
@@ -262,6 +264,7 @@ function bindingFingerprint(binding: WriteBinding): string {
     binding.context.mode,
     binding.context.accountScope,
     binding.context.generation,
+    binding.previewExpiresAt ?? null,
     binding.intents.map((intent) => [
       intent.intentId,
       intent.operation,
@@ -356,12 +359,14 @@ export class MainWriteGate implements MainWriteGatePort {
     if (existing?.ownerToken) {
       throw new MainWriteGateError("OPERATION_IN_PROGRESS");
     }
+    const expiresAt = Math.min(this.now() + previewTtl(binding.family), binding.previewExpiresAt ?? Infinity);
+    if (expiresAt <= this.now()) throw new MainWriteGateError("PREVIEW_EXPIRED");
     this.tickets.set(key, {
       family: binding.family,
       previewKey: binding.previewKey,
       context: binding.context,
       bindingFingerprint: bindingFingerprint(binding),
-      expiresAt: this.now() + previewTtl(binding.family),
+      expiresAt,
       generation,
       ownerToken: null,
     });
@@ -555,7 +560,8 @@ export class MainWriteGate implements MainWriteGatePort {
       !binding.previewKey ||
       !binding.intents.length ||
       !Number.isSafeInteger(binding.context.generation) ||
-      binding.context.generation < 0
+      binding.context.generation < 0 ||
+      (binding.previewExpiresAt !== undefined && (!Number.isSafeInteger(binding.previewExpiresAt) || binding.previewExpiresAt <= 0))
     ) {
       throw new MainWriteGateError("WRITE_BINDING_INVALID");
     }
