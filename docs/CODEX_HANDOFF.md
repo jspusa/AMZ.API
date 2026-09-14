@@ -11,7 +11,7 @@
 
 ## 目前狀態
 
-- Issue #294 接續使用者最新決定：圖片暫存由七天改為一小時，.78 在 `codex/image-one-hour-retention-20260914` 實作；十分鐘來源有效性餘裕、受最早到期圖約束的核對票證、既有圖期限縮短與每五分鐘清理保持 main/server 邊界。改版前 .77 原生五資料夾／45 圖準備與五 SKU Amazon 預檢均通過，沒有正式 Amazon 更新；原圖未動。接續[一小時規格](specs/2026-09-image-one-hour-retention.md)與[分層交付帳本](releases/2026-09-image-one-hour-retention.md)，不要把先前七天測試當成 .78 驗收。
+- Issue #294 的 0.1.78 一小時圖片暫存已由 PR #295／runtime `11f3b2addc8c44267f8097c5d764c660094927b1` 發布：4,252 tests、audit 0、兩軸 0 findings、四條 exact main CI、Pages 12 檔 bytes 及兩平台可信產物均通過。Windows 首次既有 LocalStore 測試逾時，唯一同 source 重跑 attempt 2 成功，未修改測試；Supply Boss version 11 的一小時 receipt／原圖 bytes／舊圖拒讀已驗，實際清除 22 個到期物件約 25.2 MB。手動 caller 成功，每五分鐘 cron 已設，但尚無真正 schedule run，不能宣稱自動物理刪除已驗收。Mac 再次鎖定，.78 尚未安裝或完成新一小時原生驗收，已留解鎖請求；原 .77 App／vault／ledger／備份保留。Mac→Windows 下載卡上傳 receipts 已核對，員工頁仍待登入與實際下載 bytes。改版前 .77 五資料夾／45 圖及五 SKU 預檢通過只作基準，沒有 Amazon 更新。接續[一小時規格](specs/2026-09-image-one-hour-retention.md)與[分層交付帳本](releases/2026-09-image-one-hour-retention.md)，不要重做既有測試或把文件 commit 當 runtime 產物來源。
 
 - Issue #290 的 0.1.77 已由 PR #291／runtime `b25901ac47017f0d90b8feaea61b2270477bde72` 發布：資料夾批次圖片支援 30 SKU／300 圖、完整替換與一次原生批准後逐筆提交。4,232 tests、兩軸 review、四條 exact-source CI、Pages 12 檔及兩平台可信產物已核對；Supply Boss version 10 七天 receipt 與公開原圖 bytes 已驗，PR #292 的固定清理 caller 正式 run 已成功。可信 .77 已安裝且 .75 App／userData 備份及 vault／ledger 保留；兩平台下載卡上傳 receipts 已驗；解鎖後原生五資料夾／45 圖準備及五 SKU 預檢通過，未送出 Amazon 更新；員工頁仍待登入及實際下載驗證。接續[核准規格](specs/2026-09-image-folder-batch.md)與[分層交付帳本](releases/2026-09-image-folder-batch.md)，runtime artifacts 保持 b25901a 來源；功能驗收不送真實 Amazon mutation，網址到期與實際空間釋放分開。
 
