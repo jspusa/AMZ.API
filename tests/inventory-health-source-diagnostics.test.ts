@@ -229,7 +229,7 @@ describe("saved expiry source diagnostics through the health GET", () => {
     const current = await snapshot(h.owner);
     expect(current.expirySourceDiagnostics).toMatchObject({ listedPlanCount: 11, unavailablePlanCount: 11,
       statusCounts: { "400": 10, "404": 1, "422": 0 }, failures: [
-        { operation: "plan", page: "first", status: 400, code: "BadRequest", responseState: "parsed", reason: "other-input", count: 2 },
+        { operation: "plan-items", page: "first", status: 400, code: "BadRequest", responseState: "parsed", reason: "other-input", count: 2 },
         { operation: "plan", page: "first", status: 400, code: "InvalidInput", responseState: "parsed", reason: "other-input", count: 1 },
         { operation: "plan", page: "first", status: 400, code: "unknown", responseState: "parsed", reason: "unknown", count: 1 },
         ...["empty", "malformed", "oversize", "timed-out", "unavailable"].map(responseState => ({ operation: "plan", page: "first", status: 400, code: "unknown", responseState, reason: "unknown", count: 1 })),
@@ -237,7 +237,9 @@ describe("saved expiry source diagnostics through the health GET", () => {
         { operation: "plan", page: "first", status: 400, code: "unknown", responseState: "not-recorded", reason: "unknown", count: 1 },
       ] });
     expect((await snapshot(h.create())).expirySourceDiagnostics).toEqual(current.expirySourceDiagnostics);
-    expect(read).toHaveBeenCalledTimes(12); expect(h.store.write).toHaveBeenCalledOnce();
+    // These two metadata rejections permit one independent plan-items read;
+    // the final saved failures belong to those item requests, not metadata.
+    expect(read).toHaveBeenCalledTimes(14); expect(h.store.write).toHaveBeenCalledOnce();
     expect(inventoryHealthCalendarRows(current)).toEqual([]);
   });
 
