@@ -35,7 +35,8 @@ jobs:
           # in one run, with extra room for legacy objects and delayed writes.
           for batch in range(256):
               # No credentials, body, query, object key, or caller-selected path.
-              request = urllib.request.Request(endpoint, method='POST')
+              request = urllib.request.Request(endpoint, method='POST',
+                  headers={'User-Agent': 'AMZ.API image-maintenance/1.0', 'Accept': 'application/json'})
               with client.open(request, timeout=30) as response:
                   if response.status != 200 or response.headers.get_content_type() != 'application/json':
                       raise RuntimeError('Image maintenance did not confirm completion')
