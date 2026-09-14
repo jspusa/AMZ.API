@@ -66,3 +66,10 @@ Issue #294；[核准規格](../specs/2026-09-image-one-hour-retention.md)。使�
 - 截至 15:18:48 UTC，固定 GitHub workflow 的 `event=schedule` 查詢仍為零筆；manual caller 的成功與背景清理不替代首個自動 schedule 結果。員工登入後實際下載仍待驗，保持原生操作紀錄與所有備份。
 
 - Version12 線上獨立新 synthetic 圖驗證通過：repo fixture 1,842 bytes，僅一次 PUT200（3,416 ms），同 operation GET200（4,304 ms）及 public GET200（1,388 ms）；原 bytes／hash、no-store、一小時期限全部相符，GET 不續期。15:19:04 UTC fresh Sites 查詢確認 active／public／version12。沒有另行呼叫清理入口、重傳原未知图或執行 Amazon 操作；新 PUT 可能附帶背景清理，小圖成功不冒充完整五 SKU 原生驗收。證據 `nonblocking-live-synthetic.json`。
+
+
+## Version12 後原生接續的最新觀測
+
+- 原生畫面重新可讀後顯示安全環境已更新／批次停止。重新選擇同一四資料夾（36 張、0 待修正），明確準備一次；原生已顯示先前5張準備完成、正在第6張，期限沿用原2026-09-14 16:04:54 UTC。沒有重啟App、清除unknown或重傳原五張，AFA12AM的另一unknown保持原狀。
+- 此階段Worker紀錄為5次operation GET200、7次public GET200、2次新PUT200（3,305／3,346 ms），以及15:26:04 UTC的1次PUT canceled（2,206 ms）。隨後CUA再次明確回報Mac鎖定，無法讀到native終態；最後native直接觀測仍只有5張。不能由Worker的public GET200宣稱36張全部準備或四SKU預檢通過，也沒有正式Amazon寫入或native批准。
+- 接續仍需Mac解鎖並保持螢幕開啟約五分鐘，先查回既有operations，再處理從未嘗試的圖。證據 `four-sku-after-server-fix-native.json` 及 `four-sku-after-server-fix-worker-verification.json`。先前logs取證曾因未公開的100筆上限被connector拒絕；修正為100後才取得有效唯讀查詢，不把早先解析失敗當成零請求。
