@@ -125,3 +125,57 @@
 
 .home-image-minimum { display:inline-flex; align-items:center; gap:8px; color:var(--muted); font-size:13px; }
 .home-image-minimum select { padding:7px 10px; border:1px solid var(--line); border-radius:8px; background:var(--surface); color:var(--ink); }
+
+/* Image thresholds belong inside their audit, not on the home launch surface.
+   Keep the shared preference/launch handlers intact; display:none also removes
+   the redundant home field from keyboard navigation and the accessibility tree. */
+#home-audits .home-section-heading > .home-image-minimum { display: none; }
+
+/* One compact setup row. Only direct children are placed, so result tables,
+   warnings, progress, filters and item actions retain their original layouts. */
+.image-audit-panel {
+  display: grid;
+  row-gap: 12px;
+  grid-template-columns: minmax(0, max-content) minmax(0, 1fr);
+  column-gap: 16px;
+}
+.image-audit-panel > * { grid-column: 1 / -1; }
+.image-audit-panel > .ops-marketplace.image-audit-minimum {
+  grid-column: 1;
+  display: inline-flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-self: start;
+  gap: 8px 12px;
+  width: auto;
+  min-width: 0;
+  max-width: 100%;
+  margin: 0;
+}
+.image-audit-panel > .ops-marketplace.image-audit-minimum > span {
+  margin: 0;
+  line-height: 1.5;
+}
+.image-audit-panel > .ops-marketplace.image-audit-minimum > select {
+  flex: 0 0 6.5rem;
+  width: 6.5rem;
+  min-width: 0;
+  max-width: 100%;
+  min-height: 40px;
+  margin: 0;
+  padding: 8px 12px;
+  border-radius: 10px;
+}
+.image-audit-panel > .price-primary-button {
+  grid-column: 2;
+  justify-self: start;
+  align-self: center;
+  width: auto;
+  min-height: 40px;
+  margin: 0;
+}
+@media (max-width: 680px) {
+  .image-audit-panel { grid-template-columns: minmax(0, 1fr); }
+  .image-audit-panel > .price-primary-button { grid-column: 1; }
+}
