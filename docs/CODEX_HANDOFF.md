@@ -11,7 +11,7 @@
 
 ## 目前狀態
 
-- Issue #290 的 0.1.77 新增資料夾批次圖片更新（30 SKU／300 圖上限、完整替換、一次原生批准及逐筆提交），並把 Supply Boss 圖片改為七天暫存與定期實際清理。使用者已核准資料夾完整圖片組會清除多出的舊圖；規格見 [資料夾批次圖片](specs/2026-09-image-folder-batch.md)，各層發布／安裝狀態以 [交付帳本](releases/2026-09-image-folder-batch.md) 為準。功能驗收不得送真實 Amazon mutation；已接受與回查確認、網址到期與實際釋放空間分開。
+- Issue #290 的 0.1.77 已由 PR #291／runtime `b25901ac47017f0d90b8feaea61b2270477bde72` 發布：資料夾批次圖片支援 30 SKU／300 圖、完整替換與一次原生批准後逐筆提交。4,232 tests、兩軸 review、四條 exact-source CI、Pages 12 檔及兩平台可信產物已核對；Supply Boss version 10 七天 receipt 與公開原圖 bytes 已驗，PR #292 的固定清理 caller 正式 run 已成功。可信 .77 已安裝且 .75 App／userData 備份及 vault／ledger 保留；兩平台下載卡上傳 receipts 已驗；原生畫面讀取逾時，等待使用者處理系統授權，員工頁仍待登入及實際下載驗證。接續[核准規格](specs/2026-09-image-folder-batch.md)與[分層交付帳本](releases/2026-09-image-folder-batch.md)，runtime artifacts 保持 b25901a 來源；功能驗收不送真實 Amazon mutation，網址到期與實際空間釋放分開。
 
 - 2026-09-14 Vine 六欄表格、評論達註冊名額三分之二的綠燈提示及首頁低頻入口已由 PR #287／`7f33210ccf7e3412e9c889b76d5824c928e77462` 獨立發布；4,177 tests、8 組畫面、兩軸 review、正式 Validate／Pages 與線上 12 檔 bytes 均通過。這是 Control Console Release，沒有 Notebook Key 能力或版本變更。[規格](specs/2026-09-vine-table.md)與[本輪交付證據](releases/2026-09-vine-table.md)分開記錄檢查、審查與 Pages 狀態。其他效期／桌面交付工作維持下列原狀態。
 
