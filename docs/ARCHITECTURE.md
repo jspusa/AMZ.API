@@ -201,3 +201,9 @@ Control Console Release 與 Notebook Key Release 分流：renderer 變更推送�
 Server v2 是獨立 namespace、固定額度上限的匿名 image-only PUT／GET，不是員工或裝置認證；UUID 只作冪等操作識別。server 在接收圖片 body 前保留 bounded quota，公開圖片 URL 固定為 `/listing-images/v2/{UUID}/{sha}.{ext}`；v1 圖片驗證、下載、board 與 admin 路徑各自保留原驗證邊界。main 將穩定 context 與圖片 hash 綁定至同一 operation，每個 operation 只 PUT 一次，unknown 只 GET 恢復，`clear()` 不可讓不明結果改用新 operation 重傳。明確未寫入拒絕且已確認不存在，才允許之後使用者重新準備建立新 operation。成功 receipt 的固定 URL／hash／尺寸／型別／大小均須符合原檔，再匿名 bounded GET 核對 bytes，才投影 `readyForAmazon`；額度或網路失敗不回退登入。程序內 operation 保留不能冒充跨 App 重啟的耐久恢復證據。
 
 最後圖片更新仍由 `ListingImageMutations` 與既有 Write Gate 使用與文案相同的 native gate；準備圖片不取得 Amazon 寫入批准。圖片確認頁不重打 SKU，透過 owner snapshot 的 `confirmationMode: "native"` 能力、不透明 `snapshotToken` 與原生摘要核對商品及位置。main 保存 token 對應的 context／SKU／ASIN／Product Type／原圖片，預檢與正式提交均重新核對；renderer 不能指定另一份身分證據，重新查詢會撤銷舊 token。fresh Preview、native approval、durable claim、一次 PATCH 與 canonical readback 保持不變，舊 Notebook Key 缺能力時提示更新。現行規格見 [免登入圖片準備](specs/2026-09-passwordless-image-preparation.md)。
+
+### 資料夾圖片批次與暫存來源
+
+`ListingImageBatchMutations` 持有最多 30 SKU 的 exact context／identity／old-new plan 與 opaque review handle；沿用 `ListingImageMutationOperations` 和 `MainWriteGate`，以 `images-batch` 十五分鐘票證及共用 listing-attribute collision reservation 完成一次原生批准，serial PATCH 後另用最多兩個 GET observer 核對。`ApiRouter` 只有三條 exact route dispatch 與 lifecycle wiring。`LocalImageUpload` 以短效 main-memory registry 綁同帳號／mode／generation／SKU、原檔 bytes 驗證過的公開 URL 及 expiry；批次只允許剩餘至少兩天的已準備來源，單 SKU 新增 Supply Boss URL 也受此 guard。批次回覆不攜帶原檔 base64。
+
+Supply Boss 的七天暫存與固定 maintenance endpoint 由 server 自行判定到期 v1／v2 圖片，caller 不能提供 object key。AMZ.API 的每小時 GitHub Actions 與上傳前清理提供實際刪除 trigger，server delete＋absence 確認才回收 active 配額；compact operation tombstone 不包含圖片 bytes。舊圖片採一次性遷移緩衝；`ACCEPTED` 或 canonical locator 相符不構成提前刪除的依據。詳見[規格](specs/2026-09-image-folder-batch.md)。

@@ -8,7 +8,9 @@ import type {
 import type { RouterRequestContextAdapter } from "./router-request-context";
 import { parseMarketplace, parseSellerSku } from "./route-input";
 import { invalid, json } from "./route-response";
-import { publicListingImagePreparationError, type HostedListingImagePort } from "./hosted-listing-images";
+import { LISTING_IMAGE_SERVICE_ORIGIN, publicListingImagePreparationError, type HostedListingImagePort } from "./hosted-listing-images";
+import type { SpExecutionContext } from "./amazon/sp-execution-context";
+import { SpApiError } from "./amazon/sp-api-error";
 
 type ImageContentType = "image/png" | "image/jpeg";
 
@@ -29,6 +31,15 @@ export interface ImageObjectStorePort {
 
 export interface LocalImageUploadPort {
   uploadImage(request: ApiRequest): Promise<ApiResponse>;
+  clear?(): void;
+  assertPreparedImageUrls?(input: PreparedImageTarget): Promise<void>;
+  assertImagePreparation?(input: PreparedImageTarget & Readonly<{previousUrls: readonly (string | null)[]}>): Promise<void>;
+}
+
+type PreparedImageTarget = Readonly<{urls: readonly (string | null)[]; context: SpExecutionContext; sellerSku: string}>;
+
+function preparationScope(context: SpExecutionContext, sellerSku: string): string {
+  return JSON.stringify([context.accountScope, context.mode, context.region, context.marketplaceId, context.generation, sellerSku]);
 }
 
 export type LocalImageUploadDependencies = Readonly<{
@@ -37,6 +48,7 @@ export type LocalImageUploadDependencies = Readonly<{
   objectStore?: ImageObjectStorePort;
   hostedImages?: HostedListingImagePort;
   uuid?: () => string;
+  now?: () => number;
 }>;
 
 function imageContentType(bytes: Uint8Array): ImageContentType | null {
@@ -184,6 +196,8 @@ export class LocalImageUpload implements LocalImageUploadPort {
   private readonly objectStore: ImageObjectStorePort;
   private readonly uuid: () => string;
   private readonly hostedImages?: HostedListingImagePort;
+  private readonly now: () => number;
+  private readonly preparedImages = new Map<string, {scope:string; expiresAt:number}>();
 
   constructor(input: LocalImageUploadDependencies) {
     this.context = input.context;
@@ -191,6 +205,30 @@ export class LocalImageUpload implements LocalImageUploadPort {
     this.objectStore = input.objectStore ?? createR2ImageObjectStore();
     this.uuid = input.uuid ?? randomUUID;
     this.hostedImages = input.hostedImages;
+    this.now = input.now ?? Date.now;
+  }
+
+  clear(): void { this.preparedImages.clear(); }
+
+  async assertPreparedImageUrls(input: PreparedImageTarget): Promise<void> {
+    await this.context.assertCurrent(input.context);
+    const scope = preparationScope(input.context, input.sellerSku);
+    for (const url of input.urls) {
+      if (url === null) continue;
+      const image = this.preparedImages.get(url);
+      if (!image || image.scope !== scope || image.expiresAt < this.now() + 48 * 3600000) {
+        throw new SpApiError("圖片尚未準備完成或暫存期限不足兩天；請重新準備原始圖片。", {status:409,code:"IMAGE_PREPARATION_EXPIRED"});
+      }
+    }
+  }
+
+  async assertImagePreparation(input: PreparedImageTarget & Readonly<{previousUrls: readonly (string | null)[]}>): Promise<void> {
+    const urls = input.urls.filter((url, index) => {
+      if (url === null || url === input.previousUrls[index]) return false;
+      try { return new URL(url).origin === LISTING_IMAGE_SERVICE_ORIGIN; }
+      catch { return false; } // The image mutation parser rejects invalid URLs.
+    });
+    await this.assertPreparedImageUrls({...input, urls});
   }
 
   async uploadImage(request: ApiRequest): Promise<ApiResponse> {
@@ -204,6 +242,9 @@ export class LocalImageUpload implements LocalImageUploadPort {
     const marketplaceId = parseMarketplace(request.body.fields.marketplaceId);
     const sellerSku = parseSellerSku(request.body.fields.sellerSku);
     const file = request.body.file;
+    const batchMode = request.body.fields.batchMode === "true";
+    if (request.body.fields.batchMode !== undefined && !batchMode) return invalid("圖片批次模式無效。");
+    if (batchMode && !this.hostedImages) return invalid("資料夾批次需要支援自動清理的圖片服務。", 409, "IMAGE_RETENTION_UNAVAILABLE");
     if (
       !marketplaceId ||
       !sellerSku ||
@@ -239,9 +280,9 @@ export class LocalImageUpload implements LocalImageUploadPort {
       .slice(0, 16);
     const extension = contentType === "image/png" ? "png" : "jpg";
     const key = `listing-images/${marketplaceId}/${skuHash}/${this.uuid()}.${extension}`;
-    const previewUrl =
-      `data:${contentType};base64,${Buffer.from(file.bytes).toString("base64")}`;
+    const previewUrl = batchMode ? null : `data:${contentType};base64,${Buffer.from(file.bytes).toString("base64")}`;
     let amazonUrl: string | null = null;
+    let expiresAt: string | null = null;
     if (this.hostedImages) {
       let hosted: Awaited<ReturnType<HostedListingImagePort["prepare"]>>;
       try {
@@ -259,6 +300,14 @@ export class LocalImageUpload implements LocalImageUploadPort {
       }
       await this.context.assertCurrent(context);
       amazonUrl = hosted.url;
+      expiresAt = hosted.expiresAt ?? null;
+      const expiry = expiresAt === null ? NaN : Date.parse(expiresAt);
+      if (Number.isFinite(expiry) && new Date(expiry).toISOString() === expiresAt && expiry > this.now() && expiry <= this.now() + 7 * 86400000 + 60000) {
+        while (this.preparedImages.size >= 1000) this.preparedImages.delete(this.preparedImages.keys().next().value!);
+        this.preparedImages.set(amazonUrl, {scope:preparationScope(context,sellerSku),expiresAt:expiry});
+      } else if (batchMode) {
+        return invalid("圖片服務未提供有效暫存期限；請更新 Notebook Key 與圖片服務後重新準備。", 409, "IMAGE_RETENTION_UNAVAILABLE");
+      }
     } else {
       // Compatibility for compositions that explicitly provide their own R2
       // store. Production hosted preparation never reads encrypted settings.
@@ -302,9 +351,10 @@ export class LocalImageUpload implements LocalImageUploadPort {
       width: dimensions.width,
       height: dimensions.height,
       contentType,
+      expiresAt,
       readyForAmazon: Boolean(amazonUrl),
       notice: amazonUrl
-        ? "圖片已準備完成，可安全預檢；確認送出後仍需等待 Amazon 下載與驗證。"
+        ? expiresAt ? "圖片僅暫存 7 天，到期由定期清理工作刪除；請在本次工作完成核對，送出後仍需等待 Amazon 下載與驗證。" : "圖片已準備完成，可安全預檢；確認送出後仍需等待 Amazon 下載與驗證。"
         : "圖片已在這台電腦完成格式與像素檢查；設定自己的 R2 公開網域後即可一鍵送交 Amazon。",
     });
   }

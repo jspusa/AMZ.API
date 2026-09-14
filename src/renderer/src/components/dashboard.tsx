@@ -779,6 +779,7 @@ export default function Dashboard({
   >({});
   const [imageWorkspaceTab, setImageWorkspaceTab] =
     useState<ImageWorkspaceTab>("single");
+  const [imageToolBusy, setImageToolBusy] = useState(false);
   const [imageAuditCache, setImageAuditCache] = useState<
     Record<string, ImageAuditCache>
   >({});
@@ -2151,6 +2152,7 @@ export default function Dashboard({
       : activeAuditWorkspace === "advertising" ? "operations" : "product"
     : null;
   const homeReturnLocked = (openTool === "variations" && variationWorkspaceBusy) ||
+    (openTool === "images" && imageToolBusy) ||
     (Boolean(activeAuditWorkspace) && auditWorkspaceBusy);
 
   const scrollTo = (id: string) => document.getElementById(id)?.scrollIntoView({
@@ -2163,6 +2165,7 @@ export default function Dashboard({
     setCommandOpen(false);
     setOpenTool(null);
     setVariationWorkspaceBusy(false);
+    setImageToolBusy(false);
     setAuditWorkspaceBusy(false);
     setReturnToUnboundVariationAudit(false);
     setActiveAuditWorkspace(null);
@@ -2746,7 +2749,7 @@ export default function Dashboard({
       {openTool === "inbound" && <InboundShipmentsDrawer marketplaceId={marketplaceId} marketplaceShort={marketplace.shortLabel} marketplaceTimeZone={marketplace.timeZone} cachedResult={currentInboundShipment} onCachedResultChange={cacheInboundShipment} onClose={() => setOpenTool(null)} />}
       {openTool === "restock" && <ReplenishmentDrawer initialMarketplaceId={marketplaceId} initialSellerSku={globalSku} onContextResolved={resolveGlobalContext} onClose={() => setOpenTool(null)} />}
       {openTool === "copy" && <SkuOperationsDrawer initialMarketplaceId={marketplaceId} initialSellerSku={globalSku} initialTab={contentWorkspaceTab} auditCacheByMarketplace={contentAuditCacheForDrawer} onAuditCacheChange={cacheContentAudit} auditMode={currentStandaloneMode} auditJob={currentContentDrawerJob} onAuditJobChange={cacheStandaloneAuditJob} onContextResolved={resolveGlobalContext} onClose={() => setOpenTool(null)} />}
-      {openTool === "images" && <ImageWorkspaceDrawer minimumImages={imageAuditMinimumImages} onMinimumImagesChange={changeImageAuditMinimumImages} initialMarketplaceId={marketplaceId} initialSellerSku={globalSku} initialTab={imageWorkspaceTab} auditCacheByMarketplace={imageAuditCacheForDrawer} onAuditCacheChange={cacheImageAudit} auditMode={currentStandaloneMode} auditJob={currentImageDrawerJob} onAuditJobChange={cacheStandaloneAuditJob} onContextResolved={resolveGlobalContext} onClose={() => setOpenTool(null)} />}
+      {openTool === "images" && <ImageWorkspaceDrawer minimumImages={imageAuditMinimumImages} onMinimumImagesChange={changeImageAuditMinimumImages} initialMarketplaceId={marketplaceId} initialSellerSku={globalSku} initialTab={imageWorkspaceTab} auditCacheByMarketplace={imageAuditCacheForDrawer} onAuditCacheChange={cacheImageAudit} auditMode={currentStandaloneMode} auditJob={currentImageDrawerJob} onAuditJobChange={cacheStandaloneAuditJob} onContextResolved={resolveGlobalContext} onBusyChange={setImageToolBusy} onClose={() => { if (!imageToolBusy) setOpenTool(null); }} />}
       {openTool === "a-plus" && (
         <AplusAuditDrawer
           marketplaceId={marketplaceId}

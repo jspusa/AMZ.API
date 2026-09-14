@@ -69,6 +69,13 @@ export interface ListingImageMutationOperations {
   ): Promise<ListingImageUpdateResult>;
 }
 
+export type ListingImagePreparationAssertion = (input: Readonly<{
+  urls: readonly (string | null)[];
+  previousUrls: readonly (string | null)[];
+  context: SpExecutionContext;
+  sellerSku: string;
+}>) => Promise<void>;
+
 type ImageTargetIdentity = Readonly<{ asin: string; productType: string }>;
 type BoundListingImageInput = UpdateListingImagesInput & Readonly<{
   // Only the main-owned snapshot registry supplies this constraint.
@@ -149,10 +156,13 @@ function assertCanonicalObservation(
       image.attributeName === IMAGE_ATTRIBUTE_NAMES[index] &&
       image.capability.attributeName === IMAGE_ATTRIBUTE_NAMES[index]
     );
+  if (snapshot.mode !== mode || snapshot.marketplaceId !== identity.marketplaceId) {
+    throw new SpApiError("Amazon 圖片回應不屬於目前的站點或執行模式，已停止使用。", {
+      status: 409, code: "SP_CONTEXT_INVALIDATED",
+    });
+  }
   if (
     observation.fulfillment !== "FBA" ||
-    snapshot.mode !== mode ||
-    snapshot.marketplaceId !== identity.marketplaceId ||
     snapshot.sellerSku !== identity.sellerSku ||
     typeof snapshot.asin !== "string" ||
     !/^[A-Z0-9]{10}$/u.test(snapshot.asin) ||
@@ -773,6 +783,7 @@ export class ListingImageMutations implements ListingImageMutationsPort {
   private readonly context: SpExecutionContextAdapter;
   private readonly writeGate: MainWriteGatePort;
   private readonly operations: ListingImageMutationOperations;
+  private readonly assertImagePreparation?: ListingImagePreparationAssertion;
   private readonly snapshots = new Map<string, ImageSnapshotBinding>();
   private snapshotRevision = 0;
 
@@ -780,10 +791,12 @@ export class ListingImageMutations implements ListingImageMutationsPort {
     context: SpExecutionContextAdapter;
     writeGate: MainWriteGatePort;
     operations: ListingImageMutationOperations;
+    assertImagePreparation?: ListingImagePreparationAssertion;
   }>) {
     this.context = input.context;
     this.writeGate = input.writeGate;
     this.operations = input.operations;
+    this.assertImagePreparation = input.assertImagePreparation;
   }
 
   clear(): void {
@@ -949,6 +962,8 @@ export class ListingImageMutations implements ListingImageMutationsPort {
     try {
       const context = await this.context.capture(input.marketplaceId);
       const bound = await this.bindSnapshot(input, context);
+      await this.assertImagePreparation?.({ urls: bound.urls, previousUrls: bound.expectedUrls, context, sellerSku: bound.sellerSku });
+      await this.context.assertCurrent(context);
       const result = await this.operations.preview(bound);
       await this.context.assertCurrent(context);
       await this.bindSnapshot(input, context);
@@ -979,7 +994,11 @@ export class ListingImageMutations implements ListingImageMutationsPort {
         binding: this.binding(bound, context, key),
         approvalReason: (verificationCode) =>
           `確認圖片｜${marketplaceCode(input.marketplaceId)} ${input.sellerSku}｜位置 ${changedSlots.join("、")}｜驗證碼 ${verificationCode}`,
-        beforeApproval: async () => { await this.bindSnapshot(input, context); },
+        beforeApproval: async () => {
+          await this.bindSnapshot(input, context);
+          await this.assertImagePreparation?.({ urls: bound.urls, previousUrls: bound.expectedUrls, context, sellerSku: bound.sellerSku });
+          await this.context.assertCurrent(context);
+        },
         run: async (session) => {
           await this.bindSnapshot(input, context);
           return session.attempt({
@@ -991,6 +1010,8 @@ export class ListingImageMutations implements ListingImageMutationsPort {
                 return this.operations.commit(bound, { assertCurrent: async () => {
                   await assertCurrent();
                   await this.bindSnapshot(input, context);
+                  await this.assertImagePreparation?.({ urls: bound.urls, previousUrls: bound.expectedUrls, context, sellerSku: bound.sellerSku });
+                  await assertCurrent();
                 } });
               },
               onAccepted: recordAccepted,
@@ -1017,10 +1038,12 @@ export function createListingImageMutations(input: Readonly<{
   context: SpExecutionContextAdapter;
   writeGate: MainWriteGatePort;
   gateway: ListingImageGateway;
+  assertImagePreparation?: ListingImagePreparationAssertion;
 }>): ListingImageMutationsPort {
   return new ListingImageMutations({
     context: input.context,
     writeGate: input.writeGate,
     operations: createListingImageMutationOperations(input.gateway),
+    assertImagePreparation: input.assertImagePreparation,
   });
 }

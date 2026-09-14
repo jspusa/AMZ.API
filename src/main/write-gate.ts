@@ -21,6 +21,7 @@ export type WritePreviewFamily =
   | "standard-price"
   | "content"
   | "images"
+  | "images-batch"
   | "sale-price"
   | "content-batch";
 
@@ -232,6 +233,7 @@ const OPERATIONS_BY_FAMILY: Readonly<
   "standard-price": new Set(["price"]),
   content: new Set(["content"]),
   images: new Set(["images"]),
+  "images-batch": new Set(["images"]),
   "sale-price": new Set(["sale_price"]),
   "content-batch": new Set(["content"]),
 };
@@ -286,11 +288,12 @@ function usesListingAttributeReservations(family: WritePreviewFamily): boolean {
     family === "sale-price" ||
     family === "content" ||
     family === "images" ||
+    family === "images-batch" ||
     family === "content-batch";
 }
 
 function previewTtl(family: WritePreviewFamily): number {
-  return family === "content-batch"
+  return family === "content-batch" || family === "images-batch"
     ? CONTENT_BATCH_PREVIEW_TTL_MS
     : STANDARD_PREVIEW_TTL_MS;
 }

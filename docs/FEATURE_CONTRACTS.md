@@ -79,3 +79,9 @@
 
 - 拖入、上傳及準備圖片不要求登入、密碼、Touch ID 或 Windows Hello。Production main 預設先使用 `HostedListingImages` v2，不讀圖片登入資料或 R2 vault；只有未提供 hosted owner 的 composition 才保留 custom R2 port，不因 hosted 失敗而切換。專用登入／vault owner 與 IPC 退休，但既有圖片登入加密檔不讀取、不解密、不刪除。匿名 v2 僅提供固定額度內的 image-only PUT／GET，公開 URL 固定綁 UUID／hash；UUID 不是員工或裝置認證，v1 圖片、下載、公布欄及 admin 的原驗證邊界保留。上傳結果不明只 GET 查詢既有操作，不因 context 清除而重傳；匿名讀回原檔 bytes 核對後才可用於預檢，額度或網路錯誤明示停止，不要求登入。完整規格見 [免登入圖片準備](specs/2026-09-passwordless-image-preparation.md)。
 - 圖片確認頁顯示 exact SKU／ASIN 與變更位置，不要求重打 SKU；main 以自身保存的查詢憑據綁定 exact context／SKU／ASIN／Product Type 與原圖片，renderer 只回傳不透明識別值。預檢及正式提交重新核對，重新查詢撤銷舊憑據；只有最後 Amazon 更新才使用與文案相同的 native gate。main 仍核對 fresh Preview、context／identity／PTD、原生授權及 durable claim，保留一次 PATCH 與 canonical readback；圖片準備不授權 Amazon mutation。缺少此能力的舊 Notebook Key 明示升級提示。現行規格見 [免登入圖片準備](specs/2026-09-passwordless-image-preparation.md)；原始直接上傳與確認的需求沿革保留於 [直接上傳、效期與 Vine 修正](specs/2026-09-direct-images-expiry-vine.md)及 [圖片生物辨識與確認](specs/2026-09-image-biometric-confirmation.md)。
+
+## 資料夾圖片批次與暫存清理
+
+[完整規格](specs/2026-09-image-folder-batch.md)固定每批最多 30 個商品資料夾／exact SKU，每 SKU 最多 10 張、總計最多 300 張；以每資料夾完整圖片組替換並揭露清除位置。圖位仍由 seller-specific PTD 證明。錯誤或歧義列不能自動猜測，安全列可獨立核對；一次原生批准只涵蓋已預檢且未漂移的 exact intents，serial PATCH、accepted 與 GET-only verified 分離，unknown 不重送。
+
+Supply Boss 圖片只暫存七天，新準備與確認必須核對有效 expiry；剩餘不足兩天即重新準備。legacy 圖片只有一次七天遷移緩衝。固定每小時維護工作和新上傳前清理只刪除到期圖片，確認實體不存在後回收容量；網址過期不冒充清理已完成。排程／服務中斷保留失敗證據，不能顯示釋放成功；本機與 OneDrive 原檔不修改。既有單 SKU 工作保留，新分頁缺 Notebook Key 能力時提示更新。

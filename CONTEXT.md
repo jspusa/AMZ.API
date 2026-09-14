@@ -89,3 +89,11 @@ _Avoid_: Amazon deactivation date, replacement expiry date
 **Promotion Date Range**:
 The inclusive start and end dates of one operator-entered Amazon promotion announcement; a one-day promotion uses the same date for both endpoints.
 _Avoid_: single promotion date, one calendar marker per day
+
+**Folder Image Batch**:
+A main-owned, exact-context proposal for complete image replacement on at most 30 Seller SKUs, prepared from one numbered image set per product folder and approved once for its fixed write intents.
+_Avoid_: variation mutation, account-wide upload, repeated single-SKU approval
+
+**Temporary Image Source**:
+A byte-verified Supply Boss image URL available for seven days so Amazon can retrieve the file; its expiry is distinct from the scheduled deletion of the underlying object and from Amazon acceptance or canonical confirmation.
+_Avoid_: permanent image library, completed Amazon download, immediate deletion on acceptance
