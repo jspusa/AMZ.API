@@ -11,7 +11,7 @@
 
 ## 目前狀態
 
-- 2026-09-14 Vine 六欄表格、評論達註冊名額三分之二的綠燈提示及首頁低頻入口為獨立 Control Console Release；沒有 Notebook Key 能力或版本變更。[規格](specs/2026-09-vine-table.md)與[本輪交付證據](releases/2026-09-vine-table.md)分開記錄檢查、審查與 Pages 狀態。其他效期／桌面交付工作維持下列原狀態。
+- 2026-09-14 Vine 六欄表格、評論達註冊名額三分之二的綠燈提示及首頁低頻入口已由 PR #287／`7f33210ccf7e3412e9c889b76d5824c928e77462` 獨立發布；4,177 tests、8 組畫面、兩軸 review、正式 Validate／Pages 與線上 12 檔 bytes 均通過。這是 Control Console Release，沒有 Notebook Key 能力或版本變更。[規格](specs/2026-09-vine-table.md)與[本輪交付證據](releases/2026-09-vine-table.md)分開記錄檢查、審查與 Pages 狀態。其他效期／桌面交付工作維持下列原狀態。
 
 - Issue #285 接續完整 #263：.75 的 36 次 metadata 失敗沒有證明獨立 plan-items 不可讀。官方契約允許由 fresh list summary 直接讀取計畫申報商品，0.1.76 已實作精確固定 metadata 400 的獨立備援；已保存且 fresh revision 相同的 .75 失敗將直接讀尚未嘗試的商品，不重送 metadata。申報來源完整與貨件明細未核對分開，餘量未知仍不進行事曆。規格見 [計畫申報效期備援](specs/2026-09-plan-declared-expiry-fallback.md)。開工 source `633be5e64c616c560a06d68c85aae6a77585a23d`；本輪工作在 `codex/expiry-plan-item-recovery-20260914`。本機 check 329 files／4,175 tests、audit 0 已通過；兩軸審查與發行依[本輪帳本](releases/2026-09-plan-declared-expiry-fallback.md)接續。實際安裝仍 .75，.76 尚未完成發行或 live 驗收，以下 .75 證據保留。
 
