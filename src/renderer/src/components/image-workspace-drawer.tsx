@@ -1,6 +1,7 @@
 "use client";
 
 import ImageBatchImport, { type ImageUploadOutcome } from "./image-batch-import";
+import ImageFolderWorkspace from "./image-folder-workspace";
 import AuditItemNavigation from "./audit-item-navigation";
 
 /* eslint-disable @next/next/no-img-element -- arbitrary authenticated R2/CDN previews cannot use a fixed Next image host */
@@ -28,7 +29,7 @@ import AuditWorkspaceShell, {
   type AuditSurfacePresentation,
 } from "./audit-workspace-shell";
 
-export type ImageWorkspaceTab = "single" | "audit";
+export type ImageWorkspaceTab = "single" | "audit" | "folders";
 
 type ImageCapability = {
   attributeName: string;
@@ -171,10 +172,12 @@ export default function ImageWorkspaceDrawer({
   const [batchPositions, setBatchPositions] = useState<Array<{ file: File; index: number }>>([]);
   const [batchId, setBatchId] = useState(0);
   const [batchProcessing, setBatchProcessing] = useState(false);
+  const [folderProcessing, setFolderProcessing] = useState(false);
+  const [folderOpened, setFolderOpened] = useState(initialTab === "folders");
   const uploadContextRef = useRef(0);
   const uploadBusyRef = useRef(false);
   const activeUploadRef = useRef<{ file: File; index: number; controller: AbortController } | null>(null);
-  const busy = actionLoading || batchProcessing || assets.some(asset => asset.uploading);
+  const busy = actionLoading || batchProcessing || folderProcessing || assets.some(asset => asset.uploading);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const fileTargetRef = useRef<number | undefined>(undefined);
   const autoLookupRef = useRef(false);
@@ -348,6 +351,7 @@ export default function ImageWorkspaceDrawer({
       return false;
     }
     if (tab === "audit" && nextTab === "single") setReturnToAudit(true);
+    if (nextTab === "folders") setFolderOpened(true);
     setTab(nextTab);
     return true;
   };
@@ -660,7 +664,7 @@ export default function ImageWorkspaceDrawer({
     <AuditWorkspaceShell
       presentation={presentation}
       eyebrow="LISTING MEDIA · FBA ONLY"
-      title={tab === "audit" ? "全站圖片健檢" : "商品圖片"}
+      title={tab === "audit" ? "全站圖片健檢" : tab === "folders" ? "資料夾批次圖片更新" : "商品圖片"}
       closeLabel="關閉圖片工作區"
       surfaceClassName="image-workspace-drawer"
       busy={busy}
@@ -694,9 +698,28 @@ export default function ImageWorkspaceDrawer({
               >
                 全站圖片健檢
               </button>
+              <button
+                id="image-folders-tab"
+                type="button"
+                role="tab"
+                aria-selected={tab === "folders"}
+                aria-controls="image-folders-panel"
+                className={tab === "folders" ? "active" : ""}
+                onClick={() => changeTab("folders")}
+                disabled={busy}
+              >
+                資料夾批次更新
+              </button>
             </div>
           </>
         )}
+
+        {folderOpened && <div id="image-folders-panel" role="tabpanel" aria-labelledby="image-folders-tab" hidden={tab !== "folders"}>
+          <label className="image-folder-marketplace"><span>Amazon 站點</span><select aria-label="資料夾批次 Amazon 站點" value={marketplaceId} disabled={busy} onChange={event => reset(event.target.value)}>
+            {MARKETPLACES.map(item => <option key={item.id} value={item.id}>{marketplaceSelectLabel(item)}</option>)}
+          </select></label>
+          <ImageFolderWorkspace key={marketplaceId} marketplaceId={marketplaceId} onBusyChange={setFolderProcessing} />
+        </div>}
 
         {tab === "single" && returnToAudit && <AuditItemNavigation skus={editorQueue} currentSku={snapshot?.sellerSku ?? skuInput}
           disabled={loading || actionLoading || assets.some(asset => asset.uploading)}

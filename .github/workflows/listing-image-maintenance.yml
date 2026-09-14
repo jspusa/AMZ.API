@@ -1,0 +1,61 @@
+name: Clean expired listing images
+
+on:
+  schedule:
+    - cron: '23 * * * *'
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: listing-image-maintenance
+  cancel-in-progress: false
+
+jobs:
+  clean:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Delete only expired temporary listing images
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          import time
+          import urllib.request
+
+          endpoint = 'https://supply-boss.brave-prawn-0848.chatgpt.site/api/listing-images/maintenance'
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, req, fp, code, msg, headers, newurl):
+                  return None
+          client = urllib.request.build_opener(NoRedirect)
+          removed = 0
+          released = 0
+          # Fifty objects per namespace/page: cover the full 10,000-image cap
+          # in one run, with extra room for legacy objects and delayed writes.
+          for batch in range(256):
+              # No credentials, body, query, object key, or caller-selected path.
+              request = urllib.request.Request(endpoint, method='POST')
+              with client.open(request, timeout=30) as response:
+                  if response.status != 200 or response.headers.get_content_type() != 'application/json':
+                      raise RuntimeError('Image maintenance did not confirm completion')
+                  body = response.read(16385)
+              if len(body) > 16384:
+                  raise RuntimeError('Image maintenance response exceeded its limit')
+              result = json.loads(body)
+              if result.get('ok') is not True or result.get('policy') != 'temporary-7-days':
+                  raise RuntimeError('Image retention policy was not confirmed')
+              for key in ('deletedObjects', 'deletedBytes'):
+                  if type(result.get(key)) is not int or result[key] < 0:
+                      raise RuntimeError('Image maintenance counters were invalid')
+              if type(result.get('hasMore')) is not bool:
+                  raise RuntimeError('Image maintenance progress was invalid')
+              removed += result['deletedObjects']
+              released += result['deletedBytes']
+              if not result['hasMore']:
+                  print(f'Expired images deleted: {removed}; bytes released: {released}')
+                  break
+              time.sleep(1.2)
+          else:
+              raise RuntimeError('Image maintenance backlog remains; inspect the service before claiming cleanup completed')
+          PY

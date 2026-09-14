@@ -6,6 +6,9 @@ type ImageType = "image/png" | "image/jpeg";
 
 /** Fixed public vocabulary only; upstream messages are never returned verbatim. */
 export function publicListingImagePreparationError(error: unknown): Readonly<{ code: string; message: string; status: number }> {
+  if (error instanceof ImageServiceResponseError && error.status === 410) {
+    return { code: "IMAGE_PREPARATION_EXPIRED", message: "暫存圖片已到期；請重新準備原始檔案，再核對更新。", status: 410 };
+  }
   if (error instanceof ImageServiceResponseError && error.status === 429) {
     return { code: "IMAGE_SERVICE_BUSY", message: "圖片服務目前忙碌或已達準備上限；檔案仍保留在工作台，請稍後再準備。", status: 429 };
   }
@@ -19,18 +22,19 @@ export interface HostedListingImagePort {
   prepare(input: Readonly<{
     bytes: Uint8Array; contentType: ImageType; width: number; height: number;
     contextKey: string; assertCurrent(): Promise<void>;
-  }>): Promise<Readonly<{ url: string; key: string }>>;
+  }>): Promise<Readonly<{ url: string; key: string; expiresAt?: string }>>;
 }
 
 /** Fixed image-only preparation service. No credential or native approval capability. */
 export class HostedListingImages implements HostedListingImagePort {
   private generation = 0;
   private controllers = new Set<AbortController>();
-  private operations = new Map<string, { id: string; verified: boolean; rejected: boolean }>();
+  private operations = new Map<string, { id: string; verified: boolean; rejected: boolean; expiresAt?: number }>();
 
   constructor(private readonly input: Readonly<{
     fetch?: typeof fetch;
     uuid?: () => string;
+    now?: () => number;
   }> = {}) {}
 
   clear(): void {
@@ -86,7 +90,7 @@ export class HostedListingImages implements HostedListingImagePort {
     return value as Record<string, unknown>;
   }
 
-  async prepare(input: Parameters<HostedListingImagePort["prepare"]>[0]): Promise<Readonly<{ url: string; key: string }>> {
+  async prepare(input: Parameters<HostedListingImagePort["prepare"]>[0]): ReturnType<HostedListingImagePort["prepare"]> {
     const generation = this.generation;
     const fence = async (): Promise<void> => {
       await input.assertCurrent();
@@ -101,6 +105,12 @@ export class HostedListingImages implements HostedListingImagePort {
     const sha256 = createHash("sha256").update(input.bytes).digest("hex");
     const identity = createHash("sha256").update(JSON.stringify([input.contextKey, sha256])).digest("hex");
     let existing = this.operations.get(identity);
+    if (existing?.verified && existing.expiresAt !== undefined && existing.expiresAt < (this.input.now ?? Date.now)() + 48 * 3600000) {
+      // This explicit preparation can replace a previously verified source with
+      // insufficient retention. Unknown uploads still remain GET-only.
+      this.operations.delete(identity);
+      existing = undefined;
+    }
     let recovered: Record<string, unknown> | undefined;
     if (existing?.rejected) {
       try {
@@ -129,6 +139,12 @@ export class HostedListingImages implements HostedListingImagePort {
       }, (response) => this.receipt(response)) as Record<string, unknown>;
     } catch (error) {
       await fence();
+      if (existing && error instanceof ImageServiceResponseError && error.status === 410) {
+        // Explicit server expiry is terminal for this upload operation. A later
+        // user preparation may create a new operation; this call never re-PUTs.
+        this.operations.delete(identity);
+        throw error;
+      }
       if (existing) throw error;
       operation.rejected = error instanceof ImageServiceResponseError && [400, 413, 415, 422, 429].includes(error.status);
       // A lost PUT response is resolved only by GET, including subsequent preparation attempts.
@@ -148,6 +164,14 @@ export class HostedListingImages implements HostedListingImagePort {
     const publicPath = `/listing-images/v2/${operation.id}/${sha256}.${extension}`;
     const url = LISTING_IMAGE_SERVICE_ORIGIN + publicPath;
     if (result.operationId !== operation.id || result.sha256 !== sha256 || result.size !== input.bytes.length || result.width !== input.width || result.height !== input.height || result.contentType !== input.contentType || result.url !== url) throw new Error("圖片服務回傳的檔案與原檔不一致。");
+    const expiresAt = result.expiresAt;
+    if (expiresAt !== undefined) {
+      const now = (this.input.now ?? Date.now)();
+      const expiry = typeof expiresAt === "string" ? Date.parse(expiresAt) : NaN;
+      if (!Number.isFinite(expiry) || new Date(expiry).toISOString() !== expiresAt || expiry <= now || expiry > now + 7 * 86400000 + 60000) {
+        throw new Error("圖片暫存期限無效或已到期，請重新準備。");
+      }
+    }
     await this.request(publicPath, { method: "GET" }, async (response) => {
       if (!response.ok || response.headers.get("content-type") !== input.contentType) throw new Error("圖片尚無法公開讀取，請再次準備圖片以確認。");
       const bytes = await this.bounded(response, MAX_BYTES);
@@ -156,6 +180,7 @@ export class HostedListingImages implements HostedListingImagePort {
     });
     await fence();
     operation.verified = true;
-    return { url, key: operation.id };
+    if (typeof expiresAt === "string") operation.expiresAt = Date.parse(expiresAt);
+    return { url, key: operation.id, ...(typeof expiresAt === "string" ? {expiresAt} : {}) };
   }
 }

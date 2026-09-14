@@ -87,3 +87,9 @@ Production main 預設先使用 `HostedListingImages` 的固定 Supply Boss v2 �
 Server v2 是有固定額度上限的匿名 image-only 服務，不是員工或裝置身分驗證。main 只向固定 `/api/listing-images/v2/{UUIDv4}` PUT／GET；UUID 只識別冪等操作，不是登入 token，請求不帶帳號、Seller SKU、Amazon 憑證或 Authorization。server 先保留 bounded quota，再接收受限 JPEG／PNG bytes；圖片 metadata、hash 與大小須符合內容。公開圖片僅使用固定 `/listing-images/v2/{UUID}/{sha}.{ext}`，不接受 renderer 指定 bucket、路徑或第三方來源，v2 namespace 不能讀取下載檔、公告或安全紀錄。既有 v1 圖片驗證路由、下載、board 與 snapshot-admin 驗證邊界保留，不因新增匿名 v2 放寬。
 
 每個操作只 PUT 一次；保存結果不明只 GET 查詢既有操作，不自動重傳或因 context 清除而建立另一個操作。main 以原檔的型別／尺寸／大小／hash 核對 receipt，再匿名 bounded GET 驗證精確 bytes，成功後才開放 Amazon 預檢。最後 Amazon 更新仍由與文案相同的 native gate，配合 main 的 exact Write Binding、fresh Preview、原生 SKU／位置摘要及 durable claim 授權一次 PATCH，不要求重打 SKU。完整規格見 [免登入圖片準備](docs/specs/2026-09-passwordless-image-preparation.md)。
+
+## 資料夾批次及有限期圖片來源
+
+資料夾批次固定最多 30 個 exact SKU／300 圖；main 自行取得 FBA／ASIN／Product Type／seller-specific PTD 與原圖片，不接受 renderer 提供的身分或省略舊圖證據。完整替換與刪除範圍必須顯示並包含在不可變 preview binding；單次 native approval 只涵蓋這份 plan。`images-batch` 共享圖片 collision／durable ledger，unknown／accepted recovery 維持 GET-only。圖片準備在同 context／SKU／bytes／expiry 綁定，context invalidation 清除準備授權但不清除 unknown upload 或 Amazon write evidence。
+
+圖片服務到期七天停止提供來源；固定 maintenance 只可刪除 server 已判定到期的 v1／v2 圖片，無任意 key、credential、bucket 或 URL 接口。下載、公告、安全紀錄與本機原檔不在清理範圍。先確認實體刪除，再回收 active bytes／object 額度；小型 UUID tombstone 保留不可重用紀錄，不能把 lifetime 累計上傳量當作現存圖片容量。來源期限、排程實體清理與 Amazon 寫入證據分別處理，不因到期或清理自動重送 Amazon。

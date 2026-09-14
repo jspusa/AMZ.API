@@ -16,7 +16,7 @@ const receipt = {operationId:ID,sha256,url,width:1000,height:1000,size:bytes.len
 const data = () => ({bytes,contentType:"image/png" as const,width:1000,height:1000,contextKey:"test-account-US-SKU",assertCurrent:vi.fn(async()=>{})});
 const json = (value: unknown) => Response.json(value);
 
-function fixture(options: {lostPut?: boolean; publicStatus?: number; wrongBytes?: boolean; afterPut?: () => void; badReceipt?: boolean} = {}) {
+function fixture(options: {lostPut?: boolean; publicStatus?: number; wrongBytes?: boolean; afterPut?: () => void; badReceipt?: boolean; expiresAt?: string} = {}) {
   const calls: {path:string;method:string;headers:Headers}[] = [];
   const transport = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
     const path = new URL(String(input)).pathname;
@@ -26,7 +26,7 @@ function fixture(options: {lostPut?: boolean; publicStatus?: number; wrongBytes?
     expect(init?.credentials).toBe("omit");
     if (path.startsWith("/api/")) {
       if (method === "PUT") { options.afterPut?.(); if (options.lostPut) throw new Error("response lost"); }
-      return json(options.badReceipt ? {...receipt,url:"https://untrusted.test/image.png"} : receipt);
+      return json(options.badReceipt ? {...receipt,url:"https://untrusted.test/image.png"} : {...receipt, ...(options.expiresAt ? {expiresAt: options.expiresAt} : {})});
     }
     return new Response(Buffer.from(options.wrongBytes?new Uint8Array(32):bytes),{status:options.publicStatus ?? 200,headers:{"content-type":"image/png"}});
   });
@@ -35,6 +35,33 @@ function fixture(options: {lostPut?: boolean; publicStatus?: number; wrongBytes?
 }
 
 describe("dedicated hosted image preparation",()=>{
+  it("prepares a fresh source on an explicit request when a verified image has less than two days left", async () => {
+    let now = Date.parse("2026-09-14T00:00:00.000Z");
+    const nextId = "22222222-2222-4222-8222-222222222222";
+    const ids = [ID, nextId];
+    const records = new Map<string, object>();
+    const transport = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const path = new URL(String(input)).pathname;
+      if (!path.startsWith("/api/")) return new Response(bytes, {headers:{"content-type":"image/png"}});
+      const id = path.split("/").at(-1)!;
+      if (init?.method === "PUT") records.set(id, {...receipt,operationId:id,url:`${ORIGIN}/listing-images/v2/${id}/${sha256}.png`,expiresAt:new Date(now + 7 * 86400000).toISOString()});
+      return json(records.get(id));
+    });
+    const service = new HostedListingImages({fetch:transport as typeof fetch,uuid:()=>ids.shift()!,now:()=>now});
+    await expect(service.prepare(data())).resolves.toMatchObject({key:ID});
+    now += 5 * 86400000 + 1;
+    await expect(service.prepare(data())).resolves.toMatchObject({key:nextId,expiresAt:new Date(now + 7 * 86400000).toISOString()});
+    expect(transport.mock.calls.filter(([, init])=>init?.method === "PUT")).toHaveLength(2);
+  });
+  it("returns the server expiry only after validating the temporary image and bytes", async () => {
+    const expiresAt = new Date(Date.now() + 7 * 86400000).toISOString();
+    const f = fixture({expiresAt});
+    await expect(f.service.prepare(data())).resolves.toEqual({url, key:ID, expiresAt});
+  });
+  it.each(["not-a-date", "2020-01-01T00:00:00.000Z", "2099-01-01T00:00:00.000Z"])("rejects invalid or expired temporary receipts: %s", async expiresAt => {
+    const f = fixture({expiresAt});
+    await expect(f.service.prepare(data())).rejects.toThrow();
+  });
   it("allows no-R2 local upload to return a byte-verified public image with no Amazon call",async()=>{
     const f=fixture();
     const route = new LocalImageUpload({
@@ -144,6 +171,24 @@ describe("dedicated hosted image preparation",()=>{
 });
 
 describe("public local image preparation diagnostics", () => {
+  it("keeps temporary batch preparation bound to the exact SKU and context without returning base64", async () => {
+    const expiresAt = new Date(Date.now() + 7 * 86400000).toISOString();
+    const f = fixture({expiresAt});
+    const context = createRouterRequestContextAdapter(createScriptedSpExecutionContextAdapter(marketplaceId => ({marketplaceId, mode:"demo", accountScope:"fixture-account"})));
+    const route = new LocalImageUpload({context, vault:{getImageStorage:async()=>null}, hostedImages:f.service});
+    const response = await route.uploadImage({requestId:"batch-preparation",method:"POST",path:"/api/uploads/listing-images",query:{},headers:{},body:{kind:"multipart",fields:{marketplaceId:"ATVPDKIKX0DER",sellerSku:"TEST-IMAGE-SKU",batchMode:"true"},file:{name:"TEST-IMAGE-SKU_01.png",type:"image/png",bytes}}});
+    expect(response.status).toBe(200);
+    expect(response.body.kind === "json" && response.body.value).toMatchObject({amazonUrl:url, expiresAt, previewUrl:null});
+    expect(JSON.stringify(response.body)).not.toContain("base64");
+    const current = await context.capture("ATVPDKIKX0DER");
+    await expect(route.assertPreparedImageUrls({urls:[url],context:current,sellerSku:"TEST-IMAGE-SKU"})).resolves.toBeUndefined();
+    await expect(route.assertPreparedImageUrls({urls:[url],context:current,sellerSku:"DIFFERENT-SKU"})).rejects.toThrow();
+    for (const disguised of [url.replace("supply-boss", "SUPPLY-BOSS"), url.replace(".site/", ".site:443/")]) {
+      await expect(route.assertImagePreparation({urls:[disguised],previousUrls:[null],context:current,sellerSku:"TEST-IMAGE-SKU"})).rejects.toThrow();
+    }
+    route.clear();
+    await expect(route.assertPreparedImageUrls({urls:[url],context:current,sellerSku:"TEST-IMAGE-SKU"})).rejects.toThrow();
+  });
   it("does not return private upstream details or request login", async () => {
     const route=new LocalImageUpload({
       context:createRouterRequestContextAdapter(createScriptedSpExecutionContextAdapter(marketplaceId=>({marketplaceId,mode:"demo",accountScope:"fixture-account"}))),

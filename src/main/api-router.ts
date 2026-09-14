@@ -74,8 +74,10 @@ import {
 } from "./listing-price-mutations";
 import {
   createListingImageMutations,
+  createListingImageMutationOperations,
   type ListingImageMutationsPort,
 } from "./listing-image-mutations";
+import {ListingImageBatchMutations, type ListingImageBatchMutationsPort} from "./listing-image-batch-mutations";
 import {
   createVariationMoveMutations,
   type VariationMoveMutationsPort,
@@ -318,6 +320,7 @@ export class ApiRouter {
   private readonly writeGate: MainWriteGatePort;
   private readonly priceMutations: ListingPriceMutationsPort;
   private readonly listingImageMutations: ListingImageMutationsPort;
+  private readonly listingImageBatchMutations: ListingImageBatchMutationsPort;
   private readonly listingContentMutations: ListingContentMutationsPort;
   private readonly listingContentBatchMutations:
     ListingContentBatchMutationsPort;
@@ -414,6 +417,7 @@ export class ApiRouter {
     writeGate?: MainWriteGatePort;
     priceMutations?: ListingPriceMutationsPort;
     listingImageMutations?: ListingImageMutationsPort;
+    listingImageBatchMutations?: ListingImageBatchMutationsPort;
     listingContentMutations?: ListingContentMutationsPort;
     listingContentBatchMutations?: ListingContentBatchMutationsPort;
     variationMoveMutations?: VariationMoveMutationsPort;
@@ -458,7 +462,17 @@ export class ApiRouter {
         context: this.spExecutionContext,
         writeGate: this.writeGate,
         gateway: listingImageGatewayProduction,
+        assertImagePreparation: (target) => this.imageUpload.assertImagePreparation?.(target) ?? Promise.resolve(),
       });
+    this.listingImageBatchMutations = input.listingImageBatchMutations ?? new ListingImageBatchMutations({
+      context: this.spExecutionContext,
+      writeGate: this.writeGate,
+      operations: createListingImageMutationOperations(listingImageGatewayProduction),
+      assertPreparedImageUrls: async (target) => {
+        if (!this.imageUpload.assertPreparedImageUrls) throw new SpApiError("此 Notebook Key 尚未支援資料夾批次圖片準備。", {status:409,code:"IMAGE_RETENTION_UNAVAILABLE"});
+        await this.imageUpload.assertPreparedImageUrls(target);
+      },
+    });
     this.listingContentMutations = input.listingContentMutations ??
       createListingContentMutations({
         context: this.spExecutionContext,
@@ -844,6 +858,8 @@ export class ApiRouter {
     this.listingsExportOwner.clear();
     this.standaloneAuditCoordinator.clear();
     this.listingImageMutations.clear();
+    this.listingImageBatchMutations.clear();
+    this.imageUpload.clear?.();
     this.writeGate.clearEphemeral();
     this.listingContentBatchMutations.clear();
     this.fbaInboundCoordinator.clear();
@@ -1130,6 +1146,12 @@ export class ApiRouter {
           operation: "read",
           request,
         });
+      case "GET /api/sp-api/listing-images-batch":
+        return this.listingImageBatchMutations.handle({operation: request.query.batchId === undefined ? "capabilities" : "observe", request});
+      case "POST /api/sp-api/listing-images-batch":
+        return this.listingImageBatchMutations.handle({operation:"preview",request});
+      case "PATCH /api/sp-api/listing-images-batch":
+        return this.listingImageBatchMutations.handle({operation:"commit",request});
       case "POST /api/sp-api/listing-images":
         return this.listingImageMutations.handle({
           operation: "preview",
