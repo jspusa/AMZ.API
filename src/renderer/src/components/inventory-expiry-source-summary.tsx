@@ -32,6 +32,7 @@ export default function InventoryExpirySourceSummary({ diagnostic }: { diagnosti
           <p><time dateTime={diagnostic.recordedAt}>同步開始：{new Date(diagnostic.recordedAt).toLocaleString("zh-TW")}</time></p>
           {diagnostic.stale && <p>舊同步紀錄，只供查核當時的讀取結果，不代表目前來源可用。</p>}
           <p>{`本輪已列出 ${diagnostic.listedPlanCount} 個計畫；本輪已讀完 ${diagnostic.cachedPlanCount} 個；無法讀取 ${diagnostic.unavailablePlanCount} 個；待讀取 ${diagnostic.pendingPlanCount} 個。`}</p>
+          {(diagnostic.planItemFallbackCount ?? 0) > 0 && <p>{`其中 ${diagnostic.planItemFallbackCount} 個計畫已讀取計畫申報商品；尚未核對其貨件明細。`}</p>}
           <p>{diagnostic.traversal === "complete" ? "此輪來源讀取已結束。" : "此輪來源尚未讀完，已列出數不代表全部計畫。"}已讀完的計畫仍可能沒有回傳效期，申報數量也不是現存批次餘量。</p>
           {([400, 404, 422] as const).filter(status => diagnostic.statusCounts[String(status) as "400" | "404" | "422"] > 0)
             .map(status => <p key={status}>{`HTTP ${status}：${diagnostic.statusCounts[String(status) as "400" | "404" | "422"]} 個計畫`}</p>)}

@@ -18,7 +18,7 @@ type DeclaredItem = {
   manufacturingLotCode: string | null; quantity: number; observedAt: string;
 };
 type ItemSource = { shipmentId: string | null; shipmentStatus: string | null; items: DeclaredItem[] };
-type CachedPlan = LegacyCachedPlan & { itemSources: ItemSource[] };
+type CachedPlan = LegacyCachedPlan & { itemSources: ItemSource[]; planDetailUnavailable?: true };
 type CurrentPlan = CachedPlan & {
   sourceIndex: number; itemCursor: string | null; itemTokens: string[];
 };
@@ -26,6 +26,16 @@ type SourceRequest = Extract<ModernFbaInboundTransportRequest, { kind: "plan" | 
 type SourceDiagnostic = Pick<InventoryExpirySourceFailure, "reason" | "code" | "responseState"> & { operation: SourceRequest["kind"]; page: "first" | "next" };
 type LegacySourceDiagnostic = Omit<SourceDiagnostic, "code" | "responseState">;
 type UnavailablePlan = PlanSummary & { reason: "upstream-unavailable"; upstreamStatus: 400 | 404 | 422; diagnostic?: SourceDiagnostic | LegacySourceDiagnostic };
+// This observed metadata rejection does not establish that the independently
+// addressed plan-items resource is unavailable. It never covers auth, malformed
+// identifiers, response-shape conflicts, or unclassified transport failures.
+function canReadDeclaredPlanItems(plan: UnavailablePlan): boolean {
+  return plan.upstreamStatus === 400 && plan.diagnostic?.operation === "plan" && plan.diagnostic.page === "first" &&
+    plan.diagnostic.reason === "other-input" && "code" in plan.diagnostic && plan.diagnostic.code === "BadRequest" &&
+    "responseState" in plan.diagnostic && plan.diagnostic.responseState === "parsed";
+}
+const samePlanRevision = (a: PlanSummary, b: PlanSummary) => a.inboundPlanId === b.inboundPlanId && a.status === b.status &&
+  revisionInstant(a.lastUpdatedAt) === revisionInstant(b.lastUpdatedAt);
 /** Main-only continuation; the renderer gets only the separate human-readable source label. */
 export type FbaExpiryCheckpoint = {
   schemaVersion: 2;
@@ -296,6 +306,11 @@ function savedSources(raw: unknown): ItemSource[] {
   if (new Set(ids).size !== ids.length || (ids.includes(null) && ids.length !== 1)) invalid("checkpointIntegrity");
   return sources;
 }
+function savedPlanDetailAvailability(raw: Record<string, unknown>, sources: ItemSource[]): { planDetailUnavailable?: true } {
+  if (raw.planDetailUnavailable === undefined) return {};
+  if (raw.planDetailUnavailable !== true || sources.length !== 1 || sources[0]!.shipmentId !== null) invalid("checkpointIntegrity");
+  return { planDetailUnavailable: true };
+}
 function validateProvenance(plan: CachedPlan): void {
   const expected = aggregate(plan, plan.itemSources, plan.records[0]?.sourceRef ?? "");
   if (JSON.stringify(expected) !== JSON.stringify(plan.records)) invalid("checkpointIntegrity");
@@ -320,7 +335,8 @@ export function parseFbaExpiryCheckpoint(value: unknown): FbaExpiryCheckpoint | 
   const legacy = parseLegacyCheckpoint({ ...value, schemaVersion: 1 }, MAX_DECLARED_TOTAL)!;
   const cachedPlans = legacy.cachedPlans.map((plan, index) => {
     const raw = (value.cachedPlans as Record<string, unknown>[])[index]!;
-    const parsed = { ...plan, itemSources: savedSources(raw.itemSources) };
+    const itemSources = savedSources(raw.itemSources);
+    const parsed = { ...plan, itemSources, ...savedPlanDetailAvailability(raw, itemSources) };
     validateProvenance(parsed);
     return parsed;
   });
@@ -333,7 +349,7 @@ export function parseFbaExpiryCheckpoint(value: unknown): FbaExpiryCheckpoint | 
       (legacy.currentPlan.itemCursor === null && legacy.currentPlan.itemTokens.length > 0) ||
       (legacy.currentPlan.itemCursor === null && itemSources[raw.sourceIndex]!.items.length > 0) ||
       (legacy.currentPlan.itemCursor !== null && legacy.currentPlan.itemTokens.at(-1) !== legacy.currentPlan.itemCursor)) invalid("checkpointIntegrity");
-    currentPlan = { ...legacy.currentPlan, itemSources, sourceIndex: raw.sourceIndex };
+    currentPlan = { ...legacy.currentPlan, itemSources, sourceIndex: raw.sourceIndex, ...savedPlanDetailAvailability(raw, itemSources) };
     validateProvenance(currentPlan);
   }
   const unavailablePlans = value.unavailablePlans.map(raw => {
@@ -382,6 +398,7 @@ export function projectFbaExpirySourceDiagnostics(value: unknown, context: SpExe
   const unavailable = checkpoint.unavailablePlans.filter(plan => processed(plan.inboundPlanId));
   const unavailableIds = new Set(unavailable.map(plan => plan.inboundPlanId));
   const cachedPlanCount = checkpoint.cachedPlans.filter(plan => processed(plan.inboundPlanId) && !unavailableIds.has(plan.inboundPlanId)).length;
+  const planItemFallbackCount = checkpoint.cachedPlans.filter(plan => processed(plan.inboundPlanId) && !unavailableIds.has(plan.inboundPlanId) && plan.planDetailUnavailable).length;
   const statusCounts = { "400": 0, "404": 0, "422": 0 };
   const failures = new Map<string, InventoryExpirySourceFailure>();
   for (const plan of unavailable) {
@@ -394,7 +411,7 @@ export function projectFbaExpirySourceDiagnostics(value: unknown, context: SpExe
   return { status: "available", recordedAt: new Date(checkpoint.startedAt).toISOString(), stale: age > 30 * 60 * 1000,
     traversal: checkpoint.phase, listedPlanCount: checkpoint.seenPlanIds.length,
     pendingPlanCount: pending.size, cachedPlanCount, unavailablePlanCount: unavailable.length,
-    statusCounts, failures: [...failures.values()] };
+    statusCounts, failures: [...failures.values()], ...(planItemFallbackCount ? { planItemFallbackCount } : {}) };
 }
 
 /** Reads declared dates only. Each slice can be persisted before its successor starts. */
@@ -409,7 +426,7 @@ export class FbaExpiryReads {
     // A completed traversal is a new explicit scan. Expired pagination restarts
     // listing, retaining rejected plan IDs so the same traversal never retries them.
     const age = Date.parse(observedAt) - Date.parse(state.startedAt);
-    if (state.phase === "complete") state = freshCheckpoint(input.context, observedAt, state.cachedPlans);
+    if (state.phase === "complete") state = freshCheckpoint(input.context, observedAt, state.cachedPlans, state.unavailablePlans.filter(canReadDeclaredPlanItems));
     else if (age < 0 || age > 30 * 60 * 1000) state = freshCheckpoint(input.context, observedAt, state.cachedPlans, state.unavailablePlans);
     await this.input.context.assertCurrent(input.context); throwIfAborted(input.signal);
     if (input.context.mode === "demo") {
@@ -492,12 +509,34 @@ export class FbaExpiryReads {
       if (state.pendingPlans.length) {
         const plan = state.pendingPlans.shift()!;
         if (plan.status === "VOIDED" || plan.status === "ERRORED") { cached.delete(plan.inboundPlanId); unavailable.delete(plan.inboundPlanId); continue; }
-        if (unavailable.has(plan.inboundPlanId)) continue;
-        const page = await readSelectedPlan(plan, { kind: "plan", inboundPlanId: plan.inboundPlanId });
-        if (page === null) continue;
-        const itemSources = selectedSources(page, plan, input.context.marketplaceId);
+        const rejected = unavailable.get(plan.inboundPlanId);
         const previous = cached.get(plan.inboundPlanId);
-        if (previous?.lastUpdatedAt === plan.lastUpdatedAt && previous.status === plan.status &&
+        const useDeclaredItems = () => {
+          // A plan-items resource is not an empty or unshipped manifest. Preserve
+          // that distinction in the checkpoint and completed-source projection.
+          unavailable.delete(plan.inboundPlanId);
+          cached.delete(plan.inboundPlanId);
+          state.currentPlan = { ...plan, planDetailUnavailable: true,
+            itemSources: [{ shipmentId: null, shipmentStatus: null, items: [] }],
+            sourceIndex: 0, itemCursor: null, itemTokens: [], records: [] };
+          assertLimits();
+        };
+        if (rejected) {
+          if (!canReadDeclaredPlanItems(rejected)) continue;
+          if (samePlanRevision(rejected, plan)) { useDeclaredItems(); continue; }
+          // A different freshly listed revision is a different source, so the
+          // old metadata rejection cannot authorize its item-source selection.
+          unavailable.delete(plan.inboundPlanId);
+        }
+        if (previous?.planDetailUnavailable && samePlanRevision(previous, plan)) { useDeclaredItems(); continue; }
+        const page = await readSelectedPlan(plan, { kind: "plan", inboundPlanId: plan.inboundPlanId });
+        if (page === null) {
+          const failure = unavailable.get(plan.inboundPlanId);
+          if (failure && canReadDeclaredPlanItems(failure)) useDeclaredItems();
+          continue;
+        }
+        const itemSources = selectedSources(page, plan, input.context.marketplaceId);
+        if (!previous?.planDetailUnavailable && previous?.lastUpdatedAt === plan.lastUpdatedAt && previous.status === plan.status &&
           JSON.stringify(previous.itemSources.map(source => [source.shipmentId, source.shipmentStatus]).sort()) === JSON.stringify(itemSources.map(source => [source.shipmentId, source.shipmentStatus]).sort())) {
           cached.set(plan.inboundPlanId, { ...plan, itemSources: previous.itemSources, records: previous.records.map(record => ({ ...record, sourceLabel: sourceLabel(plan) })) });
           continue;

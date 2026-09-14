@@ -20,13 +20,15 @@ export type InventoryExpirySourceDiagnostics = Readonly<{
   listedPlanCount: number;
   pendingPlanCount: number;
   cachedPlanCount: number;
+  planItemFallbackCount?: number;
   unavailablePlanCount: number;
   statusCounts: Readonly<{ "400": number; "404": number; "422": number }>;
   failures: readonly InventoryExpirySourceFailure[];
 }>;
 
 const record = (value: unknown): value is Record<string, unknown> => Boolean(value && typeof value === "object" && !Array.isArray(value));
-const keys = (value: Record<string, unknown>, expected: readonly string[]) => Object.keys(value).length === expected.length && expected.every(key => Object.hasOwn(value, key));
+const keys = (value: Record<string, unknown>, expected: readonly string[], optional: readonly string[] = []) =>
+  expected.every(key => Object.hasOwn(value, key)) && Object.keys(value).every(key => expected.includes(key) || optional.includes(key));
 const count = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value <= 6000;
 // Five known operation/page pairs: 3 statuses × (6 historical reasons + 1
 // untyped fallback), plus 2 body-reading statuses × (3 generic parsed pairs +
@@ -57,10 +59,11 @@ export function isInventoryExpirySourceDiagnostics(value: unknown): value is Inv
   if (!record(value)) return false;
   if (value.status === "unknown") return keys(value, ["status", "reason"]) && typeof value.reason === "string" &&
     ["not-recorded", "legacy-checkpoint", "stale-checkpoint", "context-mismatch", "invalid-checkpoint"].includes(value.reason);
-  if (value.status !== "available" || !keys(value, ["status", "recordedAt", "stale", "traversal", "listedPlanCount", "pendingPlanCount", "cachedPlanCount", "unavailablePlanCount", "statusCounts", "failures"]) ||
+  if (value.status !== "available" || !keys(value, ["status", "recordedAt", "stale", "traversal", "listedPlanCount", "pendingPlanCount", "cachedPlanCount", "unavailablePlanCount", "statusCounts", "failures"], ["planItemFallbackCount"]) ||
     typeof value.recordedAt !== "string" || value.recordedAt.length > 40 || !Number.isFinite(Date.parse(value.recordedAt)) || new Date(value.recordedAt).toISOString() !== value.recordedAt ||
     typeof value.stale !== "boolean" || typeof value.traversal !== "string" || !["partial", "complete"].includes(value.traversal) ||
     ![value.listedPlanCount, value.pendingPlanCount, value.cachedPlanCount, value.unavailablePlanCount].every(count) ||
+    (Object.hasOwn(value, "planItemFallbackCount") && (!count(value.planItemFallbackCount) || value.planItemFallbackCount > Number(value.cachedPlanCount))) ||
     !record(value.statusCounts) || !keys(value.statusCounts, ["400", "404", "422"]) || !Object.values(value.statusCounts).every(count) ||
     !Array.isArray(value.failures) || value.failures.length > MAX_FAILURE_GROUPS) return false;
   const seen = new Set<string>();
