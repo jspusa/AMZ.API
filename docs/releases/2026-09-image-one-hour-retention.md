@@ -27,7 +27,9 @@ Issue #294；[核准規格](../specs/2026-09-image-one-hour-retention.md)。使�
 - Windows archive／manifest、AMD64 PE、Windows Hello addon／ASAR 邊界及八項 fuses 均通過。Installer 102,081,287 bytes，SHA-256 `a45b9666a984d3b2f751e59df5ded8ea87182f2ad8e1d17edffac23c21058706`；Portable ZIP `ff0e7abc12eabb3a24752f4c4996c7cccbcbe9aaf1495fafa7bcb397fad9e5b5`。
 - 安裝檔驗證不代表正式 Developer ID／公證、Authenticode、SmartScreen、真人生物辨識或 Amazon mutation 成功。Updater 仍 disabled。
 
-## 原生接續與清理排程
+## 安裝前的原生接續與清理排程快照
+
+此節為首次等待解鎖時的歷史狀態；安裝結果與後续測試以「解鎖後安裝與原生測試接續」及最新 server 修正記錄為準。
 
 - 五個原始資料夾與先前測試副本再次逐檔核對：45 張、49,993,451 bytes，原圖 bytes 未變；證據 `/tmp/amz-api-v0178-verified/five-folder-input-reverification.json`。
 - 準備退出 .77 安裝 .78 時，CUA 明確回報 Mac 鎖定且自動解鎖失敗。沒有送正常退出、備份、安裝或新一小時原生測試；新解鎖請求已留。仍保留原 .77 App、既有 vault／ledger／備份與所有未完成使用者工作。證據 `/tmp/amz-api-v0178-verified/native-lock-observation.json`；接續須先取得 fresh 原生頁面並確認無進行中作業，再正常退出與執行已備妥的受限安裝 helpers。
@@ -42,3 +44,25 @@ Issue #294；[核准規格](../specs/2026-09-image-one-hour-retention.md)。使�
 
 - 已依 Mac → Windows 完成 0.1.78 兩張下載卡上傳；server completion manifest 的版本、bytes、SHA-256 均等於本輪可信 payload。證據 `/tmp/amz-api-v0178-verified/portal-upload-macos-dmg-receipt.json` 與 `portal-upload-windows-installer-receipt.json`。授權仍透過既有 Keychain → stdin，不把憑證寫入檔案／環境／URL／log。
 - 原生瀏覽器重讀 `/downloads` 仍為下載密碼表單。員工頁登入及兩份實際下載 bytes 尚待使用者登入後獨立核對；不能把 Mac 解鎖、admin upload receipt 或下載卡更新當成員工下載成功。既有登入請求保持待完成，不重複索取密碼。
+
+
+## 解鎖後安裝與原生測試接續
+
+- 使用者再次解鎖後，fresh 原生 .77 首頁顯示 US／Amazon 已連線且没有未完成的圖片作業；已正常退出、完成 0700 userData 備份，核對唯讀 DMG 後安裝 .78。Universal／deep-strict adhoc signature 與 ASAR `0f397fc9b2a9a29a529c9ba3318a7e8ae939416d770e3e873a99e101d20a4d97` 相符，vault／ledger bytes 未變；原 .77 App 備份及先前備份保留，DMG 已正常卸載。證據 `/tmp/amz-api-v0178-verified/installation-verification.json`。首次 launch 工具逾時後，fresh AX 已確認新版首頁與 Amazon 連線，不把該次逾時當鎖定或重裝理由。
+- .78 原生父資料夾匯入辨識 5 個 SKU／45 張圖片、01–09 位置全對、0 待修正，一小時文案正確。首次準備停在第一張 `IMAGE_PREPARATION_INCOMPLETE`；Worker PUT 14:55:15 UTC outcome `canceled`、wall 30,175 ms／CPU 99 ms，後續 GET 404，尚未開始 Amazon Validation Preview。唯一明確 GET-only 回查 15:01:26 仍404，没有重送 PUT。原未知上傳保留，不用重啟／更換 identity 迴避。證據 `five-folder-native-run.json` 與 `native-upload-safe-worker-events.json`。
+- 獨立小 synthetic 圖在真實一小時期限後 HEAD 回410；到期前發出的另一請求在網路途中跨過期限，也回410，不當成瞬間到期前200。先前13:56的200／bytes證據另存；本次沒有PUT或清理，410只證明拒讀。證據 `synthetic-image-one-hour-expiry.json`。
+- 固定 manual cleanup 14:59:55→15:00:16 UTC 成功，刪2個到期物件／1,568,292 bytes、hasMore false，整體耗時20,633 ms；這不是整個bucket用量。證據 `cleanup-after-native-failure.json`。
+- 本機 public Worker seam 已重現新圖片等待舊圖 HEAD 時，新operation尚未reserved／body尚未讀取而GET404；200個到期舊圖可在新reservation之前引發612個串行R2操作。這證明前置阻塞風險，不证明線上 canceled 的確切階段。Cloudflare HTTP Worker沒有已證實的固定30秒wall-time限制，不能把CPU99ms稱為30秒CPU超限。接續 Issue #297 的獨立 server修正，Amazon寫入與一小時政策保持原界線。
+- 原未知SKU未重傳；另外四個原先未嘗試SKU以完整資料夾首次準備36張，副本逐檔hash與原測試來源相符。Worker看到5個PUT200、前4個publicGET200；第5個publicGET canceled。此時CUA又明確回報Mac鎖定，未讀到native終態或五SKU完整預檢。已留新解鎖請求；.78保持執行，不強制結束，未重傳既有圖、未送Amazon更新。證據 `four-unattempted-folder-input.json`、`four-unattempted-native-run.json`、`four-unattempted-safe-worker-events.json`。
+- 截至14:52:40 UTC，固定workflow仍active但schedule事件0筆；證據 `scheduled-cleanup-unlock-observation.json`。員工下載頁仍是密碼表單，保留獨立登入／下載bytes待驗項目。
+
+
+## Issue #297 雲端背景清理修正
+
+- 本機 public `worker.fetch` 的門閂測試先重現「新 PUT 等待無關舊圖 HEAD」，再確認修正後不等待；完整三套 server tests、build、validate 與 diff check 通過。兩個獨立 reviewer 核對 frozen tree `8021599cc32fdc1e95d9e5d7d69abcc68c69e18e`，Standards／Spec 各零 findings。
+- 正式 server source `6f9b42a99e0502452dcdc749122775c4c558c828` 已推送且 remote main 相符。新上傳只透過 `waitUntil` 附帶最多一筆背景清理；缺少 context 時跳過。未確認實體不存在或 CAS 未成功仍占額度，配額耗盡仍拒絕。保留一小時、防重播與固定維護入口，不把背景補充當成 idle 排程保證。
+- 本機部署 archive 僅含 manifest 與編譯輸出，bytes 與 exact source 相符；worker SHA-256 `db6fa4f6f6dfbdd9e8a1ca3f9605893d3e600c93e86cf5f3c5ae32170df41112`。Saved version 12／`appgprj_6a7719308ad8819186b46adcafcc87a6~appgver_1cfb269e32d88191a2ef95a084c1b135`，deployment `appgdep_6aa80fe91c248191801d60c462997ddd` 於 2026-09-14 15:17:22 UTC 成功，environment revision 11 保留。證據 `nonblocking-server-source.json`、`nonblocking-site-version.json`、`nonblocking-site-deployment.json`。
+- 這次只發布 server，不重建或重裝已驗證的 .78 App，不重傳既有 unknown 圖片；本機阻塞風險的紅綠測試不等於確定正式環境 canceled 的原因。原生四 SKU 接續仍需 fresh 解鎖畫面，已有 operation 先 GET 回復確認，再處理從未嘗試的圖，不能直接新建相同工作的 PUT。
+- 截至 15:18:48 UTC，固定 GitHub workflow 的 `event=schedule` 查詢仍為零筆；manual caller 的成功與背景清理不替代首個自動 schedule 結果。員工登入後實際下載仍待驗，保持原生操作紀錄與所有備份。
+
+- Version12 線上獨立新 synthetic 圖驗證通過：repo fixture 1,842 bytes，僅一次 PUT200（3,416 ms），同 operation GET200（4,304 ms）及 public GET200（1,388 ms）；原 bytes／hash、no-store、一小時期限全部相符，GET 不續期。15:19:04 UTC fresh Sites 查詢確認 active／public／version12。沒有另行呼叫清理入口、重傳原未知图或執行 Amazon 操作；新 PUT 可能附帶背景清理，小圖成功不冒充完整五 SKU 原生驗收。證據 `nonblocking-live-synthetic.json`。

@@ -92,4 +92,4 @@ Server v2 是有固定額度上限的匿名 image-only 服務，不是員工或�
 
 資料夾批次固定最多 30 個 exact SKU／300 圖；main 自行取得 FBA／ASIN／Product Type／seller-specific PTD 與原圖片，不接受 renderer 提供的身分或省略舊圖證據。完整替換與刪除範圍必須顯示並包含在不可變 preview binding；單次 native approval 只涵蓋這份 plan。`images-batch` 共享圖片 collision／durable ledger，unknown／accepted recovery 維持 GET-only。圖片準備在同 context／SKU／bytes／expiry 綁定，context invalidation 清除準備授權但不清除 unknown upload 或 Amazon write evidence。
 
-圖片服務自準備起一小時到期並停止提供來源；固定 maintenance 只可刪除 server 已判定到期的 v1／v2 圖片，無任意 key、credential、bucket 或 URL 接口。下載、公告、安全紀錄與本機原檔不在清理範圍。先確認實體刪除，再回收 active bytes／object 額度；小型 UUID tombstone 保留不可重用紀錄，不能把 lifetime 累計上傳量當作現存圖片容量。來源期限、排程實體清理與 Amazon 寫入證據分別處理，不因到期或清理自動重送 Amazon。
+圖片服務自準備起一小時到期並停止提供來源；固定 maintenance 只可刪除 server 已判定到期的 v1／v2 圖片，無任意 key、credential、bucket 或 URL 接口。下載、公告、安全紀錄與本機原檔不在清理範圍。確認實體不存在且 reservation CAS 成功後才回收 active bytes／object 額度；背景清理失敗或結果不明仍保留預留額度。小型 UUID tombstone 保留不可重用紀錄，不能把 lifetime 累計上傳量當作現存圖片容量。來源期限、排程實體清理與 Amazon 寫入證據分別處理，不因到期或清理自動重送 Amazon。
