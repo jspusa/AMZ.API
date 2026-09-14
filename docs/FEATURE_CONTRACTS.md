@@ -29,7 +29,7 @@
 - 文案拼字規則必須保留欄位邊界：`airdried`、`grainfree`、`dogfood`、`airdry` 只在產品敘述免列疑似錯字；標題、產品亮點、產品要點與成分仍必須回報。
 - B2B 摘要「正確設定」只計 Business Price 與建議數量折扣都合格的列；「需處理」必須排除 incomplete，並由獨立「資料未完成」篩選保留全部 exact 原因。
 - US Seller SKU 的 FBA 庫存／補貨能只讀查詢，且 7／14／30／90 天、自訂 1–365 天與去年同期 AFN 銷售趨勢完整載入。
-- 180 天以上 FBA 庫齡報表能唯讀載入，庫齡與 Amazon 預估冗餘不混為同一指標；它與評論健檢只放在首頁預設收合的「低頻健檢」，不進 run-all。
+- 180 天以上 FBA 庫齡報表能唯讀載入，庫齡與 Amazon 預估冗餘不混為同一指標；它與評論健檢、Vine 進度依此順序放在首頁預設收合的「低頻健檢」，不進 run-all。Vine 開啟單層工作區，返回恢復原入口焦點、捲動與展開狀態。
 - 首頁 run-all 精確包含文案、圖片、A+、未綁變體、訂閱省、B2B 價格、廣告覆蓋七項；七項在背景並行執行，名稱與一般健檢卡完全一致並固定依此順序顯示。任一失敗要保留自己的終局狀態，不能把「全部結束」冒充成功。
 - 全站文案與圖片健檢能以真實 Amazon FBA 範圍載入，cache／編輯／返回流程正常；文案第一次點擊即建立唯一 main-owned flight，相同 selection 的重複點擊只能接回同一工作；文案門檻精確為產品名稱 60、產品亮點 110、每項產品要點 150–200、產品敘述 1,800 Unicode 字元，圖片門檻可在健檢前選擇 1–10 張，預設 8 張；完整讀取且張數低於選值才列不足，單次健檢、全部執行與匯出共用相同選值，讀取未完成不推論。原因只能顯示一次，摘要數字本身可直接篩選，立即修改要聚焦並保留相符原因。文案、圖片、A+、未綁變體、訂閱、B2B 與廣告的首頁入口必須使用共用寬版、單層、非 modal workspace，只由頁面捲動，進入聚焦標題並在返回時恢復原卡片焦點／位置；非首頁入口可保留既有 presentation surface，但不得再疊第二個 modal。各 panel 必須先顯示摘要、進度、主要操作與結果，長篇判定規則／資料來源／安全範圍統一放在預設收合且低調的「詳細說明 ›」，展開不得改變工作狀態。成分宣稱只在完整且非空的 Amazon ingredients 證據下核對：至少兩個不同成分才可否定 single ingredient，Tendon／Tendons 需有同詞成分，ingredients 含 Chicken 時標示 hypoallergenic 待核對；括號逗號與不完整讀取不得誤判。
 - 文案 Excel 可按鈕選檔或 drag/drop，且只含 FBA 商品；同一 main-owned 快照必須提供視覺可區分的「待確認清單」與「全部商品完整模板」兩個下載入口，兩份都能回到同一選檔／批次預檢更新流程。schema v2 必須含「說明與索引」、已證明的變體 family 分頁、「未綁變體」與 fail-closed「資料未完成」，並保留原始／更新欄、問題顏色與「類型／說明」。CR／U+0085／U+2028／U+2029 必須無損 round trip；舊檔只能用 main-owned 唯一完整 digest bounded recovery。按鈕顏色只協助辨識 scope，不是任何寫入授權依據。
@@ -75,7 +75,7 @@
 - 字體、顏色模式與圖片門檻由 main 保存固定 enum 設定；重開前完成原子寫入，不藉由持久化 renderer session 保存偏好。
 - 圖片整批依精確 SKU 與中間 `01`–`10` 數字排序配槽，實際可編輯槽仍由 seller PTD 證明，溢位檔不可靜默丟棄；錯 SKU、重複編號、失敗檔案逐項顯示，可修正後套用草稿。套用草稿不寫 Amazon，既有預覽、原生確認、一次 PATCH 與 readback 不變。
 - 變體健檢預載工作區；dynamic import 下載失敗可在原頁重新載入工作區。程式執行錯誤不誤稱斷線，也不利用 reload 清掉未完成寫入。返回目的地、busy gate 與選擇狀態須通過回歸。
-- Vine 目前使用使用者匯入 Seller Central 資料，並由 main 核對 US FBA ASIN 身分，原始貼文沒有 SKU 時不要求補造；不宣稱已有公開 Vine API。可直接貼 Seller Central 整頁文字，ASIN 與登記日形成身分；顯示所有仍在進行的登記，不受 60 日限制，進度為 Amazon Vine 評論／已註冊名額。已結束或取消項目排除，單頁缺席不視為結束；缺狀態列待確認。未知保持空值，不能以訂單、免費銷售或一般商品評論替代。資料只存本機加密檔；無法加密時明示僅本次工作階段，既有損壞檔不可默默覆寫。
+- Vine 目前使用使用者匯入 Seller Central 資料，並由 main 核對 US FBA ASIN 身分，原始貼文沒有 SKU 時不要求補造；不宣稱已有公開 Vine API。可直接貼 Seller Central 整頁文字，ASIN 與登記日形成身分；顯示所有仍在進行的登記，不受 60 日限制，進度為 Amazon Vine 評論／已註冊名額。清單固定六欄「品名、ASIN、報名日期、狀況、進度、綁變體」；評論已回報且評論數乘 3 大於等於名額乘 2，才以綠燈顯示「可綁變體」，其餘紅燈「等待Vine回收」，未回報保留未知。燈號僅為使用者自訂時機提示，不是 Amazon 資格或寫入授權。已結束或取消項目排除，單頁缺席不視為結束；缺狀態列待確認。未知保持空值，不能以訂單、免費銷售或一般商品評論替代。資料只存本機加密檔；無法加密時明示僅本次工作階段，既有損壞檔不可默默覆寫。
 
 - 拖入、上傳及準備圖片不要求登入、密碼、Touch ID 或 Windows Hello。Production main 預設先使用 `HostedListingImages` v2，不讀圖片登入資料或 R2 vault；只有未提供 hosted owner 的 composition 才保留 custom R2 port，不因 hosted 失敗而切換。專用登入／vault owner 與 IPC 退休，但既有圖片登入加密檔不讀取、不解密、不刪除。匿名 v2 僅提供固定額度內的 image-only PUT／GET，公開 URL 固定綁 UUID／hash；UUID 不是員工或裝置認證，v1 圖片、下載、公布欄及 admin 的原驗證邊界保留。上傳結果不明只 GET 查詢既有操作，不因 context 清除而重傳；匿名讀回原檔 bytes 核對後才可用於預檢，額度或網路錯誤明示停止，不要求登入。完整規格見 [免登入圖片準備](specs/2026-09-passwordless-image-preparation.md)。
 - 圖片確認頁顯示 exact SKU／ASIN 與變更位置，不要求重打 SKU；main 以自身保存的查詢憑據綁定 exact context／SKU／ASIN／Product Type 與原圖片，renderer 只回傳不透明識別值。預檢及正式提交重新核對，重新查詢撤銷舊憑據；只有最後 Amazon 更新才使用與文案相同的 native gate。main 仍核對 fresh Preview、context／identity／PTD、原生授權及 durable claim，保留一次 PATCH 與 canonical readback；圖片準備不授權 Amazon mutation。缺少此能力的舊 Notebook Key 明示升級提示。現行規格見 [免登入圖片準備](specs/2026-09-passwordless-image-preparation.md)；原始直接上傳與確認的需求沿革保留於 [直接上傳、效期與 Vine 修正](specs/2026-09-direct-images-expiry-vine.md)及 [圖片生物辨識與確認](specs/2026-09-image-biometric-confirmation.md)。

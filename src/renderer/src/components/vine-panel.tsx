@@ -14,7 +14,7 @@ async function request(path: string, signal: AbortSignal, text?: string): Promis
 function Progress({ reviews, enrolled }: { reviews: number | null; enrolled: number }) {
   const label = "Amazon Vine 評論 / 已註冊";
   return <div className="vine-progress-item">
-    <div><span>{label}</span><strong>{reviews === null ? `未回報 / ${enrolled}` : `${reviews} / ${enrolled}`}</strong></div>
+    <strong>{reviews === null ? `未回報 / ${enrolled}` : `${reviews} / ${enrolled}`}</strong>
     {reviews === null
       ? <span className="vine-progress-unknown">評論數尚未回報</span>
       : <progress aria-label={`${label} ${reviews} / ${enrolled}`} value={reviews} max={enrolled} />}
@@ -93,7 +93,7 @@ export default function VinePanel({ onClose, active = true }: { onClose(): void;
         {preview.error && <p role="alert" className="vine-error">{preview.error}</p>}
         {preview.parsed && <>
           <p role="status">{`辨識 ${preview.parsed.rows.length + preview.parsed.rejected.length} 筆：進行中 ${previewActive.length} 筆、已結束 ${previewEnded} 筆、需核對 ${preview.parsed.rejected.length} 筆`}</p>
-          <p>保存後只顯示進行中的報名；已結束會撤下相同 ASIN／報名日期的卡片。本次沒有貼到的其他報名會保留。</p>
+          <p>保存後只顯示進行中的報名；已結束會撤下相同 ASIN／報名日期的項目。本次沒有貼到的其他報名會保留。</p>
           {previewActive.length > 0 && <details><summary>查看進行中項目</summary><ul className="vine-preview-rows">{previewActive.map(({ value }) => <li key={vineEnrollmentKey(value)}><strong>{value.title ?? value.asin}</strong><span>{value.asin} · 報名 {value.enrollmentDate} · {value.statusText}</span><span>Amazon Vine 評論 {value.reviews ?? "未回報"}／已註冊 {value.enrolled}</span></li>)}</ul></details>}
           {preview.parsed.rejected.length > 0 && <ul className="vine-error">{preview.parsed.rejected.map((row) => <li key={row.line}>第 {row.line} 行：{row.message}</li>)}</ul>}
         </>}
@@ -103,11 +103,24 @@ export default function VinePanel({ onClose, active = true }: { onClose(): void;
     {snapshot?.importResult && <div role="status" className="vine-import-result"><strong>已保存／更新 {snapshot.importResult.accepted} 筆來源資料，目前 {snapshot.rows.length} 筆進行中</strong>{snapshot.importResult.rejected.length > 0 && <ul>{snapshot.importResult.rejected.map((row) => <li key={row.line}>第 {row.line} 行：{row.message}</li>)}</ul>}</div>}
     {snapshot && snapshot.rows.length > 0 && <>
       <input type="search" className="vine-search" aria-label="搜尋 Vine 商品" placeholder="搜尋商品名稱或 ASIN" value={search} onChange={(event) => setSearch(event.target.value)} />
-      <div className="vine-grid">{rows.map((row) => <article className="vine-card" key={vineEnrollmentKey(row)}>
-        <header><h3>{row.title ?? row.sellerSku ?? row.asin}</h3><span>{row.asin}</span></header><p>報名 {row.enrollmentDate} · {row.statusText}</p>
-        <Progress reviews={row.reviews} enrolled={row.enrolled} />
-        <small>手動匯入：{new Date(row.importedAt).toLocaleString("zh-TW")}</small>
-      </article>)}</div>
+      <p className="vine-table-note" id="vine-progress-rule">進度：Amazon Vine 評論／已註冊。評論回收達 2/3 顯示「可綁變體」。</p>
+      <div className="vine-table-scroll" role="region" aria-label="Vine 進行中商品表格" tabIndex={0}>
+        <table className="vine-table" aria-label="Vine 進行中" aria-describedby="vine-progress-rule">
+          <colgroup><col className="vine-col-title" /><col className="vine-col-asin" /><col className="vine-col-date" /><col className="vine-col-status" /><col className="vine-col-progress" /><col className="vine-col-variation" /></colgroup>
+          <thead><tr><th scope="col">品名</th><th scope="col">ASIN</th><th scope="col">報名日期</th><th scope="col">狀況</th><th scope="col">進度</th><th scope="col">綁變體</th></tr></thead>
+          <tbody>{rows.map((row) => {
+            const ready = row.reviews !== null && row.reviews * 3 >= row.enrolled * 2;
+            return <tr key={vineEnrollmentKey(row)}>
+              <th scope="row">{row.title ?? row.sellerSku ?? row.asin}</th>
+              <td className="vine-asin">{row.asin}</td>
+              <td className="vine-date" title={`手動匯入：${new Date(row.importedAt).toLocaleString("zh-TW")}`}><time dateTime={row.enrollmentDate}>{row.enrollmentDate}</time></td>
+              <td>{row.statusText}</td>
+              <td><Progress reviews={row.reviews} enrolled={row.enrolled} /></td>
+              <td><span className={`vine-variation-status ${ready ? "is-ready" : "is-waiting"}`}><span className="vine-status-light" aria-hidden="true" />{ready ? "可綁變體" : "等待Vine回收"}</span></td>
+            </tr>;
+          })}</tbody>
+        </table>
+      </div>
       {!rows.length && <p>沒有符合搜尋的 Vine 報名。</p>}
     </>}
     {!busy && snapshot && !snapshot.rows.length && <p className="vine-empty">尚無已確認進行中的 Vine 報名。貼上最新頁面後會顯示尚未結束的項目。</p>}

@@ -2,7 +2,7 @@
 .vine-heading, .vine-actions, .vine-summary { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
 .vine-heading { justify-content: space-between; align-items: flex-start; margin-bottom: 20px; }
 .vine-heading h2 { margin: 4px 0 8px; font-size: 28px; }
-.vine-heading p, .vine-card p, .vine-card > small { margin: 0; color: var(--muted, #64748b); }
+.vine-heading p { margin: 0; color: var(--muted, #64748b); }
 .vine-workspace button { border: 1px solid var(--border, #cfd8e4); border-radius: 8px; padding: 10px 14px; background: var(--surface, #fff); color: inherit; font: inherit; cursor: pointer; }
 .vine-workspace button:disabled { opacity: 0.5; cursor: wait; }
 .vine-workspace .vine-primary { background: #203c62; border-color: #203c62; color: white; }
@@ -16,18 +16,32 @@
 .vine-import textarea, .vine-search { box-sizing: border-box; border: 1px solid var(--border, #cbd5e2); padding: 10px 12px; border-radius: 7px; background: var(--surface, #fff); color: inherit; font: inherit; }
 .vine-import textarea { width: 100%; resize: vertical; font-size: 13px; }
 .vine-search { width: min(100%, 480px); margin: 10px 0 18px; }
-.vine-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr)); gap: 16px; }
-.vine-card { border: 1px solid var(--border, #d4deeb); border-radius: 10px; padding: 20px; min-width: 0; }
-.vine-card header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; }
-.vine-card h3 { margin: 0; overflow-wrap: anywhere; }
-.vine-card header > span { color: var(--muted, #64748b); font-size: 12px; }
-.vine-progress-item { margin: 18px 0; }
-.vine-progress-item > div { display: flex; gap: 16px; justify-content: space-between; margin-bottom: 7px; font-size: 13px; }
+.vine-table-note { margin: 0 0 12px; color: var(--muted, #64748b); font-size: 13px; }
+.vine-table-scroll { max-width: 100%; overflow-x: auto; border: 1px solid var(--border, #d4deeb); border-radius: 10px; }
+.vine-workspace .vine-table { width: 100%; min-width: 76rem; table-layout: fixed; border-collapse: separate; border-spacing: 0; font-size: 14px; text-align: left; }
+/* Column widths belong to this six-column table, not the global order table. */
+.vine-table :is(th, td) { width: auto; padding: 16px; vertical-align: middle; border-top: 0; border-bottom: 1px solid var(--border, #d4deeb); color: inherit; font-size: inherit; overflow-wrap: anywhere; line-height: 1.6; }
+.vine-table thead th { color: var(--muted, #64748b); background: var(--surface-soft, #f6f8fb); font-size: 13px; font-weight: 650; white-space: nowrap; }
+.vine-table tbody th { background: transparent; color: inherit; font-size: inherit; font-weight: 600; text-transform: none; letter-spacing: normal; }
+.vine-table tbody tr:last-child :is(th, td) { border-bottom: 0; }
+.vine-col-title { width: 30%; }
+.vine-col-asin { width: 12%; }
+.vine-col-date { width: 12%; }
+.vine-col-status { width: 17%; }
+.vine-col-progress { width: 14%; }
+.vine-col-variation { width: 15%; }
+.vine-table :is(.vine-asin, .vine-date) { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.vine-progress-item { min-width: 0; }
+.vine-progress-item > strong { display: block; margin-bottom: 7px; font-size: 15px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .vine-progress-item progress { display: block; width: 100%; height: 12px; accent-color: #397861; }
 .vine-progress-unknown { display: block; min-height: 12px; color: var(--muted, #64748b); font-size: 12px; }
+.vine-variation-status { display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; font-size: 14px; font-weight: 650; }
+.vine-variation-status.is-ready { color: #216548; }
+.vine-variation-status.is-waiting { color: #b42332; }
+.vine-status-light { width: 10px; height: 10px; flex: 0 0 10px; border-radius: 50%; background: currentColor; }
 .vine-empty { padding: 24px 0; color: var(--muted, #64748b); }
 .vine-import-result { margin: 14px 0; font-size: 13px; line-height: 1.7; }
-.vine-workspace :is(button, input, textarea, summary):focus-visible { outline: 3px solid #509ddc; outline-offset: 3px; }
+.vine-workspace :is(button, input, textarea, summary, .vine-table-scroll):focus-visible { outline: 3px solid #509ddc; outline-offset: 3px; }
 .vine-preview { margin-top: 14px; padding: 12px 16px; border: 1px solid var(--border, #d4deeb); border-radius: 8px; background: var(--surface-soft, #f6f8fb); }
 .vine-preview > p:first-child { font-weight: 650; }
 .vine-preview-rows { padding-left: 18px; max-height: 320px; overflow: auto; }

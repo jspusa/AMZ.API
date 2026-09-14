@@ -9,6 +9,7 @@ import Dashboard, {
   DEFAULT_MARKETPLACE_ID,
 } from "../src/renderer/src/components/dashboard";
 import PriceListPanel from "../src/renderer/src/components/price-list-panel";
+import VinePanel from "../src/renderer/src/components/vine-panel";
 import type {
   SalesTrendPoint,
   SalesTrendSnapshot,
@@ -103,6 +104,7 @@ async function mountDashboard() {
   ) as Record<string, ReturnType<typeof vi.fn>>;
   const menuFocus = { "產品區": vi.fn(), "價格區": vi.fn(), "營運區": vi.fn() };
   const priceHeadingFocus = vi.fn();
+  const vineHomeFocus = vi.fn();
   let renderer: ReactTestRenderer | null = null;
   const querySelector = vi.fn((selector: string) => {
     const sectionId = selector.match(
@@ -169,7 +171,7 @@ async function mountDashboard() {
     addEventListener: vi.fn(),
     removeEventListener: vi.fn(),
   });
-  const fetchMock = vi.fn(() => new Promise<Response>(() => undefined));
+  const fetchMock = vi.fn((_input: string, _options?: RequestInit) => new Promise<Response>(() => undefined));
   vi.stubGlobal("fetch", fetchMock);
 
   const flushAnimationFrames = async () => {
@@ -220,6 +222,9 @@ async function mountDashboard() {
         if (element.type === "button" && element.props["aria-label"] in menuFocus) {
           return { focus: menuFocus[element.props["aria-label"] as keyof typeof menuFocus] };
         }
+        if (element.type === "button" && element.props["aria-label"] === "開啟 Vine 進度") {
+          return { focus: vineHomeFocus };
+        }
         if (element.type === "h2") return { focus: vi.fn() };
         return {};
       },
@@ -230,11 +235,46 @@ async function mountDashboard() {
   return {
     root, fetchMock, windowMock, sectionTargets, flushAnimationFrames,
     flushTimeouts, scrollTo, launchFocus, headingFocus, menuFocus,
-    priceHeadingFocus, querySelector,
+    priceHeadingFocus, vineHomeFocus, querySelector,
   };
 }
 
 describe("dashboard audit workspace interactions", () => {
+  it("opens Vine from the collapsed low-frequency group and restores that entry without starting an audit", async () => {
+    const { root, fetchMock, windowMock, scrollTo, flushAnimationFrames, vineHomeFocus, menuFocus } = await mountDashboard();
+    const lowFrequency = root.findByProps({ className: "low-frequency-audits" });
+    expect(lowFrequency.props.open).toBe(false);
+    expect(lowFrequency.findByProps({ "aria-label": "Vine 進度捷徑" })).toBeDefined();
+    expect(root.findAll((node) => typeof node.props["data-audit-workspace-launch"] === "string"))
+      .toHaveLength(7);
+    const requestsBeforeOpening = fetchMock.mock.calls.length;
+    await act(async () => lowFrequency.props.onToggle({ currentTarget: { open: true } }));
+    expect(fetchMock).toHaveBeenCalledTimes(requestsBeforeOpening);
+    windowMock.scrollY = 1_400;
+    await act(async () => root.findByProps({ "aria-label": "開啟 Vine 進度" }).props.onClick());
+    await act(async () => { await vi.dynamicImportSettled(); });
+    await flushAnimationFrames();
+    const vinePanel = root.findByType(VinePanel);
+    expect(root.findByProps({ "data-vine-session": true }).props.hidden).toBe(false);
+    expect(root.findAllByProps({ role: "dialog" })).toHaveLength(0);
+    expect(fetchMock.mock.calls.slice(requestsBeforeOpening)).toEqual([
+      ["/api/vine", { signal: expect.any(AbortSignal) }],
+    ]);
+    await act(async () => vinePanel.props.onClose());
+    await flushAnimationFrames();
+    expect(root.findByProps({ className: "low-frequency-audits" }).props.open).toBe(true);
+    expect(vineHomeFocus).toHaveBeenCalledWith({ preventScroll: true });
+    expect(menuFocus["營運區"]).not.toHaveBeenCalled();
+    expect(scrollTo).toHaveBeenLastCalledWith({ top: 1_400, behavior: "instant" });
+    expect(root.findByType(VinePanel)).toBe(vinePanel);
+    expect(root.findByProps({ "data-vine-session": true }).props.hidden).toBe(true);
+    expect(windowMock.location.hash).toBe("");
+    expect(fetchMock.mock.calls.some(([input, options]) =>
+      options?.method === "PATCH" || input === "/api/vine/import" ||
+      (input === "/api/sp-api/standalone-audit" && options?.method === "POST")))
+      .toBe(false);
+  });
+
   it("changes the image minimum without dispatching a health check", async () => {
     const { root, fetchMock } = await mountDashboard();
     const minimumSelect = root.findByProps({ "aria-label": "首頁圖片健檢最低張數" });

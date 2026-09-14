@@ -754,6 +754,7 @@ export default function Dashboard({
   const [openTool, setOpenTool] = useState<Tool | null>(null);
   const [priceListOpened, setPriceListOpened] = useState(false);
   const [vineOpened, setVineOpened] = useState(false);
+  const [lowFrequencyAuditsOpen, setLowFrequencyAuditsOpen] = useState(false);
   const [variationWorkspaceBusy, setVariationWorkspaceBusy] = useState(false);
   const [variationLoadAttempt, setVariationLoadAttempt] = useState(0);
   const VariationPlannerDrawer = useMemo(() => lazy(variationWorkspaceLoader.load), [variationLoadAttempt]);
@@ -764,7 +765,8 @@ export default function Dashboard({
     void persistDisplayPreferences({ imageAuditMinimumImages: value });
   };
   const inlineTool = openTool === "variations" || openTool === "price-list" || openTool === "vine";
-  const inlineReturnRef = useRef<{ scrollY: number; group: NavigationGroup } | null>(null);
+  const inlineReturnRef = useRef<{ scrollY: number; group: NavigationGroup; homeVine?: boolean } | null>(null);
+  const vineHomeTriggerRef = useRef<HTMLButtonElement | null>(null);
   const [openToolMenu, setOpenToolMenu] = useState<NavigationGroup | null>(null);
   const [operationsIntelligenceView, setOperationsIntelligenceView] =
     useState<OperationsIntelligenceView>("promotions");
@@ -869,7 +871,8 @@ export default function Dashboard({
     inlineReturnRef.current = null;
     window.requestAnimationFrame(() => {
       if (!target) return;
-      menuTriggerRefs.current[target.group]?.focus({ preventScroll: true });
+      const trigger = target.homeVine ? vineHomeTriggerRef.current : menuTriggerRefs.current[target.group];
+      trigger?.focus({ preventScroll: true });
       window.scrollTo({ top: target.scrollY, behavior: "instant" });
     });
   };
@@ -1213,7 +1216,7 @@ export default function Dashboard({
     }, 0);
   }, []);
 
-  const launch = (tool: Tool) => {
+  const launch = (tool: Tool, homeVine = false) => {
     if (openTool !== null) return;
     setOpenToolMenu(null);
     setCommandOpen(false);
@@ -1233,7 +1236,7 @@ export default function Dashboard({
     if (tool === "price-list") setPriceListOpened(true);
     if (tool === "vine") setVineOpened(true);
     if (tool === "variations" || tool === "price-list" || tool === "vine") {
-      inlineReturnRef.current = { scrollY: window.scrollY, group: TOOL_META[tool].group };
+      inlineReturnRef.current = { scrollY: window.scrollY, group: TOOL_META[tool].group, homeVine };
     }
     if (tool === "subscriptions") setAuditPreference("subscriptions");
     setOpenTool(tool);
@@ -2650,7 +2653,11 @@ export default function Dashboard({
             {additionalAuditCards}
           </div>
 
-          <details className="low-frequency-audits">
+          <details
+            className="low-frequency-audits"
+            open={lowFrequencyAuditsOpen}
+            onToggle={(event) => setLowFrequencyAuditsOpen(event.currentTarget.open)}
+          >
             <summary>
               <span>
                 <strong>低頻健檢</strong>
@@ -2691,6 +2698,19 @@ export default function Dashboard({
                 )}
                 <button type="button" onClick={() => setReviewAuditOpen(true)}>
                   {currentReviewAudit ? "查看" : "執行"}
+                  <i aria-hidden="true">›</i>
+                </button>
+              </section>
+              <section className="content-audit-home-card" aria-label="Vine 進度捷徑">
+                <span className="content-audit-home-icon" aria-hidden="true">V</span>
+                <div><h2>Vine 進度</h2></div>
+                <button
+                  ref={vineHomeTriggerRef}
+                  type="button"
+                  aria-label="開啟 Vine 進度"
+                  onClick={() => launch("vine", true)}
+                >
+                  開啟
                   <i aria-hidden="true">›</i>
                 </button>
               </section>
