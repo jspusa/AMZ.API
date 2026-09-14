@@ -11,6 +11,8 @@
 
 ## 目前狀態
 
+- 2026-09-14 Vine 六欄表格、評論達註冊名額三分之二的綠燈提示及首頁低頻入口為獨立 Control Console Release；沒有 Notebook Key 能力或版本變更。[規格](specs/2026-09-vine-table.md)與[本輪交付證據](releases/2026-09-vine-table.md)分開記錄檢查、審查與 Pages 狀態。其他效期／桌面交付工作維持下列原狀態。
+
 - Issue #285 接續完整 #263：.75 的 36 次 metadata 失敗沒有證明獨立 plan-items 不可讀。官方契約允許由 fresh list summary 直接讀取計畫申報商品，0.1.76 已實作精確固定 metadata 400 的獨立備援；已保存且 fresh revision 相同的 .75 失敗將直接讀尚未嘗試的商品，不重送 metadata。申報來源完整與貨件明細未核對分開，餘量未知仍不進行事曆。規格見 [計畫申報效期備援](specs/2026-09-plan-declared-expiry-fallback.md)。開工 source `633be5e64c616c560a06d68c85aae6a77585a23d`；本輪工作在 `codex/expiry-plan-item-recovery-20260914`。本機 check 329 files／4,175 tests、audit 0 已通過；兩軸審查與發行依[本輪帳本](releases/2026-09-plan-declared-expiry-fallback.md)接續。實際安裝仍 .75，.76 尚未完成發行或 live 驗收，以下 .75 證據保留。
 
 - 0.1.75 已由 PR #282 合併，runtime source 固定為 `3a40cc0309d89abed80b25df40ca2c8e29188708`，與兩軸 0 findings 的 final candidate `39a21ecec0cf6aabadb091a866c1e90fa62c7992` 同一 tree。4,106 tests、audit 0、四條 exact main CI、Pages 12 檔 bytes、兩平台可信產物與 Mac→Windows server completion receipts 均已驗。使用者解鎖後已正常退出 .74、保留 App／userData 備份並安裝可信 .75；安裝 ASAR 相符、vault／ledger 保留，原生首頁 Amazon 已連線。先以本機 GET 核對 .74 歷史摘要，再執行首次且唯一 .75 同步（摘要開始時間 2026-09-14 12:22:31，台北），終態仍為 `FBA_EXPIRY_SOURCES_UNAVAILABLE`／partial：284 FBA、33 偏慢／待核對、284 批次未知、0 已確認清售風險。新摘要證明本輪 36 已列出、0 已讀完、36 不可讀、0 待讀且遍歷結束；全部為 `plan`／首頁／HTTP 400／`BadRequest`／`parsed`／`other-input`，離開並重開工作區後的本機 GET 已核對保存。未重跑 .74、未送第二次 .75 同步；agent 沒有 Amazon mutation。實際拒絕原因尚未建立，待釐清入庫流程與可用來源，完整 #263 仍未完成；員工下載頁仍需獨立登入與實際下載 bytes 核對。接續[本輪交付帳本](releases/2026-09-expiry-source-read-diagnostics.md)，僅以本機 GET 查已存證據，先前已驗功能保留；以下舊版段落是歷史快照，文件 checkout 不作 artifact／安裝來源。

@@ -9,6 +9,45 @@ let renderer: ReactTestRenderer | null = null;
 afterEach(async () => { if (renderer) await act(async () => renderer!.unmount()); renderer = null; vi.unstubAllGlobals(); });
 const snapshot: VineSnapshot = { schemaVersion: 2, marketplaceId: "ATVPDKIKX0DER", source: "seller-central-manual", storage: "encrypted-local", storageNotice: "本機加密", asOfDate: "2026-09-11", unconfirmedCount: 0, updatedAt: "2026-09-12T01:00:00.000Z", rows: [{ sellerSku: null, title: "Sample ongoing product", status: "active", statusText: "正在等待評論", asin: "B000000001", enrollmentDate: "2026-06-16", enrolled: 30, claimed: 15, reviews: 7, importedAt: "2026-09-12T01:00:00.000Z" }, { sellerSku: "SKU-TWO", title: null, status: "active", statusText: "等待處理", asin: "B000000002", enrollmentDate: "2026-09-11", enrolled: 2, claimed: 1, reviews: null, importedAt: "2026-09-12T01:00:00.000Z" }] };
 describe("Vine progress panel", () => {
+  it("shows six table columns and turns the variation light green at two-thirds of enrolled places", async () => {
+    const cases = [
+      { reviews: 20, enrolled: 30, ready: true },
+      { reviews: 19, enrolled: 30, ready: false },
+      { reviews: 10, enrolled: 15, ready: true },
+      { reviews: 9, enrolled: 15, ready: false },
+      { reviews: 22, enrolled: 30, ready: true },
+      { reviews: 0, enrolled: 30, ready: false },
+      { reviews: 1, enrolled: 2, ready: false },
+      { reviews: 2, enrolled: 2, ready: true },
+      { reviews: null, enrolled: 30, ready: false },
+    ];
+    const data: VineSnapshot = { ...snapshot, rows: cases.map(({ reviews, enrolled }, index) => ({
+      ...snapshot.rows[0], asin: `B00000000${index}`, reviews, enrolled, claimed: null,
+    })) };
+    const fetch = vi.fn(async () => new Response(JSON.stringify(data)));
+    vi.stubGlobal("fetch", fetch);
+    await act(async () => { renderer = create(<VinePanel onClose={() => undefined} />); });
+    const table = renderer!.root.findByType("table");
+    expect(table.findByType("thead").findAllByType("th").map((cell) => cell.children.join("")))
+      .toEqual(["品名", "ASIN", "報名日期", "狀況", "進度", "綁變體"]);
+    const rows = table.findByType("tbody").findAllByType("tr");
+    expect(rows).toHaveLength(cases.length);
+    cases.forEach(({ reviews, enrolled, ready }, index) => {
+      const cells = rows[index].findAllByType("td");
+      expect(cells).toHaveLength(5);
+      expect(rows[index].findByProps({ scope: "row" }).children.join("")).toBe("Sample ongoing product");
+      expect(cells[0].children.join("")).toBe(data.rows[index].asin);
+      expect(cells[1].findByType("time").props.dateTime).toBe("2026-06-16");
+      expect(cells[2].children.join("")).toBe("正在等待評論");
+      const light = cells[4].findByProps({ className: `vine-variation-status ${ready ? "is-ready" : "is-waiting"}` });
+      expect(light.children).toContain(ready ? "可綁變體" : "等待Vine回收");
+      expect(cells[4].findAllByType("button")).toHaveLength(0);
+      const bars = cells[3].findAllByType("progress");
+      expect(bars).toHaveLength(reviews === null ? 0 : 1);
+      if (reviews !== null) expect(bars[0].props).toMatchObject({ value: reviews, max: enrolled });
+    });
+    expect(fetch).toHaveBeenCalledExactlyOnceWith("/api/vine", { signal: expect.any(AbortSignal) });
+  });
   it("shows only review/enrolled progress and keeps older active enrollments without calling sync", async () => {
     const fetch = vi.fn(async () => new Response(JSON.stringify(snapshot)));
     vi.stubGlobal("fetch", fetch);

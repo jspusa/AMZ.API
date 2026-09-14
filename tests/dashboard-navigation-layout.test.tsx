@@ -223,10 +223,13 @@ describe("dashboard top navigation layout", () => {
     }
     expect(auditGrid).not.toContain("效期與銷速");
     expect(auditGrid).not.toContain(">評論<");
+    expect(auditGrid).not.toContain("Vine 進度");
     const lowFrequency = markup.slice(lowFrequencyStart, markup.indexOf("</details>", lowFrequencyStart));
     expect(lowFrequency.indexOf("效期與銷速")).toBeLessThan(
       lowFrequency.indexOf(">評論<"),
     );
+    expect(lowFrequency).toContain('aria-label="開啟 Vine 進度"');
+    expect(lowFrequency.indexOf(">評論<")).toBeLessThan(lowFrequency.indexOf("Vine 進度"));
 
     const source = await readFile(
       new URL("../src/renderer/src/components/dashboard.tsx", import.meta.url),
