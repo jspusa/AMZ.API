@@ -1,0 +1,35 @@
+name: Image controls source snapshot
+on:
+  push:
+    branches: [verify/image-controls-20260914]
+    paths: [.github/workflows/image-controls-source-once.yml]
+permissions:
+  contents: read
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: 396374dc5896d8343dd13369864138836c861c92
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Archive source and local verification runtime
+        run: |
+          mkdir -p /tmp/image-controls-source
+          git archive --format=tar.gz HEAD > /tmp/image-controls-source/source.tar.gz
+          tar -czf /tmp/image-controls-source/deps.tar.gz node_modules
+          cp "$(command -v node)" /tmp/image-controls-source/node
+          git rev-parse HEAD > /tmp/image-controls-source/source-sha.txt
+          sha256sum package-lock.json > /tmp/image-controls-source/lock-sha.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: image-controls-source
+          path: /tmp/image-controls-source
+          retention-days: 2
