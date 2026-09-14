@@ -53,4 +53,4 @@ Supply Boss 改成 7 天暫存：到期即停止提供網址，固定定期清�
 ## Further Notes
 
 - [Amazon media sources and image variants](https://developer-docs.amazon/sp-api/lang-en_EN/docs/submit-media)：Amazon 需可讀來源；支援位置按 Product Type／站點決定。
-- Sites 僅提供既有 R2 binding，未提供可設定的 R2 lifecycle／cron control；因此使用 repo 定期維護工作及上傳前清理，不能把 HTTP 過期當作已物理刪除。
+- Sites 僅提供既有 R2 binding，未提供可設定的 R2 lifecycle／cron control；因此使用 repo 定期維護工作，以及新上傳附帶的少量背景清理；新上傳不等待舊圖清理，不能把 HTTP 過期當作已物理刪除。
