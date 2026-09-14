@@ -85,6 +85,39 @@ function runOne<T>(
 }
 
 describe("main-owned Amazon write gate", () => {
+  it("expires an image batch's shorter source-bound ticket while native approval is open", async () => {
+    let now = 1_000_000;
+    const context = scriptedContext();
+    const approveWrite = vi.fn(async () => { now = 1_300_000; });
+    const gate = new MainWriteGate({store:await testStore(),context,approveWrite,now:()=>now});
+    const binding = {...writeBinding(await context.capture(US), {family:"images-batch",operation:"images"}),previewExpiresAt:1_300_000};
+    await gate.stagePreview(binding);
+    const execute = vi.fn(async () => "sent");
+    await expect(runOne(gate,binding,execute)).rejects.toMatchObject({code:"PREVIEW_EXPIRED"});
+    expect(approveWrite).toHaveBeenCalledOnce();
+    expect(execute).not.toHaveBeenCalled();
+  });
+  it.each([
+    ["standard-price", "price", 2],
+    ["images", "images", 2],
+    ["content-batch", "content", 15],
+    ["images-batch", "images", 15],
+  ] as const)("keeps the %s family TTL with or without a longer source deadline", async (family,operation,minutes) => {
+    for (const bounded of [false,true]) {
+      let now = 1_000_000;
+      const context = scriptedContext();
+      const approveWrite = vi.fn(async()=>undefined);
+      const gate = new MainWriteGate({store:await testStore(),context,approveWrite,now:()=>now});
+      const binding = {...writeBinding(await context.capture(US),{family,operation}),...(bounded ? {previewExpiresAt:now + 60 * 60_000} : {})};
+      await gate.stagePreview(binding);
+      now += minutes * 60_000;
+      const execute = vi.fn(async()=>"sent");
+      await expect(runOne(gate,binding,execute)).rejects.toMatchObject({code:"PREVIEW_EXPIRED"});
+      expect(approveWrite).not.toHaveBeenCalled();
+      expect(execute).not.toHaveBeenCalled();
+    }
+  });
+
   it.each(["live", "demo"] as const)("persists the %s mode before any dispatch so recent work cannot cross modes", async (mode) => {
     const store = await testStore();
     const contextAdapter = createScriptedSpExecutionContextAdapter((marketplaceId) => ({

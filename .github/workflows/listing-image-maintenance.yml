@@ -2,7 +2,7 @@ name: Clean expired listing images
 
 on:
   schedule:
-    - cron: '23 * * * *'
+    - cron: '*/5 * * * *'
   workflow_dispatch:
 
 permissions: {}
@@ -44,7 +44,7 @@ jobs:
               if len(body) > 16384:
                   raise RuntimeError('Image maintenance response exceeded its limit')
               result = json.loads(body)
-              if result.get('ok') is not True or result.get('policy') != 'temporary-7-days':
+              if result.get('ok') is not True or result.get('policy') != 'temporary-1-hour':
                   raise RuntimeError('Image retention policy was not confirmed')
               for key in ('deletedObjects', 'deletedBytes'):
                   if type(result.get(key)) is not int or result[key] < 0:

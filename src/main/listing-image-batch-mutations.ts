@@ -15,6 +15,7 @@ import { abortableDelay } from "./abort-utils";
 import { ListingWriteAcceptedButPendingError } from "./amazon/listing-write-readback";
 import { bodyRecord, isPlainRecord, parseMarketplace, parseSellerSku } from "./route-input";
 import { invalid, json, routeError } from "./route-response";
+import { LISTING_IMAGE_MIN_VALIDITY_MS } from "../shared/listing-image-retention";
 
 export type ListingImageBatchCommand = Readonly<{
   operation: "capabilities" | "preview" | "commit" | "observe";
@@ -30,7 +31,7 @@ export type ListingImageBatchDependencies = Readonly<{
   context: Pick<SpExecutionContextAdapter, "capture" | "assertCurrent">;
   writeGate: MainWriteGatePort;
   operations: ListingImageMutationOperations;
-  assertPreparedImageUrls(input: Readonly<{ urls: readonly (string | null)[]; context: SpExecutionContext; sellerSku: string }>): Promise<void>;
+  assertPreparedImageUrls(input: Readonly<{ urls: readonly (string | null)[]; context: SpExecutionContext; sellerSku: string }>): Promise<number>;
   now?: () => number;
   uuid?: () => string;
   readbackDelaysMs?: readonly number[];
@@ -127,6 +128,15 @@ export class ListingImageBatchMutations implements ListingImageBatchMutationsPor
     if (revision !== this.revision) throw new SpExecutionContextError("SP_CONTEXT_INVALIDATED", "Amazon 執行環境已更新；請重新開始圖片批次。");
   }
 
+  private async preparedExpiry(row: BoundInput, context: SpExecutionContext, revision: number): Promise<number> {
+    const expiry = await this.deps.assertPreparedImageUrls({urls:row.urls, sellerSku:row.sellerSku, context});
+    await this.fence(context, revision);
+    if (!Number.isSafeInteger(expiry) || expiry <= this.now() + LISTING_IMAGE_MIN_VALIDITY_MS) {
+      throw new SpApiError("圖片暫存期限不足十分鐘；請重新準備原始圖片。", {status:409,code:"IMAGE_PREPARATION_EXPIRED"});
+    }
+    return expiry;
+  }
+
   private snapshot(plan: BatchPlan): ListingImageBatchSnapshot {
     const rows = plan.rows.map(row => structuredClone(row.public));
     return {
@@ -172,7 +182,7 @@ export class ListingImageBatchMutations implements ListingImageBatchMutationsPor
         public: { sellerSku: row.sellerSku, asin: null, title: "", previousUrls: Array<null>(10).fill(null), requestedUrls: [...row.urls], changedSlots: [], deletedSlots: [],
           state: "blocked", code: null, message: null, requestId: null, acceptedAt: null } };
       try {
-        await this.deps.assertPreparedImageUrls({ ...row, context });
+        await this.preparedExpiry(pending.input, context, revision);
         await this.fence(context, revision);
         const observation = await this.deps.operations.read({ marketplaceId, sellerSku: row.sellerSku });
         await this.fence(context, revision);
@@ -203,11 +213,26 @@ export class ListingImageBatchMutations implements ListingImageBatchMutationsPor
       plan.rows.push(pending);
     }
     await this.fence(context, revision);
-    plan.expiresAt = this.now() + PREVIEW_TTL_MS;
+    const sourceExpiry = await this.recheckReadySources(plan, revision);
+    plan.expiresAt = Math.min(this.now() + PREVIEW_TTL_MS, sourceExpiry - LISTING_IMAGE_MIN_VALIDITY_MS);
     if (plan.rows.some(row => row.public.state === "ready")) await this.deps.writeGate.stagePreview(this.binding(plan));
     await this.fence(context, revision);
     this.plans.set(plan.batchId, plan);
     return json(this.snapshot(plan));
+  }
+
+  private async recheckReadySources(plan: BatchPlan, revision: number): Promise<number> {
+    let earliest = Infinity;
+    for (const row of plan.rows.filter(row => row.public.state === "ready")) {
+      try { earliest = Math.min(earliest, await this.preparedExpiry(row.input, plan.context, revision)); }
+      catch (error) {
+        await this.fence(plan.context, revision);
+        if (!isolatedPreviewFailure(error)) throw error;
+        const failure = publicSpApiError(error, "圖片準備已失效，尚未送出 Amazon。");
+        row.public = {...row.public, state:"blocked", code:failure.code, message:failure.message, requestId:failure.requestId};
+      }
+    }
+    return earliest;
   }
 
   private binding(plan: BatchPlan): WriteBinding {
@@ -217,7 +242,7 @@ export class ListingImageBatchMutations implements ListingImageBatchMutationsPor
       proposalFingerprint: createHash("sha256").update(JSON.stringify(row.input)).digest("hex"),
     }));
     if (!intents.length) throw new SpApiError("沒有可送出的圖片變更。", { status: 422, code: "NO_CHANGES" });
-    return { family: "images-batch", previewKey: plan.batchId, context: plan.context, intents: [intents[0], ...intents.slice(1)] };
+    return { family: "images-batch", previewKey: plan.batchId, context: plan.context, previewExpiresAt:plan.expiresAt, intents: [intents[0], ...intents.slice(1)] };
   }
 
   private async findPlan(request: ApiRequest, commit: boolean): Promise<BatchPlan | ApiResponse> {
@@ -292,7 +317,7 @@ export class ListingImageBatchMutations implements ListingImageBatchMutationsPor
           for (const row of plan.rows.filter(item => item.public.state === "ready")) {
             try {
               await this.fence(plan.context, revision);
-              await this.deps.assertPreparedImageUrls({ urls: row.input.urls, context: plan.context, sellerSku: row.input.sellerSku });
+              await this.preparedExpiry(row.input, plan.context, revision);
               const fresh = await this.deps.operations.preview(row.input);
               await this.fence(plan.context, revision);
               this.assertResult(fresh, row, plan.context.mode, true);
@@ -304,6 +329,7 @@ export class ListingImageBatchMutations implements ListingImageBatchMutationsPor
               row.public = { ...row.public, state: "blocked", code: publicError.code, message: publicError.message, requestId: publicError.requestId };
             }
           }
+          await this.recheckReadySources(plan, revision);
           if (!plan.rows.some(row => row.public.state === "ready")) throw new SpApiError("全部 SKU 已隔離，Amazon 寫入數為 0。", { status: 422, code: "IMAGE_BATCH_NO_ELIGIBLE_ROWS" });
           plan.phase = "awaiting-approval";
         },
@@ -320,7 +346,7 @@ export class ListingImageBatchMutations implements ListingImageBatchMutationsPor
               try {
                 result = await session.attempt<ListingImageUpdateResult>({ intentId: row.input.sellerSku, execute: async ({ recordAccepted, assertCurrent }) => {
                   try {
-                    await this.deps.assertPreparedImageUrls({ urls: row.input.urls, context: plan.context, sellerSku: row.input.sellerSku });
+                    await this.preparedExpiry(row.input, plan.context, revision);
                     await this.fence(plan.context, revision);
                   } catch (error) {
                     throw new SpApiPreCommitError(error instanceof SpApiError ? error : new SpApiError("圖片準備已失效。", { status: 409, code: "IMAGE_PREPARATION_EXPIRED" }));
@@ -329,7 +355,7 @@ export class ListingImageBatchMutations implements ListingImageBatchMutationsPor
                     await assertCurrent();
                     await this.fence(plan.context, revision);
                     try {
-                      await this.deps.assertPreparedImageUrls({ urls: row.input.urls, context: plan.context, sellerSku: row.input.sellerSku });
+                      await this.preparedExpiry(row.input, plan.context, revision);
                       await this.fence(plan.context, revision);
                     } catch (error) {
                       throw new SpApiPreCommitError(error instanceof SpApiError ? error : new SpApiError("圖片準備已失效。", { status: 409, code: "IMAGE_PREPARATION_EXPIRED" }));

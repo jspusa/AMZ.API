@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type DragEvent } from "react";
+import { LISTING_IMAGE_MIN_VALIDITY_MS, LISTING_IMAGE_RETENTION_MS } from "../../../shared/listing-image-retention";
 import type { ListingImageBatchRow, ListingImageBatchSnapshot } from "../../../shared/listing-image-batch";
 import { inspectImageFolders, readDroppedImageFolders, type BrowserFolderEntry, type ImageFolderRow, type SelectedFolderImage } from "../image-folder-import";
 
@@ -147,7 +148,10 @@ export default function ImageFolderWorkspace({ marketplaceId, onBusyChange }: { 
     const revision = generation.current;
     const request = new AbortController(); controller.current = request;
     running.current = true; setWorking(true); setAttempted(true); setError(null); setAcknowledged(false); setBatch(null); setNow(Date.now());
-    const prepared: Array<{ sellerSku: string; urls: (string | null)[] }> = [];
+    const prepared: Array<{ sellerSku: string; urls: (string | null)[]; expiresAt: number }> = [];
+    const assertRemaining = (expiry = Infinity) => {
+      if (Math.min(expiry, ...prepared.map(row => row.expiresAt)) <= Date.now() + LISTING_IMAGE_MIN_VALIDITY_MS) throw new Error("圖片暫存期限不足十分鐘，請重新準備並核對；尚未更新 Amazon。");
+    };
     const update = (id: string, changes: Partial<FolderState>) => setRows(previous => previous.map(row => row.id === id ? { ...row, ...changes } : row));
     try {
       for (const row of validRows) {
@@ -156,6 +160,7 @@ export default function ImageFolderWorkspace({ marketplaceId, onBusyChange }: { 
         let failed = false;
         for (const image of row.images) {
           if (revision !== generation.current) return;
+          assertRemaining(firstExpiry ? Date.parse(firstExpiry) : Infinity);
           update(row.id, { preparation: `準備第 ${image.slot + 1} 張…` });
           const form = new FormData();
           form.set("marketplaceId", marketplaceId); form.set("sellerSku", row.sellerSku!); form.set("batchMode", "true"); form.set("file", image.file);
@@ -167,19 +172,23 @@ export default function ImageFolderWorkspace({ marketplaceId, onBusyChange }: { 
           }
           if (!response.ok) throw new Error(payload.message || "圖片準備結果不明，已停止這批；尚未更新 Amazon。");
           if (!payload.readyForAmazon || typeof payload.amazonUrl !== "string" || !payload.amazonUrl.startsWith("https://") ||
-            typeof payload.expiresAt !== "string" || !Number.isFinite(Date.parse(payload.expiresAt)) || Date.parse(payload.expiresAt) - Date.now() < 48 * 60 * 60 * 1000) throw new Error("圖片服務尚未提供可用的暫存期限，已停止；請更新 Notebook Key 與圖片服務。");
+            typeof payload.expiresAt !== "string" || !Number.isFinite(Date.parse(payload.expiresAt)) || new Date(payload.expiresAt).toISOString() !== payload.expiresAt || Date.parse(payload.expiresAt) > Date.now() + LISTING_IMAGE_RETENTION_MS + 60_000) throw new Error("圖片服務尚未提供可用的暫存期限，已停止；請更新 Notebook Key 與圖片服務。");
+          assertRemaining(Math.min(Date.parse(payload.expiresAt), firstExpiry ? Date.parse(firstExpiry) : Infinity));
           nextUrls[image.slot] = payload.amazonUrl;
           if (!firstExpiry || payload.expiresAt < firstExpiry) firstExpiry = payload.expiresAt;
           update(row.id, { uploaded: image.slot + 1, urls: [...nextUrls], expiresAt: firstExpiry });
         }
-        if (!failed) { prepared.push({ sellerSku: row.sellerSku!, urls: nextUrls }); update(row.id, { preparation: "圖片已備妥，核對商品中…" }); }
+        if (!failed) { prepared.push({ sellerSku: row.sellerSku!, urls: nextUrls, expiresAt: Date.parse(firstExpiry!) }); update(row.id, { preparation: "圖片已備妥，核對商品中…" }); }
       }
       if (!prepared.length) throw new Error("沒有完整通過的 SKU；請修正資料夾後重新選擇。");
-      const value = await jsonResponse(await fetch(BATCH_PATH, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ marketplaceId, replacementMode: "complete", rows: prepared }), signal: request.signal }));
+      assertRemaining();
+      const value = await jsonResponse(await fetch(BATCH_PATH, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ marketplaceId, replacementMode: "complete", rows: prepared.map(({sellerSku,urls}) => ({sellerSku,urls})) }), signal: request.signal }));
       if (revision === generation.current) {
         const reviewed = responseSnapshot(value, marketplaceId, prepared.map(row => row.sellerSku));
         if (reviewed.rows.some(row => row.requestedUrls.some((url, slot) => url !== prepared.find(input => input.sellerSku === row.sellerSku)!.urls[slot]))) throw new Error("核對結果的完整圖片組與所選資料夾不一致，已停止，請重新核對。");
-        setBatch(reviewed);
+        const readyExpiry = Math.min(...reviewed.rows.filter(row => row.state === "ready").map(row => prepared.find(input => input.sellerSku === row.sellerSku)!.expiresAt));
+        if (reviewed.totals.ready && (Date.parse(reviewed.expiresAt) > readyExpiry - LISTING_IMAGE_MIN_VALIDITY_MS || Date.parse(reviewed.expiresAt) <= Date.now())) throw new Error("核對期限已不足以送出這組圖片，請重新準備並核對；尚未更新 Amazon。");
+        setBatch(reviewed); setNow(Date.now());
       }
     } catch (reason) { if (revision === generation.current) setError(reason instanceof Error ? reason.message : "本批次準備未完成；不會自動重傳或更新 Amazon。"); }
     finally { if (revision === generation.current) { running.current = false; setWorking(false); } }
@@ -202,7 +211,7 @@ export default function ImageFolderWorkspace({ marketplaceId, onBusyChange }: { 
   const awaitingResult = submitted.current && batch?.phase === "ready";
   return <section className="image-folder-workspace" aria-label="資料夾批次圖片更新">
     <p>每批最多 <strong>30 個 SKU／30 個商品資料夾</strong>，每個 SKU 最多 <strong>10 張</strong>；實際可用位置依商品檢查結果。</p>
-    <p className="image-folder-temporary">圖片只作暫時轉交，準備後保留 7 天，再由服務自動清理。Amazon 已接受不代表已下載完成，圖片不會在送出後立刻刪除。</p>
+    <p className="image-folder-temporary">圖片只作暫時轉交，準備後保留 1 小時，再由服務自動清理。Amazon 已接受不代表已下載完成，圖片不會在送出後立刻刪除。</p>
     <div className="image-folder-drop" onDragOver={event => event.preventDefault()} onDrop={dropped} aria-disabled={busy || !supported}>
       <strong>把一組變體的商品資料夾拖到這裡</strong>
       <span>可一次拖入多個商品資料夾，或包含它們的上層資料夾。</span>
@@ -234,7 +243,7 @@ export default function ImageFolderWorkspace({ marketplaceId, onBusyChange }: { 
                   </tr>)}
                 </tbody></table>
               </details>}</> : <span>待核對商品與可用位置</span>}</td>
-            <td aria-live="polite">{row.errors.length ? row.errors.map(issue => <p key={issue}>{issue}</p>) : result ? <><strong>{ROW_LABELS[result.state]}</strong>{result.message && <p>{result.message}</p>}</> : <><span>{row.preparation}</span>{attempted && <small>已準備 {row.uploaded}／{row.images.length} 張</small>}</>}{row.expiresAt && <small>圖片暫存至 {new Date(row.expiresAt).toLocaleDateString("zh-TW")}</small>}</td>
+            <td aria-live="polite">{row.errors.length ? row.errors.map(issue => <p key={issue}>{issue}</p>) : result ? <><strong>{ROW_LABELS[result.state]}</strong>{result.message && <p>{result.message}</p>}</> : <><span>{row.preparation}</span>{attempted && <small>已準備 {row.uploaded}／{row.images.length} 張</small>}</>}{row.expiresAt && <small>圖片暫存至 {new Date(row.expiresAt).toLocaleString("zh-TW")}</small>}</td>
           </tr>;
         })}
       </tbody></table></div>
@@ -244,7 +253,7 @@ export default function ImageFolderWorkspace({ marketplaceId, onBusyChange }: { 
     </>}
     {batch && <div className="image-folder-confirmation">
       <p role="status">{batch.message ?? (batch.phase === "ready" ? `核對通過 ${batch.totals.ready} 個 SKU，待修正 ${batch.totals.blocked} 個。` : `已送出 ${batch.totals.submitted}／${batch.totals.skus} · Amazon 已接受 ${batch.totals.accepted} · 回查確認 ${batch.totals.verified}`)}</p>
-      {batch.phase === "ready" && !awaitingResult && <><label><input type="checkbox" checked={acknowledged} disabled={busy} onChange={event => setAcknowledged(event.target.checked)} />我已核對完整圖片組與列出的舊圖清除項目，只更新核對通過的 SKU。</label>
+      {batch.phase === "ready" && !awaitingResult && <><p>本次核對有效至 {new Date(batch.expiresAt).toLocaleString("zh-TW")}；每張圖片送出時仍須保留超過十分鐘的有效期。</p><label><input type="checkbox" checked={acknowledged} disabled={busy} onChange={event => setAcknowledged(event.target.checked)} />我已核對完整圖片組與列出的舊圖清除項目，只更新核對通過的 SKU。</label>
         <button type="button" className="price-primary-button" disabled={busy || !acknowledged || !batch.totals.ready || Date.parse(batch.expiresAt) <= now} onClick={submit}>一次指紋確認並更新 {batch.totals.ready} 個 SKU</button>
         {Date.parse(batch.expiresAt) <= now && <p role="status">核對已到期，請使用「重新準備並核對」；原檔仍保留，尚未送出 Amazon 更新。</p>}</>}
       {(batch.phase !== "ready" || awaitingResult) && <button type="button" disabled={working} onClick={observe}>重新讀取本批次進度</button>}

@@ -11,7 +11,9 @@
 
 ## 目前狀態
 
-- Issue #290 的 0.1.77 已由 PR #291／runtime `b25901ac47017f0d90b8feaea61b2270477bde72` 發布：資料夾批次圖片支援 30 SKU／300 圖、完整替換與一次原生批准後逐筆提交。4,232 tests、兩軸 review、四條 exact-source CI、Pages 12 檔及兩平台可信產物已核對；Supply Boss version 10 七天 receipt 與公開原圖 bytes 已驗，PR #292 的固定清理 caller 正式 run 已成功。可信 .77 已安裝且 .75 App／userData 備份及 vault／ledger 保留；兩平台下載卡上傳 receipts 已驗；原生畫面讀取逾時，等待使用者處理系統授權，員工頁仍待登入及實際下載驗證。接續[核准規格](specs/2026-09-image-folder-batch.md)與[分層交付帳本](releases/2026-09-image-folder-batch.md)，runtime artifacts 保持 b25901a 來源；功能驗收不送真實 Amazon mutation，網址到期與實際空間釋放分開。
+- Issue #294 接續使用者最新決定：圖片暫存由七天改為一小時，.78 在 `codex/image-one-hour-retention-20260914` 實作；十分鐘來源有效性餘裕、受最早到期圖約束的核對票證、既有圖期限縮短與每五分鐘清理保持 main/server 邊界。改版前 .77 原生五資料夾／45 圖準備與五 SKU Amazon 預檢均通過，沒有正式 Amazon 更新；原圖未動。接續[一小時規格](specs/2026-09-image-one-hour-retention.md)與[分層交付帳本](releases/2026-09-image-one-hour-retention.md)，不要把先前七天測試當成 .78 驗收。
+
+- Issue #290 的 0.1.77 已由 PR #291／runtime `b25901ac47017f0d90b8feaea61b2270477bde72` 發布：資料夾批次圖片支援 30 SKU／300 圖、完整替換與一次原生批准後逐筆提交。4,232 tests、兩軸 review、四條 exact-source CI、Pages 12 檔及兩平台可信產物已核對；Supply Boss version 10 七天 receipt 與公開原圖 bytes 已驗，PR #292 的固定清理 caller 正式 run 已成功。可信 .77 已安裝且 .75 App／userData 備份及 vault／ledger 保留；兩平台下載卡上傳 receipts 已驗；解鎖後原生五資料夾／45 圖準備及五 SKU 預檢通過，未送出 Amazon 更新；員工頁仍待登入及實際下載驗證。接續[核准規格](specs/2026-09-image-folder-batch.md)與[分層交付帳本](releases/2026-09-image-folder-batch.md)，runtime artifacts 保持 b25901a 來源；功能驗收不送真實 Amazon mutation，網址到期與實際空間釋放分開。
 
 - 2026-09-14 Vine 六欄表格、評論達註冊名額三分之二的綠燈提示及首頁低頻入口已由 PR #287／`7f33210ccf7e3412e9c889b76d5824c928e77462` 獨立發布；4,177 tests、8 組畫面、兩軸 review、正式 Validate／Pages 與線上 12 檔 bytes 均通過。這是 Control Console Release，沒有 Notebook Key 能力或版本變更。[規格](specs/2026-09-vine-table.md)與[本輪交付證據](releases/2026-09-vine-table.md)分開記錄檢查、審查與 Pages 狀態。其他效期／桌面交付工作維持下列原狀態。
 

@@ -54,7 +54,7 @@ describe("listing image upload execution context", () => {
         expect(String(input)).toBe(`${LISTING_IMAGE_SERVICE_ORIGIN}/api/listing-images/v2/${id}`);
         expect(Buffer.from(init.body as Uint8Array)).toEqual(Buffer.from(bytes));
         if (drift) router.invalidateContext("lock-screen");
-        return Response.json({ operationId: id, sha256, url, width: 1000, height: 1000, size: bytes.length, contentType: "image/png" });
+        return Response.json({ operationId: id, sha256, url, width: 1000, height: 1000, size: bytes.length, contentType: "image/png", expiresAt: new Date(Date.now() + 60 * 60_000).toISOString() });
       }
       expect(String(input)).toBe(url);
       return new Response(Buffer.from(bytes), { headers: { "content-type": "image/png" } });

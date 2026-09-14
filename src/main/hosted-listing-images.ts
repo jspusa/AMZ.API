@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { LISTING_IMAGE_MIN_VALIDITY_MS, LISTING_IMAGE_RETENTION_MS } from "../shared/listing-image-retention";
 
 export const LISTING_IMAGE_SERVICE_ORIGIN = "https://supply-boss.brave-prawn-0848.chatgpt.site";
 const MAX_BYTES = 10 * 1024 * 1024;
@@ -105,7 +106,7 @@ export class HostedListingImages implements HostedListingImagePort {
     const sha256 = createHash("sha256").update(input.bytes).digest("hex");
     const identity = createHash("sha256").update(JSON.stringify([input.contextKey, sha256])).digest("hex");
     let existing = this.operations.get(identity);
-    if (existing?.verified && existing.expiresAt !== undefined && existing.expiresAt < (this.input.now ?? Date.now)() + 48 * 3600000) {
+    if (existing?.verified && existing.expiresAt !== undefined && existing.expiresAt <= (this.input.now ?? Date.now)() + LISTING_IMAGE_MIN_VALIDITY_MS) {
       // This explicit preparation can replace a previously verified source with
       // insufficient retention. Unknown uploads still remain GET-only.
       this.operations.delete(identity);
@@ -139,9 +140,9 @@ export class HostedListingImages implements HostedListingImagePort {
       }, (response) => this.receipt(response)) as Record<string, unknown>;
     } catch (error) {
       await fence();
-      if (existing && error instanceof ImageServiceResponseError && error.status === 410) {
-        // Explicit server expiry is terminal for this upload operation. A later
-        // user preparation may create a new operation; this call never re-PUTs.
+      if (existing?.verified && error instanceof ImageServiceResponseError && error.status === 410) {
+        // Server expiry may retire only a previously byte-verified operation.
+        // Unverified outcomes stay GET-only even after a 410 and context clear.
         this.operations.delete(identity);
         throw error;
       }
@@ -168,7 +169,7 @@ export class HostedListingImages implements HostedListingImagePort {
     if (expiresAt !== undefined) {
       const now = (this.input.now ?? Date.now)();
       const expiry = typeof expiresAt === "string" ? Date.parse(expiresAt) : NaN;
-      if (!Number.isFinite(expiry) || new Date(expiry).toISOString() !== expiresAt || expiry <= now || expiry > now + 7 * 86400000 + 60000) {
+      if (!Number.isFinite(expiry) || new Date(expiry).toISOString() !== expiresAt || expiry <= now || expiry > now + LISTING_IMAGE_RETENTION_MS + 60_000) {
         throw new Error("圖片暫存期限無效或已到期，請重新準備。");
       }
     }
