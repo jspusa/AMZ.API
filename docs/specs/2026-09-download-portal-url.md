@@ -2,6 +2,8 @@
 
 2026-09-16 使用者要求將 AMZ.API 員工下載網址改為 AMZ.API 名稱，繼續使用 ChatGPT Sites，並輪替下載密碼。
 
+同日使用者進一步確認「只需下載密碼，不必登入 ChatGPT」；新站的公開入口仍須由應用層密碼保護安裝檔。驗收分開核對一般瀏覽器登入／下載控制，以及 authenticated HTTP 完整安裝檔 bytes；瀏覽器訊息不替代本機落地檔案證據。
+
 ## 本次範圍
 
 - Canonical 員工入口為 `https://amz-api-downloads.brave-prawn-0848.chatgpt.site/downloads`。WebGate、共用安裝說明與現行使用文件使用同一入口。
@@ -18,7 +20,7 @@
 | ★ Repo | WebGate 渲染及 update-policy 的公開輸出都指向 canonical URL；原 HTTPS 與 Bridge 安全邊界保留；現行 README 與 handoff 一致。 |
 | ★ 本機檢查 | 聚焦 tests、完整 `npm run check`、production audit 與 `git diff --check` 通過。 |
 | ★ Pages | exact source 的 CI 與 Pages 部署通過，正式入口實際指向新網址，發布 bytes 與來源一致。 |
-| ★ Sites | 新入口與舊入口導向可用；未登入無法取得安裝檔；輪替後新驗證可用且舊權限不能沿用。 |
-| ★ 員工下載 | 員工登入後以一般下載按鈕取得兩平台檔案，實際 bytes、大小與 SHA-256 符合既有 0.1.79 可信產物。 |
+| ★ Sites | 新入口只要求下載密碼，不跳轉 ChatGPT 登入；舊入口導向可用；未登入無法取得安裝檔；輪替後新驗證可用且舊權限不能沿用。 |
+| ★ 下載 | 一般瀏覽器以新下載密碼登入後可使用兩平台下載按鈕；另外以 authenticated HTTP 串流核對完整 bytes、大小與 SHA-256 符合既有 0.1.79 可信產物。一般 UI 落地檔案若無獨立證據，保留未驗，不能由「下載已開始」推定。 |
 
 每層證據分開記錄於[交付帳本](../releases/2026-09-download-portal-url.md)。Repo 測試或 Sites 發布本身不能證明員工下載成功，也不解除既有 Amazon／原生驗收待辦。
