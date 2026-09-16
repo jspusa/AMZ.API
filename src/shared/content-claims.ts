@@ -13,13 +13,38 @@ const GRAIN_FREE_INGREDIENT_LIST = new RegExp(
   `${GRAIN_TERM}(?:[\\s,/&]+(?:(?:and|or)\\s+)?${GRAIN_TERM})*[\\s\\p{Pd}_]+free\\b`,
   "giu",
 );
+const UNPROVEN_INGREDIENT_CLAUSE =
+  /\b(?:no|not|without|free\s+(?:from|of)|(?:may|might|could)(?:\s+also)?\s+contain)\b/giu;
+
+function withoutUnprovenIngredientClauses(value: string): string {
+  let result = "";
+  let cursor = 0;
+  for (const match of value.matchAll(UNPROVEN_INGREDIENT_CLAUSE)) {
+    if (match.index < cursor) continue;
+    result += `${value.slice(cursor, match.index)} `;
+    let depth = 0;
+    let end = match.index + match[0].length;
+    for (; end < value.length; end += 1) {
+      const character = value[end]!;
+      if (character === "(" || character === "[" || character === "{") depth += 1;
+      else if (")]}".includes(character)) {
+        if (depth === 0) break;
+        depth -= 1;
+      } else if (depth === 0 && /[.;\n\r\u0085\u2028\u2029]/u.test(character)) {
+        break;
+      }
+    }
+    cursor = end;
+  }
+  return result + value.slice(cursor);
+}
 
 function grainIngredientTokens(ingredients: string): string[] {
   // A negated or possible-content clause is not positive ingredient evidence.
-  // Keep commas within its scope, so "no wheat, corn or rice" stays excluded.
-  const positiveEvidence = ingredients.normalize("NFKC")
-    .replace(/\b(?:no|not|without|free\s+(?:from|of)|may\s+contain)\b[^.;\n\r\u0085\u2028\u2029]*/giu, " ")
-    .replace(GRAIN_FREE_INGREDIENT_LIST, " ");
+  // Commas stay in scope; a containing bracket ends only that clause's scope.
+  const positiveEvidence = withoutUnprovenIngredientClauses(
+    ingredients.normalize("NFKC"),
+  ).replace(GRAIN_FREE_INGREDIENT_LIST, " ");
   return uniqueMatches(positiveEvidence, GRAIN_INGREDIENT);
 }
 

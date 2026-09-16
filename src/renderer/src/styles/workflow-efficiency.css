@@ -107,6 +107,7 @@
 }
 .image-audit-minimum > span { font-size: 13px; letter-spacing: normal; text-transform: none; }
 .image-audit-minimum select { width: 6em; max-width: 100%; flex: 0 0 auto; }
+#image-audit-marketplace { width: auto; max-width: 100%; align-self: flex-start; }
 .image-drop-zone[aria-disabled="true"] { cursor: wait; opacity: .65; }
 .image-drop-zone:focus-visible { outline: 2px solid currentColor; outline-offset: 3px; }
 @media (max-width: 600px) {

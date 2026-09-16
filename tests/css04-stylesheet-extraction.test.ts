@@ -53,7 +53,7 @@ const CSS04_ORDERED_FILES = [
 
 // Current composed source includes intentional feature styles after the preserved epochs.
 const ACCEPTED_SOURCE_TEXT_FINGERPRINT =
-  "cb33da6358209dcbf71f0a3207cfef33c03a23374d4a8d4fe03299517c3a1eb9";
+  "2c15fd7f4dc3ea6acc724ee62569815e4dcc6a487f0955226d66574657a07ffb";
 const ACCEPTED_CSS04_PAYLOAD_FINGERPRINT =
   "15b60283cf64d9530d7df95b62c2e5bc5c2fe49da2b0539791aac6d65b8524a9";
 const RETIRED_STYLESHEET = ["app", "css"].join(".");
@@ -140,8 +140,8 @@ describe("CSS04 final stylesheet extraction", () => {
     );
 
     const normalizedComposition = normalizeNewlines(composition.css);
-    expect((normalizedComposition.match(/\n/gu) ?? []).length).toBe(29753);
-    expect(Buffer.byteLength(normalizedComposition)).toBe(880896);
+    expect((normalizedComposition.match(/\n/gu) ?? []).length).toBe(29772);
+    expect(Buffer.byteLength(normalizedComposition)).toBe(881386);
     expect(
       createHash("sha256").update(normalizedComposition).digest("hex"),
     ).toBe(ACCEPTED_SOURCE_TEXT_FINGERPRINT);

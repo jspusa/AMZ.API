@@ -81,6 +81,11 @@ describe("grain-free content claim consistency", () => {
     "Turkey, wheat-free, corn-free",
     "Turkey; rice and wheat free",
     "Turkey; May contain wheat",
+    "Turkey; May also contain wheat",
+    "Turkey; Might contain rice",
+    "Turkey; Could also contain barley",
+    "Turkey, no wheat (whole), corn or rice",
+    "Chicken (may contain wheat), no corn, rice or barley",
     "",
   ])("does not infer a grain conflict from absent or unproven evidence: %s", (ingredients) => {
     const result = audit(row({ title: `${"T".repeat(60)} Grain-Free`, ingredients }));
@@ -95,6 +100,21 @@ describe("grain-free content claim consistency", () => {
     expect(claimIssues(result.rows[0]!)).toEqual([
       expect.objectContaining({ message: expect.stringContaining("（Rice）") }),
     ]);
+  });
+
+  it.each([
+    "Chicken (no added hormones), Brown Rice",
+    "Chicken (may contain wheat), Brown Rice",
+    "Chicken (no additives (including wheat)), Brown Rice",
+    "Chicken [free from wheat], Brown Rice",
+    "Chicken (no hormones), Brown Rice, no corn or wheat",
+  ])("keeps a parenthetical exclusion separate from later rice evidence: %s", (ingredients) => {
+    const result = audit(row({ title: "Grain-Free Dog Food", ingredients }));
+    expect(claimIssues(result.rows[0]!)).toEqual([
+      expect.objectContaining({ message: expect.stringContaining("（Rice）") }),
+    ]);
+    const renderer = parseContentAuditSnapshot(result, MARKETPLACE_ID);
+    expect(claimIssues(renderer.rows[0]!)).toEqual(claimIssues(result.rows[0]!));
   });
 
   it.each(["Not grain-free", "Not a grain free food", "Never grain-free"])(
