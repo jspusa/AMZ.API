@@ -23,26 +23,27 @@ function value(response: ApiResponse): ListingImageBatchSnapshot {
   expect(response.body.kind).toBe("json");
   return response.body.kind === "json" ? response.body.value as ListingImageBatchSnapshot : {} as ListingImageBatchSnapshot;
 }
-async function setup(overrides: Partial<Pick<ListingImageBatchDependencies, "readbackDelaysMs" | "now" | "assertPreparedImageUrls">> = {}) {
+async function setup(overrides: Partial<Pick<ListingImageBatchDependencies, "readbackDelaysMs" | "now" | "assertPreparedImageUrls">> & { mode?: () => "live" | "demo" } = {}) {
   const directory = await mkdtemp(join(tmpdir(), "amz-image-batch-"));
   const store = new LocalStore(join(directory, "store.json"));
   await store.initialize();
-  const context = createScriptedSpExecutionContextAdapter(() => ({ marketplaceId, mode: "live", accountScope: "image-batch-test-account" }));
+  const context = createScriptedSpExecutionContextAdapter(() => ({ marketplaceId, mode: overrides.mode?.() ?? "live", accountScope: "image-batch-test-account" }));
   const approveWrite = vi.fn(async (_reason: string) => undefined);
   const writeGate = new MainWriteGate({ store, context, approveWrite, now: overrides.now });
   const canonical = new Map<string, readonly (string | null)[]>();
+  const demoCanonical = new Map<string, readonly (string | null)[]>();
   const gateway: ListingImageGateway = {
-    mode: () => "live",
+    mode: () => overrides.mode?.() ?? "live",
     read: vi.fn<ListingImageGateway["read"]>(async identity => ({
       fulfillment: "FBA", sourceEvidence: {} as ListingImageSourceEvidence,
-      snapshot: { mode: "live", marketplaceId, sellerSku: identity.sellerSku, asin: "B09S5VY2JS", productType: "PET_FOOD", title: "Turkey treats", attributesPresent: true,
-        images: attributes.map((attributeName, index) => ({ attributeName, label: String(index + 1), url: (canonical.get(identity.sellerSku) ?? old)[index] ?? null,
+      snapshot: { mode: overrides.mode?.() ?? "live", marketplaceId, sellerSku: identity.sellerSku, asin: "B09S5VY2JS", productType: "PET_FOOD", title: "Turkey treats", attributesPresent: true,
+        images: attributes.map((attributeName, index) => ({ attributeName, label: String(index + 1), url: ((overrides.mode?.() === "demo" ? demoCanonical : canonical).get(identity.sellerSku) ?? old)[index] ?? null,
           capability: { attributeName, label: String(index + 1), supported: true, editable: true, required: index === 0, reason: null } })),
         fetchedAt: new Date().toISOString(), requestId: null, issues: [], notice: "" },
     })),
     validationPreview: vi.fn(async () => ({ ok: true, status: 200, requestId: null, retryAfter: null, payload: { status: "VALID", issues: [] } })),
     commitOnce: vi.fn(async (patch, fence) => { await fence.assertCurrent(); canonical.set(patch.sellerSku, patch.requestedUrls); return { ok: true, status: 200, requestId: "batch-commit", retryAfter: null, payload: { status: "ACCEPTED", issues: [], submissionId: "batch-submission" } }; }),
-    replaceDemoImages: vi.fn(),
+    replaceDemoImages: vi.fn(async (patch, fence) => { await fence.assertCurrent(); demoCanonical.set(patch.sellerSku, patch.requestedUrls); }),
   };
   const assertPreparedImageUrls = vi.fn(async (_input: Parameters<ListingImageBatchDependencies["assertPreparedImageUrls"]>[0]) => (overrides.now ?? Date.now)() + 60 * 60_000);
   const owner = new ListingImageBatchMutations({ context, writeGate, operations: createListingImageMutationOperations(gateway), assertPreparedImageUrls, readbackDelaysMs: [0], ...overrides });
@@ -386,15 +387,41 @@ describe("image folder batch main owner", () => {
     expect(gateway.commitOnce).toHaveBeenCalledOnce();
   });
 
-  it("does not hide a newer unknown attempt behind an older accepted receipt during recovery", async () => {
+  it("recovers the live accepted target when a newer same-account demo simulation exists", async () => {
+    let mode: "live" | "demo" = "live";
+    const { owner, gateway, context, writeGate, approveWrite } = await setup({ mode: () => mode });
+    const liveReview = await previewSkus(owner, ["AFA12AM"]);
+    await submit(owner, liveReview);
+    expect((await terminal(owner, liveReview)).rows[0].state).toBe("verified");
+    mode = "demo"; context.invalidate("mode-changed"); writeGate.clearEphemeral(); owner.clear();
+    const demoReview = await previewSkus(owner, ["AFA12AM"]);
+    await submit(owner, demoReview);
+    expect((await terminal(owner, demoReview)).rows[0].state).toBe("simulated");
+    mode = "live"; context.invalidate("mode-changed"); writeGate.clearEphemeral(); owner.clear();
+    const before = vi.mocked(gateway.read).mock.calls.length;
+    const recovered = value(await owner.handle({ operation: "recover", request: request("GET", {}, {
+      marketplaceId, recoverSkus: JSON.stringify(["AFA12AM"]),
+    }) }));
+    expect((await terminal(owner, recovered)).rows[0].state).toBe("verified");
+    expect(gateway.read).toHaveBeenCalledTimes(before + 1);
+    expect(gateway.commitOnce).toHaveBeenCalledOnce();
+    expect(gateway.replaceDemoImages).toHaveBeenCalledOnce();
+    expect(approveWrite).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(["unknown", "malformed-demo", "unresolved-demo", "contradictory-demo"] as const)("does not hide a newer %s attempt behind an older accepted receipt during recovery", async kind => {
     const { owner, gateway, context, writeGate } = await setup();
     const review = await previewSkus(owner, ["AFA12AM"]);
     await submit(owner, review);
     await terminal(owner, review);
     const current = await context.capture(marketplaceId);
     const [older] = await writeGate.inspect({ context: current, marketplaceId, sellerSku: "AFA12AM", operations: ["images"], project: entry => entry });
+    const response = kind === "unknown" ? null : {
+      ...(older.response as Record<string, unknown>), mode: "demo", status: kind === "contradictory-demo" ? "ACCEPTED" : "SIMULATED",
+      ...(kind === "malformed-demo" ? { imageWriteEvidence: null } : {}),
+    };
     vi.spyOn(writeGate, "inspect").mockResolvedValue([
-      { ...older, state: "unknown", response: null, createdAt: older.createdAt + 1 }, older,
+      { ...older, state: kind === "malformed-demo" || kind === "contradictory-demo" ? "completed" : "unknown", response, createdAt: older.createdAt + 1 }, older,
     ]);
     const before = vi.mocked(gateway.read).mock.calls.length;
     const recovered = value(await owner.handle({ operation: "recover", request: request("GET", {}, {

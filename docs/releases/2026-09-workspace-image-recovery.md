@@ -16,13 +16,15 @@ Base `68e8db8b26e12cadb7a23e986a4f3bdad18a9a69`；獨立工作副本 `codex/work
 
 - WIP 獨立安全審查發現進行中 observer 斷線後 manual GET 會被停用；已修正並補新舊 Bridge 的重接測試，相關三檔 65 tests 通過。此限定 review 不替代最終兩軸 review。
 - 本機 production fixture 已用真實選單核對圖片、價目表、AWD 與文件庫完整頁面；圖片恢復表含已確認／待同步與回查時間。390 px document 無水平溢位，進度表在自身容器捲動；深色大字價目表正常。均為 synthetic UI，不代表 Amazon 回查成功。
-- 第一輪 full check 4,319 tests 通過、3 個既有 CSS fingerprint 基準因刻意樣式修改而待同步；未降低斷言或變更 renderer trust boundary。最終結果另記。
+- 最終 production fixture 的公告日曆已直接展開；同一 instance 的返回與再次開啟保留，無額外讀取。
+- 第一輪 full check 4,319 tests 通過、3 個既有 CSS fingerprint 基準因刻意樣式修改而待同步；未降低斷言或變更 renderer trust boundary。CSS 與評論由 drawer 轉全頁的閱讀契約同步後，335 files／4,322 tests、build／stylesheet stream、audit 0 通過。
+- Spec review 另以真實 LocalStore／Write Gate 合成重現：較新展示模式紀錄遮住正式 accepted 操作。修正僅排除完整、身分精確且 completed 的 SIMULATED 收據；不排除 null／未知／格式不完整的新紀錄。最終包含此修正的 checks／review 另記。
 
 ## 交付狀態
 
 | 層級 | 狀態 | 界線 |
 |---|---|---|
-| 實作與定點回歸 | ☆ 進行中 | main 回查／恢復、全頁導覽及價目表入口 |
+| 實作與定點回歸 | ★ 已完成 | main 回查／恢復、全頁導覽及價目表入口 |
 | 全檢查與兩軸 review | ☆ 待完成 | 不沿用 .79 成功證據 |
 | Exact-source CI／Pages／兩平台產物 | ☆ 待完成 | 固定最終 main SHA 後核對 |
 | 受保護下載與安裝 | ☆ 待完成 | 新專用下載網址；保留 vault／帳本／舊 App |

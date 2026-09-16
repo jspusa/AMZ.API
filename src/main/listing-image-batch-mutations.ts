@@ -8,7 +8,7 @@ import {
 import { marketplaceById } from "../shared/marketplaces";
 import { SpExecutionContextError, type SpExecutionContext, type SpExecutionContextAdapter } from "./amazon/sp-execution-context";
 import type { ListingImageUpdateResult } from "./amazon/listing-image-types";
-import { imageReadbackDecision, reconcileImageWrite, recoverableImageWrite, type ListingImageMutationOperations } from "./listing-image-mutations";
+import { imageReadbackDecision, reconcileImageWrite, recoverableImageWrite, isSimulatedImageWrite, type ListingImageMutationOperations } from "./listing-image-mutations";
 import { MainWriteGateError, type MainWriteGatePort, type WriteBinding } from "./write-gate";
 import { publicSpApiError, publicSpApiRequestId, SpApiError, SpApiPreCommitError } from "./amazon/sp-api-error";
 import { abortableDelay } from "./abort-utils";
@@ -304,7 +304,11 @@ export class ListingImageBatchMutations implements ListingImageBatchMutationsPor
           // Keep null/malformed newer attempts so an older accepted receipt cannot replace them.
           project: inspection => inspection });
         await this.fence(context, revision);
-        const ordered = [...inspections].sort((left, right) => right.createdAt - left.createdAt);
+        const ordered = inspections
+          // A completed demo simulation is not an Amazon attempt. Every unresolved
+          // or malformed newer entry still blocks fallback to older live evidence.
+          .filter(entry => !(entry.state === "completed" && isSimulatedImageWrite(entry.response, { marketplaceId, sellerSku })))
+          .sort((left, right) => right.createdAt - left.createdAt);
         const latest = ordered[0];
         const ambiguous = latest && ordered[1]?.createdAt === latest.createdAt;
         const recovered = latest && !ambiguous && (latest.state !== "completed" || latest.expiresAt > this.now())

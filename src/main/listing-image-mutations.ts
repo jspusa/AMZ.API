@@ -577,12 +577,13 @@ export function imageReadbackDecision(
   }) ? "verified" : "pending";
 }
 
-/** Rebuilds only a validated accepted target; never derives one from a null/unknown receipt. */
-export function recoverableImageWrite(
+function validatedImageWriteResult(
   response: unknown,
   identity: ListingImageIdentity,
+  mode: "live" | "demo",
+  status: "ACCEPTED" | "SIMULATED",
 ): Readonly<{ result: ListingImageUpdateResult; asin: string; productType: string }> | null {
-  if (!isRecord(response) || response.mode !== "live" || response.status !== "ACCEPTED" ||
+  if (!isRecord(response) || response.mode !== mode || response.status !== status ||
       response.marketplaceId !== identity.marketplaceId || response.sellerSku !== identity.sellerSku ||
       typeof response.completedAt !== "string" || !Number.isFinite(Date.parse(response.completedAt)) ||
       !(response.submissionId === null || typeof response.submissionId === "string") ||
@@ -596,6 +597,19 @@ export function recoverableImageWrite(
     catch { return true; }
   })) return null;
   return { result, asin: evidence.asin, productType: evidence.productType };
+}
+
+/** Rebuilds only a validated accepted target; never derives one from a null/unknown receipt. */
+export function recoverableImageWrite(
+  response: unknown,
+  identity: ListingImageIdentity,
+): Readonly<{ result: ListingImageUpdateResult; asin: string; productType: string }> | null {
+  return validatedImageWriteResult(response, identity, "live", "ACCEPTED");
+}
+
+/** Only an exact, complete simulation receipt can be excluded from live recovery. */
+export function isSimulatedImageWrite(response: unknown, identity: ListingImageIdentity): boolean {
+  return validatedImageWriteResult(response, identity, "demo", "SIMULATED") !== null;
 }
 
 export function reconcileImageWrite(
