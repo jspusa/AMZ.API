@@ -35,6 +35,7 @@ export type ListingImageBatchCapabilities = Readonly<{
   maxImagesPerSku: 10;
   replacementMode: "complete";
   confirmationMode: "native";
+  readbackRecovery?: "exact-sku-v1";
 }>;
 
 export type ListingImageBatchSnapshot = Readonly<{
@@ -49,6 +50,8 @@ export type ListingImageBatchSnapshot = Readonly<{
   rows: readonly ListingImageBatchRow[];
   totals: Readonly<{ skus: number; ready: number; blocked: number; unchanged: number; submitted: number; accepted: number; verified: number; deletedSlots: number }>;
   message: string | null;
+  /** Main-owned completion time of the latest bounded readback pass. */
+  lastReadbackAt?: string | null;
 }>;
 
 export type ListingImageBatchPreviewInput = Readonly<{

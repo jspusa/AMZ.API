@@ -53,16 +53,16 @@ const CSS04_ORDERED_FILES = [
 
 // Current composed source includes intentional feature styles after the preserved epochs.
 const ACCEPTED_SOURCE_TEXT_FINGERPRINT =
-  "2c15fd7f4dc3ea6acc724ee62569815e4dcc6a487f0955226d66574657a07ffb";
+  "f07937236b1e5983ae3af9bb26fef6fd9ff1536595f0d995bd916f33245dc56f";
 const ACCEPTED_CSS04_PAYLOAD_FINGERPRINT =
-  "15b60283cf64d9530d7df95b62c2e5bc5c2fe49da2b0539791aac6d65b8524a9";
+  "c546c8192a299a526fd66c4655491eadb51a7acb731be9387f8001466d10a253";
 const RETIRED_STYLESHEET = ["app", "css"].join(".");
 
 const CSS04_PAYLOAD_EVIDENCE = [
   {
     path: "styles/image-home-audits.css",
-    bytes: 23537,
-    sha256: "0087f51aafe5f80e8953a0e61e755c3e0b2611308cc15266211a2f23d78925fa",
+    bytes: 24370,
+    sha256: "1b85086d87610c40847caa87bc8728cc757cbc3ae647ee0bfd112875f1b017dc",
   },
   {
     path: "styles/operations-bulletin.css",
@@ -71,8 +71,8 @@ const CSS04_PAYLOAD_EVIDENCE = [
   },
   {
     path: "styles/audit-workspace.css",
-    bytes: 5_753,
-    sha256: "cbe81366ed26700ec92a04afc1e6017bd780c8bc2b22ce439e8d7bd084ccfa39",
+    bytes: 6301,
+    sha256: "609282f2ab6d946b54c4b16bf8fdfba6eb3703126e2130a0aca493d74a9e014d",
   },
   {
     path: "styles/brand-ads.css",
@@ -134,14 +134,14 @@ describe("CSS04 final stylesheet extraction", () => {
     ).toEqual(CSS04_PAYLOAD_EVIDENCE);
 
     const css04Payload = payloads.map(({ source }) => source).join("");
-    expect(Buffer.byteLength(css04Payload)).toBe(118872);
+    expect(Buffer.byteLength(css04Payload)).toBe(120253);
     expect(createHash("sha256").update(css04Payload).digest("hex")).toBe(
       ACCEPTED_CSS04_PAYLOAD_FINGERPRINT,
     );
 
     const normalizedComposition = normalizeNewlines(composition.css);
-    expect((normalizedComposition.match(/\n/gu) ?? []).length).toBe(29772);
-    expect(Buffer.byteLength(normalizedComposition)).toBe(881386);
+    expect((normalizedComposition.match(/\n/gu) ?? []).length).toBe(29816);
+    expect(Buffer.byteLength(normalizedComposition)).toBe(883063);
     expect(
       createHash("sha256").update(normalizedComposition).digest("hex"),
     ).toBe(ACCEPTED_SOURCE_TEXT_FINGERPRINT);

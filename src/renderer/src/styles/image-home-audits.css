@@ -995,3 +995,13 @@
 .image-folder-marketplace select { padding: 10px 12px; border: 1px solid var(--border, #cfd8e4); border-radius: 8px; background: var(--surface, #fff); color: inherit; font: inherit; }
 .image-folder-workspace :is(button, input, summary, .image-folder-table):focus-visible, .image-folder-marketplace select:focus-visible { outline: 3px solid #509ddc; outline-offset: 3px; }
 :root[data-ui-mode="dark"] .image-folder-deletions { color: #ffaaa4; }
+
+.image-folder-recovery { margin: 18px 0; }
+.image-folder-recovery summary { cursor: pointer; font-weight: 600; }
+.image-folder-recovery label { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; margin: 12px 0; }
+.image-folder-recovery textarea { box-sizing: border-box; width: min(100%, 420px); resize: vertical; padding: 10px 12px; border: 1px solid var(--border, #cfd8e4); border-radius: 8px; background: var(--surface, #fff); color: inherit; font: inherit; }
+.image-folder-recovery textarea:focus-visible { outline: 3px solid #509ddc; outline-offset: 3px; }
+.image-folder-recovered table { min-width: 520px; }
+.image-folder-recovered :is(th, td):nth-child(1) { width: 28%; }
+.image-folder-recovered :is(th, td):nth-child(2) { width: 17%; }
+.image-folder-recovered :is(th, td):nth-child(3) { width: 55%; }

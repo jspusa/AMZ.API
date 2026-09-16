@@ -103,7 +103,7 @@ async function mountDashboard(imageAuditMinimumImages = 8) {
   const headingFocus = Object.fromEntries(
     AUDIT_SUITE_SECTIONS.map(({ label }) => [label, vi.fn()]),
   ) as Record<string, ReturnType<typeof vi.fn>>;
-  const menuFocus = { "產品區": vi.fn(), "價格區": vi.fn(), "營運區": vi.fn() };
+  const menuFocus = { "產品區": vi.fn(), "價格區": vi.fn(), "營運區": vi.fn(), "報表區": vi.fn() };
   const priceHeadingFocus = vi.fn();
   const vineHomeFocus = vi.fn();
   let renderer: ReactTestRenderer | null = null;
@@ -174,6 +174,7 @@ async function mountDashboard(imageAuditMinimumImages = 8) {
     documentElement,
     visibilityState: "visible",
     querySelector,
+    querySelectorAll: vi.fn(() => ({ length: 0, item: () => null })),
     getElementById: vi.fn((id: string) => sectionTargets.get(id) ?? null),
     addEventListener: vi.fn(),
     removeEventListener: vi.fn(),
@@ -233,7 +234,7 @@ async function mountDashboard(imageAuditMinimumImages = 8) {
         if (element.type === "button" && element.props["aria-label"] === "開啟 Vine 進度") {
           return { focus: vineHomeFocus };
         }
-        if (element.type === "h2") return { focus: vi.fn() };
+        if (element.type === "h2" || element.type === "h1") return { focus: vi.fn() };
         return {};
       },
     });
@@ -248,6 +249,55 @@ async function mountDashboard(imageAuditMinimumImages = 8) {
 }
 
 describe("dashboard audit workspace interactions", () => {
+  it("opens every top-level tool inside the page and restores its menu without starting a scan or write", async () => {
+    const { root, fetchMock, flushAnimationFrames, menuFocus, windowMock } = await mountDashboard();
+    const initialRequests = fetchMock.mock.calls.length;
+    for (const [group, label, heading] of [
+      ["產品區", "文案", "商品內容"],
+      ["產品區", "圖片", "商品圖片"],
+      ["產品區", "A+ 健檢", "全站 A+ 健檢"],
+      ["價格區", "定價", "定價與訂閱"],
+      ["價格區", "限時售價", "促銷"],
+      ["價格區", "訂閱價格", "全站訂閱價格健檢"],
+      ["價格區", "B2B 價格", "全站 B2B 價格健檢"],
+      ["營運區", "補貨", "補貨建議"],
+      ["營運區", "廣告管理", "廣告"],
+      ["營運區", "帳務", "帳務"],
+      ["報表區", "入庫貨件", "FBA 入庫貨件追蹤"],
+      ["報表區", "Amazon API 文件庫", "報表區"],
+    ]) {
+      windowMock.scrollY = 450;
+      await act(async () => root.findByProps({ "aria-label": group }).props.onClick());
+      const item = root.findAllByProps({ role: "menuitem" }).find(node => node.findByType("strong").children.join("") === label)!;
+      await act(async () => item.props.onClick());
+      await act(async () => { await vi.dynamicImportSettled(); });
+      await flushAnimationFrames();
+      expect(root.findAllByProps({ role: "dialog" }), label).toHaveLength(0);
+      const workspace = root.findByProps({ "data-audit-workspace": "true" });
+      expect(workspace.findByType("h1").children.join(""), label).toBe(heading);
+      expect(workspace.findByProps({ className: "audit-workspace-back" }).children.join("")).toContain("返回首頁");
+      if (label === "圖片") {
+        expect(workspace.findAllByProps({ role: "tab" })).toHaveLength(3);
+      }
+      if (label === "廣告管理") {
+        expect(workspace.findAllByProps({ className: "helium-lane" })).toHaveLength(1);
+      }
+      await act(async () => workspace.findByProps({ className: "audit-workspace-back" }).props.onClick());
+      await flushAnimationFrames();
+      if (group in menuFocus) expect(menuFocus[group as keyof typeof menuFocus]).toHaveBeenCalledWith({ preventScroll: true });
+      expect(windowMock.location.hash).toBe("");
+    }
+    await act(async () => root.findByProps({ className: "low-frequency-audits" })
+      .props.onToggle({ currentTarget: { open: true } }));
+    await act(async () => root.findByProps({ "aria-label": "FBA 評論主題健檢捷徑" }).findByType("button").props.onClick());
+    await act(async () => { await vi.dynamicImportSettled(); });
+    const reviewWorkspace = root.findByProps({ "data-audit-workspace": "true" });
+    expect(reviewWorkspace.findByType("h1").children.join("")).toBe("評論健檢");
+    expect(root.findAllByProps({ role: "dialog" })).toHaveLength(0);
+    await act(async () => reviewWorkspace.findByProps({ className: "audit-workspace-back" }).props.onClick());
+    expect(fetchMock.mock.calls.slice(initialRequests).filter(([, options]) => options?.method && options.method !== "GET")).toEqual([]);
+  });
+
   it("opens Vine from the collapsed low-frequency group and restores that entry without starting an audit", async () => {
     const { root, fetchMock, windowMock, scrollTo, flushAnimationFrames, vineHomeFocus, menuFocus } = await mountDashboard();
     const lowFrequency = root.findByProps({ className: "low-frequency-audits" });
@@ -283,6 +333,62 @@ describe("dashboard audit workspace interactions", () => {
       .toBe(false);
   });
 
+  it("keeps the price workspace and draft when returning is declined or validation is still running", async () => {
+    const { root, fetchMock, windowMock, flushAnimationFrames } = await mountDashboard();
+    let completePreview!: (response: Response) => void;
+    const previewResponse = new Promise<Response>((resolve) => { completePreview = resolve; });
+    fetchMock.mockImplementation((input, options) => {
+      if (input === "/api/sp-api/listings" && options?.method === "POST") return previewResponse;
+      if (input.startsWith("/api/sp-api/listings?")) return Promise.resolve(Response.json({
+        mode: "live", marketplaceId: DEFAULT_MARKETPLACE_ID, sellerSku: "NAV-PRICE-TEST",
+        asin: "B000NAV123", title: "Navigation test product", productType: "PET_SUPPLIES",
+        status: [], standardPrice: { amount: 10, currencyCode: "USD" },
+        effectivePrice: { amount: 10, currencyCode: "USD" }, minimumPrice: null, maximumPrice: null,
+        hasDiscountedPrice: false, hasAutomatedPricing: false,
+        fetchedAt: "2026-09-16T00:00:00.000Z", requestId: null, issues: [], notice: null,
+      }));
+      if (input.startsWith("/api/sp-api/subscribe-save?")) return Promise.resolve(Response.json({ found: false }));
+      return new Promise<Response>(() => undefined);
+    });
+    const openPrice = async () => {
+      await act(async () => root.findByProps({ "aria-label": "價格區" }).props.onClick());
+      await act(async () => root.findAllByProps({ role: "menuitem" })
+        .find(node => node.findByType("strong").children.join("") === "定價")!.props.onClick());
+      await flushAnimationFrames();
+    };
+    await openPrice();
+    await act(async () => root.findByProps({ id: "price-sku-input" }).props.onChange({ target: { value: "NAV-PRICE-TEST" } }));
+    await act(async () => root.findByProps({ className: "price-search" }).props.onSubmit({ preventDefault: vi.fn() }));
+    await act(async () => root.findByProps({ id: "new-standard-price" }).props.onChange({ target: { value: "11" } }));
+    windowMock.confirm.mockReturnValue(false);
+    await act(async () => root.findByProps({ "aria-label": "回到 AMZ.API 首頁" }).props.onClick({ preventDefault: vi.fn() }));
+    expect(windowMock.confirm).toHaveBeenCalledExactlyOnceWith("尚有未送出的價格變更，確定要捨棄嗎？");
+    expect(root.findByProps({ id: "new-standard-price" }).props.value).toBe("11");
+    await act(async () => root.findByProps({ className: "audit-workspace-back" }).props.onClick());
+    expect(windowMock.confirm).toHaveBeenCalledTimes(2);
+
+    await act(async () => { void root.findByProps({ className: "price-primary-button" }).props.onClick(); });
+    const brand = root.findByProps({ "aria-label": "回到 AMZ.API 首頁" });
+    expect(brand.props["aria-disabled"]).toBe(true);
+    expect(root.findByProps({ className: "audit-workspace-back" }).props.disabled).toBe(true);
+    await act(async () => brand.props.onClick({ preventDefault: vi.fn() }));
+    await act(async () => root.findByProps({ className: "audit-workspace-back" }).props.onClick());
+    expect(windowMock.confirm).toHaveBeenCalledTimes(2);
+    expect(root.findByProps({ id: "new-standard-price" }).props.value).toBe("11");
+    expect(fetchMock.mock.calls.filter(([, options]) => options?.method === "PATCH")).toHaveLength(0);
+
+    await act(async () => completePreview(Response.json({ message: "Synthetic validation stopped" }, { status: 400 })));
+    expect(root.findByProps({ "aria-label": "回到 AMZ.API 首頁" }).props["aria-disabled"]).toBeUndefined();
+    windowMock.confirm.mockReturnValue(true);
+    await act(async () => root.findByProps({ "aria-label": "回到 AMZ.API 首頁" }).props.onClick({ preventDefault: vi.fn() }));
+    await flushAnimationFrames();
+    expect(root.findAllByProps({ id: "new-standard-price" })).toHaveLength(0);
+    const lookups = fetchMock.mock.calls.filter(([input]) => input.startsWith("/api/sp-api/listings?"));
+    await openPrice();
+    expect(root.findByProps({ id: "price-sku-input" }).props.value).toBe("");
+    expect(fetchMock.mock.calls.filter(([input]) => input.startsWith("/api/sp-api/listings?"))).toEqual(lookups);
+  });
+
   it("sets the remembered image minimum only inside the image audit and reuses it for run-all", async () => {
     const { root, fetchMock, windowMock, flushTimeouts, flushAnimationFrames } = await mountDashboard(10);
     expect(root.findAllByProps({ "aria-label": "首頁圖片健檢最低張數" })).toHaveLength(0);
@@ -308,7 +414,7 @@ describe("dashboard audit workspace interactions", () => {
     expect(starts.find(request => request.kind === "subscription").options).toEqual({ months: 6 });
   });
 
-  it("moves skip-link and menu shortcut focus without changing the trusted URL or fetching", async () => {
+  it("opens menu sections as full pages while keeping their existing data and trusted URL", async () => {
     const {
       root, fetchMock, sectionTargets, windowMock, flushAnimationFrames,
     } = await mountDashboard();
@@ -341,6 +447,8 @@ describe("dashboard audit workspace interactions", () => {
       ["營運區", "事件", "home-intelligence", "events"],
       ["報表區", "銷售表現", "home-performance", null],
     ] as const;
+    const bulletin = root.findByProps({ className: "operations-bulletin" });
+    expect(bulletin.props.open).toBe(false);
     for (const [group, label, targetId, intelligenceView] of shortcutCases) {
       sectionTargets.get(targetId)!.focus.mockClear();
       sectionTargets.get(targetId)!.scrollIntoView.mockClear();
@@ -351,17 +459,24 @@ describe("dashboard audit workspace interactions", () => {
       const requestsBeforeShortcut = fetchMock.mock.calls.length;
       await act(async () => item.props.onClick());
       await flushAnimationFrames();
-      expect(sectionTargets.get(targetId)!.scrollIntoView).toHaveBeenCalledWith(
-        expect.objectContaining({ block: "start" }),
-      );
-      expect(sectionTargets.get(targetId)!.focus).toHaveBeenCalledWith({ preventScroll: true });
+      const workspace = root.findByProps({ "data-navigation-workspace": label });
+      expect(workspace.findByProps({ id: "navigation-workspace-title" }).children.join("")).toBe(label);
+      expect(root.findByProps({ id: targetId }).props.hidden).toBe(false);
+      expect(sectionTargets.get(targetId)!.scrollIntoView).not.toHaveBeenCalled();
       expect(windowMock.location.hash).toBe("");
       expect(fetchMock).toHaveBeenCalledTimes(requestsBeforeShortcut);
+      if (targetId === "home-bulletin") {
+        expect(root.findByProps({ className: "operations-bulletin" })).toBe(bulletin);
+        expect(bulletin.props.open).toBe(true);
+      }
       if (intelligenceView) {
         expect(root.findByProps({ className: "operations-intelligence-disclosure" }).props.open).toBe(true);
         expect(root.findByProps({ className: "oi-view-picker" }).findByType("select").props.value)
           .toBe(intelligenceView);
       }
+      await act(async () => root.findByProps({ className: "audit-workspace-back" }).props.onClick());
+      await flushAnimationFrames();
+      expect(bulletin.props.open).toBe(false);
     }
   });
 

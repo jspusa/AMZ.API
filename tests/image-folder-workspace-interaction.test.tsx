@@ -36,7 +36,7 @@ it("prepares one complete folder, discloses old extras, and requires acknowledge
       writes.push({ method: init.method, body: JSON.parse(init.body as string) });
       return Response.json(init.method === "PATCH" ? { ...batch, phase: "completed", rows: [{ ...batch.rows[0], state: "accepted" }], totals: { ...batch.totals, submitted: 1, accepted: 1 } } : batch);
     }
-    return Response.json({ capability: "listing-image-batch-v1", maxSkus: 30, maxImagesPerSku: 10, replacementMode: "complete", confirmationMode: "native" });
+    return Response.json({ capability: "listing-image-batch-v1", maxSkus: 30, maxImagesPerSku: 10, replacementMode: "complete", confirmationMode: "native", readbackRecovery: "exact-sku-v1" });
   }));
   await act(async () => { renderer = create(<ImageFolderWorkspace marketplaceId={marketplaceId} onBusyChange={() => undefined} />); });
   await act(async () => { await renderer!.root.findByProps({ "aria-label": "選擇商品資料夾" }).props.onChange({ target: { files: [file("02"), file("01")], value: "" } }); });
@@ -59,7 +59,7 @@ it("prepares one complete folder, discloses old extras, and requires acknowledge
   expect(text()).toContain("Amazon 已接受");
 });
 
-async function mountSafetyFixture(options: { upload?: () => Promise<Response>; unavailable?: boolean; uncertainCommit?: boolean; wholeWorkspace?: boolean } = {}) {
+async function mountSafetyFixture(options: { upload?: () => Promise<Response>; unavailable?: boolean; uncertainCommit?: boolean; wholeWorkspace?: boolean; legacyReadback?: boolean } = {}) {
   const calls: Array<{ method: string; path: string }> = [];
   const busy: boolean[] = [];
   const listeners = new Set<() => void>();
@@ -75,7 +75,7 @@ async function mountSafetyFixture(options: { upload?: () => Promise<Response>; u
       return Response.json({ ...oneImage, phase: "completed" });
     }
     if (url.includes("batchId=")) return Response.json({ ...oneImage, phase: "completed", rows: [{ ...oneImage.rows[0], state: "accepted" }], totals: { ...batch.totals, submitted: 1, accepted: 1 } });
-    return options.unavailable ? Response.json({ message: "Unavailable" }, { status: 404 }) : Response.json({ capability: "listing-image-batch-v1", maxSkus: 30, maxImagesPerSku: 10, replacementMode: "complete", confirmationMode: "native" });
+    return options.unavailable ? Response.json({ message: "Unavailable" }, { status: 404 }) : Response.json({ capability: "listing-image-batch-v1", maxSkus: 30, maxImagesPerSku: 10, replacementMode: "complete", confirmationMode: "native", ...(options.legacyReadback ? {} : { readbackRecovery: "exact-sku-v1" }) });
   }));
   await act(async () => { renderer = create(options.wholeWorkspace
     ? <ImageWorkspaceDrawer initialMarketplaceId={marketplaceId} initialTab="folders" presentation="workspace" onClose={() => undefined} onBusyChange={value => busy.push(value)} />
@@ -196,4 +196,95 @@ it("refuses a review ticket that outlives an earlier source's ten-minute margin"
   expect(text()).toContain("核對期限已不足");
   expect(button("一次指紋確認並更新 1 個 SKU")).toBeUndefined();
   expect(fixture.calls.filter(call=>call.method === "PATCH")).toHaveLength(0);
+});
+
+
+it("explicitly refreshes Amazon readback with visible waiting feedback instead of only rereading progress", async () => {
+  const fixture = await mountSafetyFixture({ uncertainCommit: true });
+  await chooseOne();
+  await act(async () => { await button("準備圖片並核對 1 個 SKU").props.onClick(); });
+  await act(async () => renderer!.root.findByProps({ type: "checkbox" }).props.onChange({ target: { checked: true } }));
+  await act(async () => { await button("一次指紋確認並更新 1 個 SKU").props.onClick(); });
+  let release!: (response: Response) => void;
+  const pending = new Promise<Response>(resolve => { release = resolve; });
+  vi.mocked(fetch).mockImplementationOnce(() => pending);
+  let refreshing!: Promise<void>;
+  await act(async () => { refreshing = button("重新讀取本批次進度").props.onClick(); });
+  expect(vi.mocked(fetch).mock.lastCall?.[0]).toContain("&refresh=true");
+  expect(text()).toContain("正在唯讀回查 Amazon 圖片");
+  expect(button("重新讀取本批次進度").props.disabled).toBe(true);
+  await act(async () => {
+    release(Response.json({ ...batch, phase: "completed", rows: [{ ...batch.rows[0], state: "verified" }],
+      totals: { ...batch.totals, ready: 0, submitted: 1, accepted: 1, verified: 1 }, lastReadbackAt: new Date(initialNow).toISOString() }));
+    await refreshing;
+  });
+  expect(text()).toContain("★ Amazon 回查確認");
+  expect(text()).toContain("最近回查：");
+  expect(fixture.calls.filter(call => call.method === "PATCH")).toHaveLength(1);
+});
+
+it("restores previous exact-SKU progress without selecting files or sending any upload or mutation", async () => {
+  const fixture = await mountSafetyFixture();
+  await act(async () => renderer!.root.findByProps({ "aria-label": "找回圖片更新的 SKU" }).props.onChange({ target: { value: "AFA12AM" } }));
+  vi.mocked(fetch).mockImplementationOnce(async () => Response.json({ ...batch, phase: "completed", rows: [{ ...batch.rows[0], state: "verified", acceptedAt: new Date(initialNow).toISOString() }],
+    totals: { ...batch.totals, ready: 0, submitted: 1, accepted: 1, verified: 1 }, lastReadbackAt: new Date(initialNow).toISOString() }));
+  await act(async () => { await button("讀取先前圖片進度").props.onClick(); });
+  const requestUrl = new URL(String(vi.mocked(fetch).mock.lastCall?.[0]), "https://example.test");
+  expect(JSON.parse(requestUrl.searchParams.get("recoverSkus")!)).toEqual(["AFA12AM"]);
+  expect(renderer!.root.findByProps({ "aria-label": "先前圖片更新進度" })).toBeTruthy();
+  expect(text()).toContain("AFA12AM");
+  expect(text()).toContain("★ Amazon 回查確認");
+  expect(text()).toContain("2 張");
+  expect(button("一次指紋確認並更新 1 個 SKU")).toBeUndefined();
+  expect(fixture.calls.every(call => call.method === "GET")).toBe(true);
+  expect(vi.mocked(fetch).mock.calls.every(([, init]) => !init?.method || init.method === "GET")).toBe(true);
+});
+
+it("does not represent a legacy local-only progress button as fresh Amazon recovery", async () => {
+  await mountSafetyFixture();
+  // Re-render under a different marketplace forces the capability check again.
+  vi.mocked(fetch).mockResolvedValueOnce(Response.json({ capability: "listing-image-batch-v1", maxSkus: 30, maxImagesPerSku: 10, replacementMode: "complete", confirmationMode: "native" }));
+  await act(async () => renderer!.update(<ImageFolderWorkspace marketplaceId="A1F83G8C2ARO7P" onBusyChange={() => undefined} />));
+  await act(async () => renderer!.root.findByProps({ "aria-label": "找回圖片更新的 SKU" }).props.onChange({ target: { value: "AFA12AM" } }));
+  const calls = vi.mocked(fetch).mock.calls.length;
+  await act(async () => { await button("讀取先前圖片進度").props.onClick(); });
+  expect(text()).toContain("請更新 Notebook Key");
+  expect(vi.mocked(fetch)).toHaveBeenCalledTimes(calls);
+});
+
+
+it("preserves commas inside an exact recovery SKU and rejects surrounding whitespace before any request", async () => {
+  await mountSafetyFixture();
+  const input = renderer!.root.findByProps({ "aria-label": "找回圖片更新的 SKU" });
+  await act(async () => input.props.onChange({ target: { value: " AFA12AM" } }));
+  const before = vi.mocked(fetch).mock.calls.length;
+  await act(async () => { await button("讀取先前圖片進度").props.onClick(); });
+  expect(text()).toContain("SKU 前後不可有空白");
+  expect(vi.mocked(fetch)).toHaveBeenCalledTimes(before);
+  await act(async () => input.props.onChange({ target: { value: "AFA12AM,PACK\r\n\r\n" } }));
+  vi.mocked(fetch).mockResolvedValueOnce(Response.json({ ...batch, phase: "completed", rows: [{ ...batch.rows[0], sellerSku: "AFA12AM,PACK", state: "accepted" }] }));
+  await act(async () => { await button("讀取先前圖片進度").props.onClick(); });
+  const requestUrl = new URL(String(vi.mocked(fetch).mock.lastCall?.[0]), "https://example.test");
+  expect(JSON.parse(requestUrl.searchParams.get("recoverSkus")!)).toEqual(["AFA12AM,PACK"]);
+});
+
+it.each([false, true])("allows a manual progress read after an active observer disconnects (legacy: %s)", async legacyReadback => {
+  await mountSafetyFixture({ legacyReadback });
+  await chooseOne();
+  await act(async () => { await button("準備圖片並核對 1 個 SKU").props.onClick(); });
+  await act(async () => renderer!.root.findByProps({ type: "checkbox" }).props.onChange({ target: { checked: true } }));
+  const callbacks: Array<() => void> = [];
+  vi.spyOn(window, "setTimeout").mockImplementation(callback => { callbacks.push(callback as () => void); return 1; });
+  vi.mocked(fetch).mockResolvedValueOnce(Response.json({ ...batch, phase: "readback", rows: [{ ...batch.rows[0], state: "accepted" }] }));
+  await act(async () => { await button("一次指紋確認並更新 1 個 SKU").props.onClick(); });
+  expect(button("重新讀取本批次進度").props.disabled).toBe(true);
+  vi.mocked(fetch).mockRejectedValueOnce(new Error("Read unavailable"));
+  await act(async () => { callbacks.at(-1)!(); await Promise.resolve(); });
+  expect(text()).toContain("Read unavailable");
+  expect(button("重新讀取本批次進度").props.disabled).toBe(false);
+  vi.mocked(fetch).mockResolvedValueOnce(Response.json({ ...batch, phase: "completed", rows: [{ ...batch.rows[0], state: "verified" }] }));
+  await act(async () => { await button("重新讀取本批次進度").props.onClick(); });
+  expect(String(vi.mocked(fetch).mock.lastCall?.[0]).includes("&refresh=true")).toBe(!legacyReadback);
+  expect(text()).toContain("★ Amazon 回查確認");
+  expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "PATCH")).toHaveLength(1);
 });

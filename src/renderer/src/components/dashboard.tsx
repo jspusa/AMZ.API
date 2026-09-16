@@ -32,7 +32,7 @@ import AdsDrawer from "./ads-drawer";
 import AuditSuiteHomeCard from "./audit-suite-home-card";
 import GlobalSkuSearch from "./global-sku-search";
 import HomeAuditSummary, { AuditIdleStatus, AuditResultStatus } from "./home-audit-summary";
-import AuditWorkspaceShell from "./audit-workspace-shell";
+import AuditWorkspaceShell, { AuditWorkspaceNavigationContext, WorkspacePageHeader } from "./audit-workspace-shell";
 import AplusAuditDrawer from "./a-plus-audit-drawer";
 import {
   observeAplusAuditJob,
@@ -51,6 +51,7 @@ import OperationsIntelligencePanel, {
   type OperationsIntelligenceView,
 } from "./operations-intelligence-panel";
 import PriceDrawer from "./price-drawer";
+import PriceListPanel from "./price-list-panel";
 import PromotionCenterDrawer from "./promotion-center-drawer";
 import ReplenishmentDrawer from "./replenishment-drawer";
 import type { ReviewAuditCache } from "./review-audit-panel";
@@ -114,7 +115,6 @@ const InventoryHealthPanel = lazy(() => import("./inventory-health-panel"));
 const ReportLibraryPanel = lazy(() => import("./report-library-panel"));
 const ReviewAuditPanel = lazy(() => import("./review-audit-panel"));
 const variationWorkspaceLoader = createWorkspaceLoader(() => import("./variation-planner-drawer"));
-const PriceListPanel = lazy(() => import("./price-list-panel"));
 const VinePanel = lazy(() => import("./vine-panel"));
 
 export { standaloneAuditSnapshotMatchesJob };
@@ -752,6 +752,14 @@ export default function Dashboard({
   const [trendSelection, setTrendSelection] =
     useState<TrendRangeSelection>(startingSelection);
   const [openTool, setOpenTool] = useState<Tool | null>(null);
+  const [toolInitialSku, setToolInitialSku] = useState("");
+  const [toolWorkspaceBusy, setToolWorkspaceBusy] = useState(false);
+  const [activeShortcut, setActiveShortcut] = useState<WorkspaceShortcut | null>(null);
+  const toolBackRef = useRef<(() => void) | null>(null);
+  const toolNavigation = useMemo(() => ({
+    backLabel: "返回首頁",
+    onBackChange: (onBack: (() => void) | null) => { toolBackRef.current = onBack; },
+  }), []);
   const [priceListOpened, setPriceListOpened] = useState(false);
   const [vineOpened, setVineOpened] = useState(false);
   const [lowFrequencyAuditsOpen, setLowFrequencyAuditsOpen] = useState(false);
@@ -764,9 +772,10 @@ export default function Dashboard({
     setImageAuditMinimumImages(value);
     void persistDisplayPreferences({ imageAuditMinimumImages: value });
   };
-  const inlineTool = openTool === "variations" || openTool === "price-list" || openTool === "vine";
-  const inlineReturnRef = useRef<{ scrollY: number; group: NavigationGroup; homeVine?: boolean } | null>(null);
+  const inlineTool = openTool !== null;
+  const inlineReturnRef = useRef<{ scrollY: number; group: NavigationGroup; homeVine?: boolean; homeReview?: boolean } | null>(null);
   const vineHomeTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const reviewHomeTriggerRef = useRef<HTMLButtonElement | null>(null);
   const [openToolMenu, setOpenToolMenu] = useState<NavigationGroup | null>(null);
   const [operationsIntelligenceView, setOperationsIntelligenceView] =
     useState<OperationsIntelligenceView>("promotions");
@@ -872,13 +881,23 @@ export default function Dashboard({
     inlineReturnRef.current = null;
     window.requestAnimationFrame(() => {
       if (!target) return;
-      const trigger = target.homeVine ? vineHomeTriggerRef.current : menuTriggerRefs.current[target.group];
+      const trigger = target.homeVine ? vineHomeTriggerRef.current
+        : target.homeReview ? reviewHomeTriggerRef.current : menuTriggerRefs.current[target.group];
       trigger?.focus({ preventScroll: true });
       window.scrollTo({ top: target.scrollY, behavior: "instant" });
     });
   };
   const closePriceList = () => { setOpenTool(null); restoreInlineTool(); };
   const closeVine = () => { setOpenTool(null); restoreInlineTool(); };
+  const closeToolWorkspace = () => {
+    if (toolWorkspaceBusy || imageToolBusy) return;
+    setOpenTool(null);
+    setToolWorkspaceBusy(false);
+    restoreInlineTool();
+  };
+  const closeShortcut = () => { setActiveShortcut(null); restoreInlineTool(); };
+  const closeReportLibrary = () => { setReportLibraryOpen(false); restoreInlineTool(); };
+  const closeReviewAudit = () => { setReviewAuditOpen(false); restoreInlineTool(); };
   const modalWasOpenRef = useRef(false);
   const auditWorkspaceReturnRef = useRef<{
     sectionId: AuditSuiteSectionId;
@@ -1146,17 +1165,6 @@ export default function Dashboard({
     return () => window.removeEventListener("keydown", closeOnEscape);
   }, [agedInventoryOpen]);
 
-  useEffect(() => {
-    if (!reportLibraryOpen && !reviewAuditOpen) return;
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      setReportLibraryOpen(false);
-      setReviewAuditOpen(false);
-    };
-    window.addEventListener("keydown", closeOnEscape);
-    return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [reportLibraryOpen, reviewAuditOpen]);
-
   const openAuditWorkspace = useCallback((sectionId: AuditSuiteSectionId) => {
     if (sectionId === "variation") variationWorkspaceLoader.preload();
     reviewReturnRef.current = false;
@@ -1177,9 +1185,9 @@ export default function Dashboard({
   }, [activeAuditWorkspace]);
 
   useEffect(() => {
-    if (!inlineTool) return;
+    if (!inlineTool && !activeShortcut && !reportLibraryOpen && !reviewAuditOpen) return;
     return scheduleAuditWorkspaceTopScroll();
-  }, [inlineTool]);
+  }, [inlineTool, activeShortcut, reportLibraryOpen, reviewAuditOpen]);
 
   const closeAuditWorkspace = useCallback(() => {
     const returnTarget = auditWorkspaceReturnRef.current;
@@ -1223,6 +1231,8 @@ export default function Dashboard({
     setCommandOpen(false);
     setAuditWorkspaceBusy(false);
     setActiveAuditWorkspace(null);
+    setActiveShortcut(null);
+    setToolInitialSku(commandOpen ? globalSku : "");
     auditWorkspaceReturnRef.current = null;
     if (tool === "a-plus" && !connectionEvidence[marketplaceId]) {
       onOpenConnection?.();
@@ -1236,9 +1246,7 @@ export default function Dashboard({
     if (tool === "variations") setReturnToUnboundVariationAudit(false);
     if (tool === "price-list") setPriceListOpened(true);
     if (tool === "vine") setVineOpened(true);
-    if (tool === "variations" || tool === "price-list" || tool === "vine") {
-      inlineReturnRef.current = { scrollY: window.scrollY, group: TOOL_META[tool].group, homeVine };
-    }
+    inlineReturnRef.current = { scrollY: window.scrollY, group: TOOL_META[tool].group, homeVine };
     if (tool === "subscriptions") setAuditPreference("subscriptions");
     setOpenTool(tool);
   };
@@ -2150,9 +2158,10 @@ export default function Dashboard({
     ? activeAuditWorkspace === "subscription" || activeAuditWorkspace === "businessPricing"
       ? "pricing"
       : activeAuditWorkspace === "advertising" ? "operations" : "product"
-    : null;
+    : activeShortcut?.group ?? ((reportLibraryOpen || reviewAuditOpen) ? "reports" : null);
   const homeReturnLocked = (openTool === "variations" && variationWorkspaceBusy) ||
     (openTool === "images" && imageToolBusy) ||
+    (Boolean(openTool) && toolWorkspaceBusy) ||
     (Boolean(activeAuditWorkspace) && auditWorkspaceBusy);
 
   const scrollTo = (id: string) => document.getElementById(id)?.scrollIntoView({
@@ -2161,6 +2170,12 @@ export default function Dashboard({
   });
   const returnToHome = () => {
     if (homeReturnLocked) return;
+    // Use the same close owner as the page's back button, including its
+    // unsaved-draft confirmation, rather than bypassing it through the brand.
+    if (openTool && toolBackRef.current) {
+      toolBackRef.current();
+      return;
+    }
     setOpenToolMenu(null);
     setCommandOpen(false);
     setOpenTool(null);
@@ -2169,6 +2184,9 @@ export default function Dashboard({
     setAuditWorkspaceBusy(false);
     setReturnToUnboundVariationAudit(false);
     setActiveAuditWorkspace(null);
+    setActiveShortcut(null);
+    setReportLibraryOpen(false);
+    setReviewAuditOpen(false);
     inlineReturnRef.current = null;
     auditWorkspaceReturnRef.current = null;
     window.requestAnimationFrame(() => {
@@ -2177,15 +2195,14 @@ export default function Dashboard({
     });
   };
   const openWorkspaceShortcut = (shortcut: WorkspaceShortcut) => {
+    if (homeReturnLocked) return;
     setOpenToolMenu(null);
+    inlineReturnRef.current = { scrollY: window.scrollY, group: shortcut.group };
+    setActiveShortcut(shortcut);
     if (shortcut.intelligenceView) {
       setOperationsIntelligenceView(shortcut.intelligenceView);
       setOperationsIntelligenceOpen(true);
     }
-    window.requestAnimationFrame(() => {
-      scrollTo(shortcut.targetId);
-      document.getElementById(shortcut.targetId)?.focus({ preventScroll: true });
-    });
   };
 
   return (
@@ -2248,7 +2265,7 @@ export default function Dashboard({
                     aria-expanded={openToolMenu === section.group}
                     aria-label={section.label}
                     aria-current={activeAuditGroup === section.group ? "location" : undefined}
-                    disabled={Boolean(activeAuditWorkspace) || inlineTool}
+                    disabled={Boolean(activeAuditWorkspace) || inlineTool || Boolean(activeShortcut) || reportLibraryOpen || reviewAuditOpen}
                     onClick={() => setOpenToolMenu((current) =>
                       current === section.group ? null : section.group,
                     )}
@@ -2318,6 +2335,7 @@ export default function Dashboard({
                           onClick={() => {
                             if (entry.disabled) return;
                             setOpenToolMenu(null);
+                            inlineReturnRef.current = { scrollY: window.scrollY, group: "reports" };
                             entry.onSelect?.();
                           }}
                           onKeyDown={(event) => handleMenuItemKeyDown(
@@ -2347,7 +2365,7 @@ export default function Dashboard({
                 type="button"
                 className={`mode-badge workspace-connection-status ${connectionBadge.className}`}
                 onClick={onOpenConnection}
-                disabled={Boolean(activeAuditWorkspace) || inlineTool}
+                disabled={Boolean(activeAuditWorkspace) || inlineTool || Boolean(activeShortcut) || reportLibraryOpen || reviewAuditOpen}
                 aria-label={`${connectionBadge.ariaLabel}；開啟本機安全連線設定`}
                 aria-haspopup="dialog"
               >
@@ -2359,9 +2377,9 @@ export default function Dashboard({
 
           <div className="workspace-context-shell">
             <div className="workspace-contextbar">
-              <GlobalSkuSearch value={globalSku} onChange={setGlobalSku} onSubmit={openCommandCenter} disabled={Boolean(activeAuditWorkspace) || inlineTool} />
-              <button className="command-topbar-button" type="button" onClick={openCommandCenter} disabled={Boolean(activeAuditWorkspace) || inlineTool}><span aria-hidden="true">✦</span>SKU 總覽</button>
-              <label className="global-marketplace"><select value={marketplaceId} onChange={(event) => changeMarketplace(event.target.value)} disabled={salesTrendLoading || Boolean(activeAuditWorkspace) || openTool !== null} aria-label="Amazon 站點">{MARKETPLACE_OPTIONS.map((item) => <option key={item.id} value={item.id}>{item.code} · {item.label}</option>)}</select></label>
+              <GlobalSkuSearch value={globalSku} onChange={setGlobalSku} onSubmit={openCommandCenter} disabled={Boolean(activeAuditWorkspace) || inlineTool || Boolean(activeShortcut) || reportLibraryOpen || reviewAuditOpen} />
+              <button className="command-topbar-button" type="button" onClick={openCommandCenter} disabled={Boolean(activeAuditWorkspace) || inlineTool || Boolean(activeShortcut) || reportLibraryOpen || reviewAuditOpen}><span aria-hidden="true">✦</span>SKU 總覽</button>
+              <label className="global-marketplace"><select value={marketplaceId} onChange={(event) => changeMarketplace(event.target.value)} disabled={salesTrendLoading || Boolean(activeAuditWorkspace) || openTool !== null || Boolean(activeShortcut) || reportLibraryOpen || reviewAuditOpen} aria-label="Amazon 站點">{MARKETPLACE_OPTIONS.map((item) => <option key={item.id} value={item.id}>{item.code} · {item.label}</option>)}</select></label>
               <SystemHealthControl
                 marketplaceId={marketplaceId}
                 autoSync={autoSync}
@@ -2376,7 +2394,7 @@ export default function Dashboard({
 
         <main
           id="workspace-top"
-          className={`workspace-content ${activeAuditWorkspace || inlineTool ? "workspace-content-audit" : ""}`}
+          className={`workspace-content ${activeAuditWorkspace || inlineTool || activeShortcut || reportLibraryOpen || reviewAuditOpen ? "workspace-content-audit" : ""}`}
           data-audit-workspace-section={activeAuditWorkspace ?? undefined}
           tabIndex={-1}
         >
@@ -2394,6 +2412,69 @@ export default function Dashboard({
               </DeferredWorkspace>
             </div>
           )}
+          <AuditWorkspaceNavigationContext.Provider value={toolNavigation}>
+      {openTool === "ads" && <AdsDrawer presentation="workspace" auditOnly={false}
+        initialMarketplaceId={marketplaceId}
+        auditMode={currentStandaloneMode}
+        coverageAuditJob={currentAdvertisingDrawerJob}
+        onCoverageAuditJobChange={cacheStandaloneAuditJob}
+        onClose={closeToolWorkspace}
+      />}
+      {openTool === "inbound" && <InboundShipmentsDrawer presentation="workspace" marketplaceId={marketplaceId} marketplaceShort={marketplace.shortLabel} marketplaceTimeZone={marketplace.timeZone} cachedResult={currentInboundShipment} onCachedResultChange={cacheInboundShipment} onClose={closeToolWorkspace} />}
+      {openTool === "restock" && <ReplenishmentDrawer presentation="workspace" onBusyChange={setToolWorkspaceBusy} initialMarketplaceId={marketplaceId} initialSellerSku={toolInitialSku} onContextResolved={resolveGlobalContext} onClose={closeToolWorkspace} />}
+      {openTool === "copy" && <SkuOperationsDrawer presentation="workspace" onBusyChange={setToolWorkspaceBusy} initialMarketplaceId={marketplaceId} initialSellerSku={toolInitialSku} initialTab={contentWorkspaceTab} auditCacheByMarketplace={contentAuditCacheForDrawer} onAuditCacheChange={cacheContentAudit} auditMode={currentStandaloneMode} auditJob={currentContentDrawerJob} onAuditJobChange={cacheStandaloneAuditJob} onContextResolved={resolveGlobalContext} onClose={closeToolWorkspace} />}
+      {openTool === "images" && <ImageWorkspaceDrawer presentation="workspace" minimumImages={imageAuditMinimumImages} onMinimumImagesChange={changeImageAuditMinimumImages} initialMarketplaceId={marketplaceId} initialSellerSku={toolInitialSku} initialTab={imageWorkspaceTab} auditCacheByMarketplace={imageAuditCacheForDrawer} onAuditCacheChange={cacheImageAudit} auditMode={currentStandaloneMode} auditJob={currentImageDrawerJob} onAuditJobChange={cacheStandaloneAuditJob} onContextResolved={resolveGlobalContext} onBusyChange={setImageToolBusy} onClose={closeToolWorkspace} />}
+      {openTool === "a-plus" && (
+        <AplusAuditDrawer presentation="workspace"
+          marketplaceId={marketplaceId}
+          marketplaceShort={marketplace.shortLabel}
+          mode={currentAplusMode ?? "live"}
+          cachedSnapshot={aplusAuditForDrawer}
+          job={currentAplusDrawerJob}
+          onJobChange={cacheAplusAuditJob}
+          onSnapshotChange={(snapshot) => setAplusAuditCache((current) => ({
+            ...current,
+            [snapshot.marketplaceId]: snapshot,
+          }))}
+          onClose={closeToolWorkspace}
+        />
+      )}
+      {openTool === "price" && <PriceDrawer presentation="workspace" onBusyChange={setToolWorkspaceBusy} initialMarketplaceId={marketplaceId} initialSellerSku={toolInitialSku} onContextResolved={resolveGlobalContext} onClose={closeToolWorkspace} />}
+      {openTool === "promotion" && <PromotionCenterDrawer presentation="workspace" onBusyChange={setToolWorkspaceBusy} initialMarketplaceId={marketplaceId} initialSellerSku={toolInitialSku} onContextResolved={resolveGlobalContext} onClose={closeToolWorkspace} />}
+      {openTool === "subscriptions" && <SubscriptionAuditDrawer presentation="workspace" marketplaceId={marketplaceId} marketplaceShort={marketplace.shortLabel} mode={currentStandaloneMode} initialJob={currentSubscriptionDrawerJob} onJobChange={cacheStandaloneAuditJob} onClose={closeToolWorkspace} />}
+      {openTool === "business-pricing" && (
+        <BusinessPricingAuditDrawer presentation="workspace" onBusyChange={setToolWorkspaceBusy}
+          marketplaceId={marketplaceId}
+          marketplaceShort={marketplace.shortLabel}
+          mode={currentStandaloneMode}
+          initialJob={currentBusinessPricingDrawerJob}
+          onJobChange={cacheStandaloneAuditJob}
+          cachedSnapshot={businessPricingAuditForDrawer}
+          onSnapshotChange={(snapshot) => setBusinessPricingAuditCache((current) => ({
+            ...current,
+            [snapshot.marketplaceId]: snapshot,
+          }))}
+          onClose={closeToolWorkspace}
+        />
+      )}
+      {openTool === "accounting" && <DeferredWorkspace onClose={closeToolWorkspace}><AccountingCenterDrawer presentation="workspace" marketplaceId={marketplaceId} onClose={closeToolWorkspace} /></DeferredWorkspace>}
+
+          {reportLibraryOpen && <AuditWorkspaceShell presentation="workspace"
+            eyebrow="AMAZON PUBLIC API · FBA BOUNDARY" title="報表區"
+            closeLabel="關閉 Amazon API 文件庫" surfaceClassName="report-library-drawer" onBack={closeReportLibrary}>
+            <DeferredWorkspace onClose={closeReportLibrary}>
+              <ReportLibraryPanel marketplaceId={marketplaceId} onOpenExport={openReportExport} />
+            </DeferredWorkspace>
+          </AuditWorkspaceShell>}
+          {reviewAuditOpen && <AuditWorkspaceShell presentation="workspace"
+            eyebrow="FBA · NON-PARENT ASIN · READ ONLY" title="評論健檢"
+            closeLabel="關閉 FBA 評論健檢" surfaceClassName="review-audit-drawer" onBack={closeReviewAudit}>
+            <DeferredWorkspace onClose={closeReviewAudit}>
+              <ReviewAuditPanel marketplaceId={marketplaceId} marketplaceShort={marketplace.shortLabel}
+                cachedResult={currentReviewAudit} onCachedResultChange={cacheReviewAudit} />
+            </DeferredWorkspace>
+          </AuditWorkspaceShell>}
+          </AuditWorkspaceNavigationContext.Provider>
           {openTool === "variations" ? <DeferredWorkspace key={variationLoadAttempt} onClose={closeVariationPlanner} onRetry={() => setVariationLoadAttempt(attempt => attempt + 1)}>
             <VariationPlannerDrawer
               presentation="workspace"
@@ -2409,12 +2490,19 @@ export default function Dashboard({
               onContextResolved={resolveGlobalContext}
               onClose={closeVariationPlanner}
             />
-          </DeferredWorkspace> : openTool === "price-list" || openTool === "vine" ? null : activeAuditWorkspace ? auditWorkspaceView : <>
-          <h1 id="workspace-title" className="visually-hidden">AMZ.API FBA 營運首頁</h1>
+          </DeferredWorkspace> : openTool !== null || reportLibraryOpen || reviewAuditOpen ? null : activeAuditWorkspace ? auditWorkspaceView : <section
+            className={activeShortcut ? "audit-workspace" : "dashboard-home-sections"}
+            data-navigation-workspace={activeShortcut?.label}
+            aria-labelledby={activeShortcut ? "navigation-workspace-title" : undefined}
+          >
+            {activeShortcut && <WorkspacePageHeader title={activeShortcut.label} eyebrow="FBA WORKSPACE"
+              titleId="navigation-workspace-title" onBack={closeShortcut} />}
+            <div key="sections" className={activeShortcut ? "audit-workspace-body navigation-section-body" : "dashboard-home-section-body"}>
+          <h1 id="workspace-title" className="visually-hidden" hidden={Boolean(activeShortcut)}>AMZ.API FBA 營運首頁</h1>
 
-          {currentConnectionEvidence === "demo" && <section className="os-notice"><span>D</span><div><strong>目前使用展示資料</strong><p>{visibleSalesTrend?.notice || "在右上角本機安全連線加入憑證後，即可切換真實 Amazon 資料。"}</p></div><button type="button" onClick={onOpenConnection}>開啟本機安全連線</button></section>}
+          {!activeShortcut && currentConnectionEvidence === "demo" && <section className="os-notice"><span>D</span><div><strong>目前使用展示資料</strong><p>{visibleSalesTrend?.notice || "在右上角本機安全連線加入憑證後，即可切換真實 Amazon 資料。"}</p></div><button type="button" onClick={onOpenConnection}>開啟本機安全連線</button></section>}
 
-          <div id="home-performance" tabIndex={-1} className={`operations-overview-grid ${resolvedPerformanceCompanion ? "has-companion" : ""}`}>
+          <div id="home-performance" tabIndex={-1} hidden={Boolean(activeShortcut) && activeShortcut?.targetId !== "home-performance"} className={`operations-overview-grid ${resolvedPerformanceCompanion ? "has-companion" : ""}`}>
             <section className="operations-pulse">
               <div className="pulse-heading">
                 <h2>銷售</h2>
@@ -2429,9 +2517,9 @@ export default function Dashboard({
             )}
           </div>
 
-          <div id="home-bulletin" tabIndex={-1}><OperationsBulletinCard marketplaceId={marketplace.id} mode={currentStandaloneMode} onOpenHealth={() => { setAuditPreference("inventory"); setAgedInventoryOpen(true); }} /></div>
+          <div id="home-bulletin" tabIndex={-1} hidden={Boolean(activeShortcut) && activeShortcut?.targetId !== "home-bulletin"}><OperationsBulletinCard presentation={activeShortcut?.targetId === "home-bulletin" ? "workspace" : "card"} marketplaceId={marketplace.id} mode={currentStandaloneMode} onOpenHealth={() => { setAuditPreference("inventory"); setAgedInventoryOpen(true); }} /></div>
 
-          <section id="home-audits" tabIndex={-1} aria-labelledby="home-audits-title">
+          <section id="home-audits" tabIndex={-1} hidden={Boolean(activeShortcut) && activeShortcut?.targetId !== "home-audits"} aria-labelledby="home-audits-title">
           <div className="home-section-heading">
             <h2 id="home-audits-title">商品健檢</h2>
             <button type="button" className="audit-review-home-button" onClick={openReviewOverview}>健檢總表</button>
@@ -2693,7 +2781,10 @@ export default function Dashboard({
                     )}
                   </span>
                 )}
-                <button type="button" onClick={() => setReviewAuditOpen(true)}>
+                <button ref={reviewHomeTriggerRef} type="button" onClick={() => {
+                  inlineReturnRef.current = { scrollY: window.scrollY, group: "reports", homeReview: true };
+                  setReviewAuditOpen(true);
+                }}>
                   {currentReviewAudit ? "查看" : "執行"}
                   <i aria-hidden="true">›</i>
                 </button>
@@ -2716,6 +2807,7 @@ export default function Dashboard({
           </section>
           <details
             id="home-intelligence"
+            hidden={Boolean(activeShortcut) && activeShortcut?.targetId !== "home-intelligence"}
             className="operations-intelligence-disclosure"
             open={operationsIntelligenceOpen}
             onToggle={(event) => setOperationsIntelligenceOpen(event.currentTarget.open)}
@@ -2729,55 +2821,11 @@ export default function Dashboard({
               onViewChange={setOperationsIntelligenceView}
             />
           </details>
-          </>}
+            </div>
+          </section>}
         </main>
       </div>
 
-      {openTool === "ads" && <AdsDrawer
-        initialMarketplaceId={marketplaceId}
-        auditMode={currentStandaloneMode}
-        coverageAuditJob={currentAdvertisingDrawerJob}
-        onCoverageAuditJobChange={cacheStandaloneAuditJob}
-        onClose={() => setOpenTool(null)}
-      />}
-      {openTool === "inbound" && <InboundShipmentsDrawer marketplaceId={marketplaceId} marketplaceShort={marketplace.shortLabel} marketplaceTimeZone={marketplace.timeZone} cachedResult={currentInboundShipment} onCachedResultChange={cacheInboundShipment} onClose={() => setOpenTool(null)} />}
-      {openTool === "restock" && <ReplenishmentDrawer initialMarketplaceId={marketplaceId} initialSellerSku={globalSku} onContextResolved={resolveGlobalContext} onClose={() => setOpenTool(null)} />}
-      {openTool === "copy" && <SkuOperationsDrawer initialMarketplaceId={marketplaceId} initialSellerSku={globalSku} initialTab={contentWorkspaceTab} auditCacheByMarketplace={contentAuditCacheForDrawer} onAuditCacheChange={cacheContentAudit} auditMode={currentStandaloneMode} auditJob={currentContentDrawerJob} onAuditJobChange={cacheStandaloneAuditJob} onContextResolved={resolveGlobalContext} onClose={() => setOpenTool(null)} />}
-      {openTool === "images" && <ImageWorkspaceDrawer minimumImages={imageAuditMinimumImages} onMinimumImagesChange={changeImageAuditMinimumImages} initialMarketplaceId={marketplaceId} initialSellerSku={globalSku} initialTab={imageWorkspaceTab} auditCacheByMarketplace={imageAuditCacheForDrawer} onAuditCacheChange={cacheImageAudit} auditMode={currentStandaloneMode} auditJob={currentImageDrawerJob} onAuditJobChange={cacheStandaloneAuditJob} onContextResolved={resolveGlobalContext} onBusyChange={setImageToolBusy} onClose={() => { if (!imageToolBusy) setOpenTool(null); }} />}
-      {openTool === "a-plus" && (
-        <AplusAuditDrawer
-          marketplaceId={marketplaceId}
-          marketplaceShort={marketplace.shortLabel}
-          mode={currentAplusMode ?? "live"}
-          cachedSnapshot={aplusAuditForDrawer}
-          job={currentAplusDrawerJob}
-          onJobChange={cacheAplusAuditJob}
-          onSnapshotChange={(snapshot) => setAplusAuditCache((current) => ({
-            ...current,
-            [snapshot.marketplaceId]: snapshot,
-          }))}
-          onClose={() => setOpenTool(null)}
-        />
-      )}
-      {openTool === "price" && <PriceDrawer initialMarketplaceId={marketplaceId} initialSellerSku={globalSku} onContextResolved={resolveGlobalContext} onClose={() => setOpenTool(null)} />}
-      {openTool === "promotion" && <PromotionCenterDrawer initialMarketplaceId={marketplaceId} initialSellerSku={globalSku} onContextResolved={resolveGlobalContext} onClose={() => setOpenTool(null)} />}
-      {openTool === "subscriptions" && <SubscriptionAuditDrawer marketplaceId={marketplaceId} marketplaceShort={marketplace.shortLabel} mode={currentStandaloneMode} initialJob={currentSubscriptionDrawerJob} onJobChange={cacheStandaloneAuditJob} onClose={() => setOpenTool(null)} />}
-      {openTool === "business-pricing" && (
-        <BusinessPricingAuditDrawer
-          marketplaceId={marketplaceId}
-          marketplaceShort={marketplace.shortLabel}
-          mode={currentStandaloneMode}
-          initialJob={currentBusinessPricingDrawerJob}
-          onJobChange={cacheStandaloneAuditJob}
-          cachedSnapshot={businessPricingAuditForDrawer}
-          onSnapshotChange={(snapshot) => setBusinessPricingAuditCache((current) => ({
-            ...current,
-            [snapshot.marketplaceId]: snapshot,
-          }))}
-          onClose={() => setOpenTool(null)}
-        />
-      )}
-      {openTool === "accounting" && <DeferredWorkspace overlay onClose={() => setOpenTool(null)}><AccountingCenterDrawer marketplaceId={marketplaceId} onClose={() => setOpenTool(null)} /></DeferredWorkspace>}
       {commandOpen && <SkuCommandCenter initialMarketplaceId={marketplaceId} initialSellerSku={globalSku} initialView={commandInitialView}
         auditReview={<AuditReviewWorkbench marketplaceId={marketplaceId} marketplaceLabel={marketplace.shortLabel} mode={currentStandaloneMode} onOpen={openReviewSource} />}
         onContextResolved={resolveGlobalContext} onLaunch={(tool) => launch(tool)} onClose={() => setCommandOpen(false)} />}
@@ -2817,65 +2865,7 @@ export default function Dashboard({
         </div>,
         document.body,
       )}
-      {reportLibraryOpen && createPortal(
-        <div
-          className="drawer-backdrop"
-          role="presentation"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget) setReportLibraryOpen(false);
-          }}
-        >
-          <aside
-            className="order-drawer report-library-drawer"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="report-library-drawer-title"
-          >
-            <div className="drawer-header">
-              <div><p className="eyebrow">AMAZON PUBLIC API · FBA BOUNDARY</p><h2 id="report-library-drawer-title">報表區</h2></div>
-              <button type="button" onClick={() => setReportLibraryOpen(false)} autoFocus aria-label="關閉 Amazon API 文件庫">×</button>
-            </div>
-            <DeferredWorkspace onClose={() => setReportLibraryOpen(false)}>
-            <ReportLibraryPanel
-              marketplaceId={marketplaceId}
-              onOpenExport={openReportExport}
-            />
-            </DeferredWorkspace>
-          </aside>
-        </div>,
-        document.body,
-      )}
-      {reviewAuditOpen && createPortal(
-        <div
-          className="drawer-backdrop"
-          role="presentation"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget) setReviewAuditOpen(false);
-          }}
-        >
-          <aside
-            className="order-drawer review-audit-drawer"
-            data-audit-reading="true"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="review-audit-drawer-title"
-          >
-            <div className="drawer-header">
-              <div><p className="eyebrow">FBA · NON-PARENT ASIN · READ ONLY</p><h2 id="review-audit-drawer-title">評論健檢</h2></div>
-              <button type="button" onClick={() => setReviewAuditOpen(false)} autoFocus aria-label="關閉 FBA 評論健檢">×</button>
-            </div>
-            <DeferredWorkspace onClose={() => setReviewAuditOpen(false)}>
-            <ReviewAuditPanel
-              marketplaceId={marketplaceId}
-              marketplaceShort={marketplace.shortLabel}
-              cachedResult={currentReviewAudit}
-              onCachedResultChange={cacheReviewAudit}
-            />
-            </DeferredWorkspace>
-          </aside>
-        </div>,
-        document.body,
-      )}
+
     </div>
     </AuditReviewProvider>
     </AuditViewSessionProvider>

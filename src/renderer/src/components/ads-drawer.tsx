@@ -37,6 +37,7 @@ export default function AdsDrawer({
   coverageAuditJob = null,
   onCoverageAuditJobChange,
   presentation = "dialog",
+  auditOnly = presentation === "workspace",
   onClose,
 }: {
   initialMarketplaceId: string;
@@ -44,6 +45,7 @@ export default function AdsDrawer({
   coverageAuditJob?: StandaloneAuditJob | null;
   onCoverageAuditJobChange?: (job: StandaloneAuditJob) => void;
   presentation?: AuditSurfacePresentation;
+  auditOnly?: boolean;
   onClose: () => void;
 }) {
   const [marketplaceId, setMarketplaceId] = useState(initialMarketplaceId);
@@ -83,7 +85,7 @@ export default function AdsDrawer({
     <AuditWorkspaceShell
       presentation={presentation}
       eyebrow="AMAZON ADS · SEPARATE API"
-      title={presentation === "workspace" ? "廣告覆蓋健檢" : "廣告"}
+      title={auditOnly ? "廣告覆蓋健檢" : "廣告"}
       closeLabel="關閉廣告區"
       surfaceClassName="ads-drawer"
       onBack={onClose}
@@ -92,7 +94,7 @@ export default function AdsDrawer({
 
         {error && <div className="price-error" role="alert">{error}</div>}
 
-        {presentation === "dialog" && <section className="helium-lane">
+        {!auditOnly && <section className="helium-lane">
           <div className="helium-icon">H10</div>
           <div><strong>Sponsored Products</strong><p>主要操作、規則與關鍵字繼續由 Helium 10 管理。</p></div>
           <span className="capability-pill external">外部管理</span>
@@ -111,7 +113,7 @@ export default function AdsDrawer({
           )}
         </section>
 
-        {presentation === "dialog" && <AdvertisingStrategyPanel
+        {!auditOnly && <AdvertisingStrategyPanel
           key={marketplaceId}
           marketplaceId={marketplaceId}
           marketplaceCode={marketplace.code}
@@ -132,7 +134,7 @@ export default function AdsDrawer({
           onJobChange={onCoverageAuditJobChange}
         />
 
-        {presentation === "dialog" && <>
+        {!auditOnly && <>
         <section className="ads-product-grid">
           <article>
             <div className="ads-product-icon sb">SB</div>

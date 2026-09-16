@@ -17,7 +17,7 @@ const CSS02_ORDERED_PREFIX = [
 
 // Current composed source includes intentional feature styles after the preserved epochs.
 const ACCEPTED_SOURCE_TEXT_FINGERPRINT =
-  "2c15fd7f4dc3ea6acc724ee62569815e4dcc6a487f0955226d66574657a07ffb";
+  "f07937236b1e5983ae3af9bb26fef6fd9ff1536595f0d995bd916f33245dc56f";
 
 const CSS02_PAYLOAD_EVIDENCE = [
   {

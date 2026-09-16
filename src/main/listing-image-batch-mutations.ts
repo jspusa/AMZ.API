@@ -8,7 +8,7 @@ import {
 import { marketplaceById } from "../shared/marketplaces";
 import { SpExecutionContextError, type SpExecutionContext, type SpExecutionContextAdapter } from "./amazon/sp-execution-context";
 import type { ListingImageUpdateResult } from "./amazon/listing-image-types";
-import { imageReadbackDecision, reconcileImageWrite, type ListingImageMutationOperations } from "./listing-image-mutations";
+import { imageReadbackDecision, reconcileImageWrite, recoverableImageWrite, type ListingImageMutationOperations } from "./listing-image-mutations";
 import { MainWriteGateError, type MainWriteGatePort, type WriteBinding } from "./write-gate";
 import { publicSpApiError, publicSpApiRequestId, SpApiError, SpApiPreCommitError } from "./amazon/sp-api-error";
 import { abortableDelay } from "./abort-utils";
@@ -18,7 +18,7 @@ import { invalid, json, routeError } from "./route-response";
 import { LISTING_IMAGE_MIN_VALIDITY_MS } from "../shared/listing-image-retention";
 
 export type ListingImageBatchCommand = Readonly<{
-  operation: "capabilities" | "preview" | "commit" | "observe";
+  operation: "capabilities" | "preview" | "commit" | "observe" | "recover";
   request: ApiRequest;
 }>;
 
@@ -42,6 +42,7 @@ type PlanRow = { public: ListingImageBatchRow; input: BoundInput; preview: Listi
 type BatchPlan = {
   batchId: string; reviewToken: string; context: SpExecutionContext; expiresAt: number;
   phase: ListingImageBatchSnapshot["phase"]; rows: PlanRow[]; message: string | null;
+  lastReadbackAt: string | null;
 };
 const PREVIEW_TTL_MS = 15 * 60_000;
 const TERMINAL_TTL_MS = 24 * 60 * 60_000;
@@ -55,7 +56,7 @@ function isolatedPreviewFailure(error: unknown): error is SpApiError {
     && ![401, 403, 429].includes(error.status) && ISOLATED_PREVIEW_CODES.has(error.code);
 }
 const capabilities: ListingImageBatchCapabilities = Object.freeze({
-  capability: "listing-image-batch-v1", maxSkus: 30, maxImagesPerSku: 10, replacementMode: "complete", confirmationMode: "native",
+  capability: "listing-image-batch-v1", maxSkus: 30, maxImagesPerSku: 10, replacementMode: "complete", confirmationMode: "native", readbackRecovery: "exact-sku-v1",
 });
 
 function exactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
@@ -116,6 +117,7 @@ export class ListingImageBatchMutations implements ListingImageBatchMutationsPor
     try {
       if (command.operation === "preview") return await this.preview(command.request);
       if (command.operation === "commit") return await this.commit(command.request);
+      if (command.operation === "recover") return await this.recover(command.request);
       return await this.observe(command.request);
     } catch (error) {
       return error instanceof MainWriteGateError ? invalid(error.message, error.status, error.code)
@@ -141,7 +143,7 @@ export class ListingImageBatchMutations implements ListingImageBatchMutationsPor
     const rows = plan.rows.map(row => structuredClone(row.public));
     return {
       ...capabilities, batchId: plan.batchId, reviewToken: plan.reviewToken, marketplaceId: plan.context.marketplaceId,
-      mode: plan.context.mode, phase: plan.phase, expiresAt: new Date(plan.expiresAt).toISOString(), rows, message: plan.message,
+      mode: plan.context.mode, phase: plan.phase, lastReadbackAt: plan.lastReadbackAt, expiresAt: new Date(plan.expiresAt).toISOString(), rows, message: plan.message,
       totals: { skus: rows.length, ready: rows.filter(row => row.state === "ready").length,
         blocked: rows.filter(row => row.state === "blocked").length, unchanged: rows.filter(row => row.state === "unchanged").length,
         submitted: rows.filter(row => ["accepted", "verified", "unknown", "rejected", "simulated"].includes(row.state)).length,
@@ -176,7 +178,7 @@ export class ListingImageBatchMutations implements ListingImageBatchMutationsPor
     }
     while (this.plans.size >= 4) this.plans.delete(this.plans.keys().next().value!);
     const plan: BatchPlan = { batchId: `image-batch.${this.uuid()}`, reviewToken: `image-review.${this.uuid()}`, context,
-      expiresAt: this.now() + PREVIEW_TTL_MS, phase: "ready", rows: [], message: null };
+      expiresAt: this.now() + PREVIEW_TTL_MS, phase: "ready", rows: [], message: null, lastReadbackAt: null };
     for (const row of rows) {
       const pending: PlanRow = { input: { marketplaceId, sellerSku: row.sellerSku, expectedUrls: Array<null>(10).fill(null), urls: [...row.urls] }, preview: null,
         public: { sellerSku: row.sellerSku, asin: null, title: "", previousUrls: Array<null>(10).fill(null), requestedUrls: [...row.urls], changedSlots: [], deletedSlots: [],
@@ -266,7 +268,136 @@ export class ListingImageBatchMutations implements ListingImageBatchMutationsPor
 
   private async observe(request: ApiRequest): Promise<ApiResponse> {
     const plan = await this.findPlan(request, false);
-    return "status" in plan ? plan : json(this.snapshot(plan));
+    if ("status" in plan) return plan;
+    if (!exactKeys(request.query, ["marketplaceId", "batchId", "refresh"]) ||
+      (request.query.refresh !== undefined && request.query.refresh !== "true")) return invalid("圖片回查選項無效。", 400, "INVALID_IMAGE_BATCH");
+    if (request.query.refresh === "true" && ["completed", "stopped"].includes(plan.phase)) {
+      if (this.building) return invalid("圖片批次正在核對，請等待目前工作完成。", 409, "OPERATION_IN_PROGRESS");
+      return this.startReadback(plan);
+    }
+    return json(this.snapshot(plan));
+  }
+
+  private async recover(request: ApiRequest): Promise<ApiResponse> {
+    const marketplaceId = parseMarketplace(request.query.marketplaceId);
+    let skus: unknown;
+    try { skus = (request.query.recoverSkus?.length ?? 0) <= 8_000 ? JSON.parse(request.query.recoverSkus ?? "null") : null; } catch { skus = null; }
+    if (!marketplaceId || !exactKeys(request.query, ["marketplaceId", "recoverSkus"]) ||
+      !Array.isArray(skus) || !skus.length || skus.length > LISTING_IMAGE_BATCH_MAX_SKUS ||
+      skus.some(sku => typeof sku !== "string" || parseSellerSku(sku) !== sku) || new Set(skus).size !== skus.length) {
+      return invalid("請提供 1–30 個不同的完整 SKU，以讀取先前圖片更新。", 400, "INVALID_IMAGE_BATCH");
+    }
+    if (this.building || [...this.plans.values()].some(plan => !["ready", "completed", "stopped"].includes(plan.phase))) {
+      return invalid("圖片批次正在處理，請等待目前工作完成。", 409, "OPERATION_IN_PROGRESS");
+    }
+    this.building = true;
+    try {
+      const revision = this.revision;
+      const context = await this.deps.context.capture(marketplaceId);
+      await this.fence(context, revision);
+      if (context.mode !== "live") return invalid("先前 Amazon 圖片更新只能在正式連線模式回查。", 409, "IMAGE_RECOVERY_LIVE_REQUIRED");
+      if (!this.deps.writeGate.inspect) throw new MainWriteGateError("WRITE_INSPECTION_UNAVAILABLE");
+      const plan: BatchPlan = { batchId: `image-batch.${this.uuid()}`, reviewToken: `image-recovery.${this.uuid()}`, context,
+        expiresAt: this.now() + TERMINAL_TTL_MS, phase: "completed", rows: [], message: null, lastReadbackAt: null };
+      for (const sellerSku of skus as string[]) {
+        const inspections = await this.deps.writeGate.inspect({ context, marketplaceId, sellerSku, operations: ["images"], requireComplete: true,
+          // Keep null/malformed newer attempts so an older accepted receipt cannot replace them.
+          project: inspection => inspection });
+        await this.fence(context, revision);
+        const ordered = [...inspections].sort((left, right) => right.createdAt - left.createdAt);
+        const latest = ordered[0];
+        const ambiguous = latest && ordered[1]?.createdAt === latest.createdAt;
+        const recovered = latest && !ambiguous && (latest.state !== "completed" || latest.expiresAt > this.now())
+          ? recoverableImageWrite(latest.response, { marketplaceId, sellerSku }) : null;
+        const urls = (values: readonly (string | null)[] = []) => Array.from({ length: 10 }, (_, index) => values[index] ?? null);
+        const previousUrls = urls(recovered?.result.previousUrls);
+        const requestedUrls = urls(recovered?.result.requestedUrls);
+        const changedSlots = recovered?.result.changedSlots.map(slot => slot + 1) ?? [];
+        const code = recovered ? null : !latest ? "IMAGE_WRITE_NOT_FOUND" : "IMAGE_WRITE_EVIDENCE_UNAVAILABLE";
+        plan.rows.push({ input: { marketplaceId, sellerSku, expectedUrls: previousUrls, urls: requestedUrls,
+          ...(recovered ? { expectedImageIdentity: { asin: recovered.asin, productType: recovered.productType } } : {}) }, preview: null,
+          ...(recovered ? { accepted: recovered.result } : {}), public: {
+            sellerSku, asin: recovered?.asin ?? null, title: "", previousUrls, requestedUrls, changedSlots,
+            deletedSlots: changedSlots.filter(slot => previousUrls[slot - 1] && requestedUrls[slot - 1] === null),
+            state: recovered ? "accepted" : !latest ? "blocked" : "unknown", code,
+            message: recovered ? "已找回先前接受紀錄，正在核對 Amazon 圖片欄位。" : !latest
+              ? "本機沒有這個 SKU 的圖片更新紀錄；沒有送出任何更新。"
+              : "最新操作缺少可精確回查的接受證據，保留結果待確認，請勿重送。",
+            requestId: recovered ? publicSpApiRequestId(recovered.result.requestId) : null,
+            acceptedAt: recovered?.result.completedAt ?? null,
+          } });
+      }
+      await this.fence(context, revision);
+      while (this.plans.size >= 4) this.plans.delete(this.plans.keys().next().value!);
+      this.plans.set(plan.batchId, plan);
+      // A reconstructed plan has no preview ticket and is terminal: it can only read.
+      return this.startReadback(plan);
+    } finally { this.building = false; }
+  }
+
+  private startReadback(plan: BatchPlan): ApiResponse {
+    if ([...this.plans.values()].some(other => other !== plan && !["ready", "completed", "stopped"].includes(other.phase))) {
+      return invalid("其他圖片批次正在處理，請等待目前工作完成後再回查。", 409, "OPERATION_IN_PROGRESS");
+    }
+    if (!plan.rows.some(row => row.public.state === "accepted")) return json(this.snapshot(plan));
+    const terminalPhase = plan.phase === "stopped" ? "stopped" : "completed";
+    const revision = this.revision;
+    const controller = new AbortController();
+    this.controllers.add(controller);
+    plan.phase = "readback";
+    void (async () => {
+      try {
+        await this.readbackPass(plan, revision, controller.signal);
+        await this.fence(plan.context, revision);
+        plan.phase = terminalPhase;
+      } catch {
+        if (revision === this.revision && this.plans.get(plan.batchId) === plan) {
+          plan.phase = "stopped";
+          plan.message = "此次回查未完成；已接受或結果未明的更新不會重送。";
+        }
+      } finally { this.controllers.delete(controller); }
+    })();
+    return json(this.snapshot(plan), 202);
+  }
+
+  private async readbackPass(plan: BatchPlan, revision: number, signal: AbortSignal): Promise<void> {
+    const pending = plan.rows.filter(row => row.public.state === "accepted");
+    // One pass, bounded pairs. Neither automatic nor explicit recovery receives write authority.
+    for (let index = 0; index < pending.length; index += 2) {
+      if (signal.aborted) throw new SpExecutionContextError("SP_CONTEXT_INVALIDATED", "圖片回查已停止。");
+      await this.fence(plan.context, revision);
+      await Promise.all(pending.slice(index, index + 2).map(async row => {
+        try {
+          const observation = await this.deps.operations.read({ marketplaceId: plan.context.marketplaceId, sellerSku: row.input.sellerSku });
+          await this.fence(plan.context, revision);
+          if (!row.accepted || imageReadbackDecision(row.accepted, observation) !== "verified") {
+            row.public = { ...row.public, code: "IMAGE_READBACK_PENDING", message: "已讀取 Amazon，目前圖片欄位仍未完全相符；請稍後再回查，勿重送。" };
+            return;
+          }
+          await this.deps.writeGate.reconcile({ context: plan.context, marketplaceId: plan.context.marketplaceId, sellerSku: row.input.sellerSku,
+            operations: ["images"], requireCurrent: true, snapshot: observation, project: (result, _operation, snapshot) => reconcileImageWrite(result, snapshot) });
+          await this.fence(plan.context, revision);
+          const inspected = await this.deps.writeGate.inspect?.({ context: plan.context, marketplaceId: plan.context.marketplaceId,
+            sellerSku: row.input.sellerSku, operations: ["images"], requireComplete: true, project: inspection => {
+              const response = inspection.response;
+              return inspection.state === "completed" && isPlainRecord(response) && response.completedAt === row.accepted!.completedAt
+                && JSON.stringify(response.previousUrls) === JSON.stringify(row.accepted!.previousUrls)
+                && JSON.stringify(response.requestedUrls) === JSON.stringify(row.accepted!.requestedUrls)
+                && reconcileImageWrite(response, observation) !== null ? true : null;
+            } });
+          await this.fence(plan.context, revision);
+          if (!inspected?.includes(true)) throw new MainWriteGateError("WRITE_INSPECTION_UNAVAILABLE");
+          row.public = { ...row.public, state: "verified", code: null, message: "Amazon 圖片欄位已相符；商品圖片下載與審核仍由 Amazon 處理。" };
+        } catch (error) {
+          await this.fence(plan.context, revision);
+          const failure = error instanceof SpApiError ? publicSpApiError(error, "此次唯讀回查未完成。") : null;
+          row.public = { ...row.public, code: failure?.code ?? "IMAGE_READBACK_UNAVAILABLE",
+            message: "Amazon 已接受；此次唯讀回查尚未完成，請勿重送。" };
+        }
+      }));
+    }
+    await this.fence(plan.context, revision);
+    plan.lastReadbackAt = new Date(this.now()).toISOString();
   }
 
   private async commit(request: ApiRequest): Promise<ApiResponse> {
@@ -284,7 +415,7 @@ export class ListingImageBatchMutations implements ListingImageBatchMutationsPor
     const binding = this.binding(plan);
     const revision = this.revision;
     plan.phase = "revalidating";
-    // The background task owns every write. GET only observes its projection.
+    // This background task owns every write; ordinary progress GET only observes it.
     void this.execute(plan, binding, revision);
     return json(this.snapshot(plan), 202);
   }
@@ -403,34 +534,7 @@ export class ListingImageBatchMutations implements ListingImageBatchMutationsPor
           if (milliseconds > 0) await abortableDelay(milliseconds, controller.signal);
           const pending = plan.rows.filter(row => row.public.state === "accepted");
           if (!pending.length) break;
-          // Bounded pairs; observers never receive a commit descriptor.
-          for (let index = 0; index < pending.length; index += 2) {
-            await Promise.all(pending.slice(index, index + 2).map(async row => {
-              await this.fence(plan.context, revision);
-              try {
-                const observation = await this.deps.operations.read({ marketplaceId: plan.context.marketplaceId, sellerSku: row.input.sellerSku });
-                await this.fence(plan.context, revision);
-                if (!row.accepted || imageReadbackDecision(row.accepted, observation) !== "verified") return;
-                await this.deps.writeGate.reconcile({ context: plan.context, marketplaceId: plan.context.marketplaceId, sellerSku: row.input.sellerSku,
-                  operations: ["images"], requireCurrent: true, snapshot: observation, project: (result, _operation, snapshot) => reconcileImageWrite(result, snapshot) });
-                await this.fence(plan.context, revision);
-                const inspected = await this.deps.writeGate.inspect?.({ context: plan.context, marketplaceId: plan.context.marketplaceId,
-                  sellerSku: row.input.sellerSku, operations: ["images"], requireComplete: true, project: inspection => {
-                    const response = inspection.response;
-                    return inspection.state === "completed" && isPlainRecord(response) && response.completedAt === row.accepted!.completedAt
-                      && JSON.stringify(response.previousUrls) === JSON.stringify(row.input.expectedUrls)
-                      && JSON.stringify(response.requestedUrls) === JSON.stringify(row.input.urls)
-                      && reconcileImageWrite(response, observation) !== null ? true : null;
-                  } });
-                await this.fence(plan.context, revision);
-                if (!inspected?.includes(true)) throw new MainWriteGateError("WRITE_INSPECTION_UNAVAILABLE");
-                row.public = { ...row.public, state: "verified", message: "Amazon 圖片欄位已相符；商品圖片下載與審核仍由 Amazon 處理。" };
-              } catch {
-                await this.fence(plan.context, revision);
-                row.public = { ...row.public, message: "Amazon 已接受；此次唯讀回查尚未完成，請勿重送。" };
-              }
-            }));
-          }
+          await this.readbackPass(plan, revision, controller.signal);
         }
       }
       await this.fence(plan.context, revision);
