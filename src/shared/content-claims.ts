@@ -5,6 +5,56 @@ const HYPOALLERGENIC_CLAIM =
   /\bhypo(?:[\s\u00a0\p{Pd}_]*)allergenic\b/giu;
 const TENDON_INGREDIENT = /\btendons?\b/iu;
 const CHICKEN_INGREDIENT = /\bchicken\b/iu;
+const GRAIN_FREE_CLAIM = /\bgrain[\s\u00a0\p{Pd}_]*free\b/giu;
+// Explicit cereal names only; legumes and unspecified starch do not prove grain.
+const GRAIN_TERM = String.raw`\b(?:wheat|rice|corn|maize|cornmeal|cornstarch|barley|oats?|oatmeal|rye|millet|sorghum|triticale|bulgur|teff)\b`;
+const GRAIN_INGREDIENT = new RegExp(GRAIN_TERM, "giu");
+const GRAIN_FREE_INGREDIENT_LIST = new RegExp(
+  `${GRAIN_TERM}(?:[\\s,/&]+(?:(?:and|or)\\s+)?${GRAIN_TERM})*[\\s\\p{Pd}_]+free\\b`,
+  "giu",
+);
+const UNPROVEN_INGREDIENT_CLAUSE =
+  /\b(?:no|not|without|free\s+(?:from|of)|(?:may|might|could)(?:\s+also)?\s+contain)\b/giu;
+
+function withoutUnprovenIngredientClauses(value: string): string {
+  let result = "";
+  let cursor = 0;
+  for (const match of value.matchAll(UNPROVEN_INGREDIENT_CLAUSE)) {
+    if (match.index < cursor) continue;
+    result += `${value.slice(cursor, match.index)} `;
+    let depth = 0;
+    let end = match.index + match[0].length;
+    for (; end < value.length; end += 1) {
+      const character = value[end]!;
+      if (character === "(" || character === "[" || character === "{") depth += 1;
+      else if (")]}".includes(character)) {
+        if (depth === 0) break;
+        depth -= 1;
+      } else if (depth === 0 && /[.;\n\r\u0085\u2028\u2029]/u.test(character)) {
+        break;
+      }
+    }
+    cursor = end;
+  }
+  return result + value.slice(cursor);
+}
+
+function grainIngredientTokens(ingredients: string): string[] {
+  // A negated or possible-content clause is not positive ingredient evidence.
+  // Commas stay in scope; a containing bracket ends only that clause's scope.
+  const positiveEvidence = withoutUnprovenIngredientClauses(
+    ingredients.normalize("NFKC"),
+  ).replace(GRAIN_FREE_INGREDIENT_LIST, " ");
+  return uniqueMatches(positiveEvidence, GRAIN_INGREDIENT);
+}
+
+function grainFreeClaimTokens(value: string): string[] {
+  const positiveClaims = value.replace(
+    /\b(?:not|never|without)\s+(?:(?:a|an)\s+)?grain[\s\u00a0\p{Pd}_]*free\b/giu,
+    " ",
+  );
+  return uniqueMatches(positiveClaims, GRAIN_FREE_CLAIM);
+}
 
 export function singleIngredientClaimTokens(value: string): string[] {
   return [...value.matchAll(SINGLE_INGREDIENT_CLAIM)].map((match) => match[0]);
@@ -111,6 +161,9 @@ export function contentClaimTokens(
   if (CHICKEN_INGREDIENT.test(evidence)) {
     tokens.push(...uniqueMatches(value, HYPOALLERGENIC_CLAIM));
   }
+  if (grainIngredientTokens(ingredients).length > 0) {
+    tokens.push(...grainFreeClaimTokens(value));
+  }
   return tokens;
 }
 
@@ -125,6 +178,7 @@ export function contentClaimFindings(input: {
   const ingredientItems = provenIngredientItems(input.ingredients);
   const ingredientsContainTendon = TENDON_INGREDIENT.test(evidence);
   const ingredientsContainChicken = CHICKEN_INGREDIENT.test(evidence);
+  const grainIngredients = grainIngredientTokens(input.ingredients);
 
   const findings: ContentClaimFinding[] = [];
   const add = (
@@ -167,6 +221,17 @@ export function contentClaimFindings(input: {
           token,
           message:
             `${fieldName}宣稱「${token}」，但 Amazon ingredients 明確含 Chicken（常見過敏原）；請核對並修正文案或成分資料。`,
+        });
+      }
+    }
+    if (grainIngredients.length > 0) {
+      for (const token of grainFreeClaimTokens(value)) {
+        findings.push({
+          field,
+          bulletIndex,
+          token,
+          message:
+            `${fieldName}宣稱「${token}」，但 Amazon ingredients 明確列有穀物或穀物來源成分（${grainIngredients.join("、")}）；請核對並修正文案或成分資料。`,
         });
       }
     }
