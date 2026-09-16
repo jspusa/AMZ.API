@@ -1,6 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { ApiRequest, ApiResponse } from "../shared/contracts";
 import {
+  parseListingImageReadbackDiagnostics,
+  type ListingImageReadbackBlocker,
+  type ListingImageReadbackDiagnostics,
+} from "../shared/listing-image-readback";
+import {
   marketplaceById,
 } from "../shared/marketplaces";
 import type { ListingWriteExecutionFence } from
@@ -543,38 +548,97 @@ function imageWriteEvidence(
   return raw as unknown as ListingImageWriteEvidence;
 }
 
+// Exact known media hosts are only a diagnostic hint. They confer no URL equivalence or fetch authority.
+const AMAZON_MEDIA_DIAGNOSTIC_HOSTS = new Set([
+  "m.media-amazon.com", "images-na.ssl-images-amazon.com", "images-fe.ssl-images-amazon.com",
+  "images-eu.ssl-images-amazon.com", "media-origin-na-ssl.integ.amazon.com",
+]);
+
+function validReadbackIssue(value: unknown): value is ListingIssue {
+  return isRecord(value) && (value.code === null || typeof value.code === "string")
+    && typeof value.severity === "string" && ["ERROR", "WARNING", "INFO"].includes(value.severity)
+    && typeof value.message === "string" && Array.isArray(value.attributeNames)
+    && value.attributeNames.every(name => typeof name === "string")
+    && [value.categories, value.marketplaceIds].every(items => items === undefined
+      || (Array.isArray(items) && items.every(item => typeof item === "string")));
+}
+
+export function analyzeImageReadback(
+  result: ListingImageUpdateResult | undefined,
+  observation: ListingImageGatewayRead,
+): ListingImageReadbackDiagnostics {
+  const snapshot = observation.snapshot;
+  const evidence = result ? imageWriteEvidence(result) : null;
+  const blockers: ListingImageReadbackBlocker[] = [];
+  if (!evidence) blockers.push("invalid-evidence");
+  if (result?.mode !== "live" || result?.status !== "ACCEPTED") blockers.push("receipt-not-live-accepted");
+  if (snapshot.mode !== "live") blockers.push("readback-not-live");
+  if (observation.fulfillment !== "FBA") blockers.push("not-fba");
+  if (result && result.marketplaceId !== snapshot.marketplaceId) blockers.push("marketplace-mismatch");
+  if (result && result.sellerSku !== snapshot.sellerSku) blockers.push("sku-mismatch");
+  if (evidence && evidence.asin !== snapshot.asin) blockers.push("asin-mismatch");
+  if (evidence && evidence.productType !== snapshot.productType) blockers.push("product-type-mismatch");
+  if (!snapshot.attributesPresent) blockers.push("attributes-missing");
+  const exactSlots = Array.isArray(snapshot.images) && snapshot.images.length === IMAGE_ATTRIBUTE_NAMES.length
+    && snapshot.images.every((image, index) => image?.attributeName === IMAGE_ATTRIBUTE_NAMES[index]);
+  if (!exactSlots) blockers.push("slot-shape-mismatch");
+  const issues = { errorCount: 0, imageErrorCount: 0, nonImageErrorCount: 0, unscopedErrorCount: 0 };
+  let issuesUnavailable = !Array.isArray(snapshot.issues);
+  if (Array.isArray(snapshot.issues)) for (const issue of snapshot.issues) {
+    if (!validReadbackIssue(issue)) { issuesUnavailable = true; continue; }
+    if (issue.severity !== "ERROR") continue;
+    issues.errorCount += 1;
+    const names = issue.attributeNames;
+    if (!Array.isArray(names) || !names.length || names.some(name => typeof name !== "string" || !name)) issues.unscopedErrorCount += 1;
+    else if (names.some(name => IMAGE_ATTRIBUTE_NAMES.includes(name as typeof IMAGE_ATTRIBUTE_NAMES[number]))) issues.imageErrorCount += 1;
+    else issues.nonImageErrorCount += 1;
+  }
+  if (issuesUnavailable) blockers.push("issues-unavailable");
+  if (issues.errorCount) blockers.push("error-issues");
+  const slots = {
+    compared: false, targetCount: 0, matchedCount: 0, missingCount: 0, deletionPendingCount: 0,
+    differentUrlCount: 0, invalidUrlCount: 0, unchangedPreviousCount: 0,
+    amazonHostedDifferentCount: 0, crossHostAmazonDifferentCount: 0,
+  };
+  if (evidence && exactSlots) {
+    slots.compared = true;
+    slots.targetCount = evidence.requestedUrls.length;
+    evidence.requestedUrls.forEach((requested, index) => {
+      const actual = snapshot.images[index]?.url ?? null;
+      const canonicalActual = canonicalImageUrl(actual);
+      const canonicalRequested = canonicalImageUrl(requested);
+      if (requested === null ? actual === null : canonicalActual !== null && canonicalRequested !== null && canonicalActual === canonicalRequested) {
+        slots.matchedCount += 1;
+        return;
+      }
+      const previous = evidence.previousUrls[index];
+      if (actual === null ? previous === null : canonicalActual !== null && canonicalActual === canonicalImageUrl(previous)) slots.unchangedPreviousCount += 1;
+      if (requested === null) slots.deletionPendingCount += 1;
+      else if (actual === null) slots.missingCount += 1;
+      else if (canonicalActual === null || canonicalRequested === null) slots.invalidUrlCount += 1;
+      else {
+        slots.differentUrlCount += 1;
+        const actualUrl = new URL(canonicalActual);
+        const requestedUrl = new URL(canonicalRequested);
+        if (actualUrl.protocol === "https:" && !actualUrl.username && !actualUrl.password && !actualUrl.port
+          && AMAZON_MEDIA_DIAGNOSTIC_HOSTS.has(actualUrl.hostname)) {
+          slots.amazonHostedDifferentCount += 1;
+          if (actualUrl.hostname !== requestedUrl.hostname) slots.crossHostAmazonDifferentCount += 1;
+        }
+      }
+    });
+    if (slots.matchedCount < slots.targetCount) blockers.push("url-mismatch");
+  }
+  const diagnostics = parseListingImageReadbackDiagnostics({ version: 1, decision: blockers.length ? "pending" : "verified", blockers, issues, slots });
+  if (!diagnostics) throw new Error("Invalid image readback diagnostics");
+  return diagnostics;
+}
+
 export function imageReadbackDecision(
   result: ListingImageUpdateResult,
   observation: ListingImageGatewayRead,
 ): "verified" | "pending" {
-  const snapshot = observation.snapshot;
-  const evidence = imageWriteEvidence(result);
-  if (!evidence ||
-      result.mode !== "live" ||
-      result.status !== "ACCEPTED" ||
-      observation.fulfillment !== "FBA" ||
-      snapshot.mode !== "live" ||
-      result.marketplaceId !== snapshot.marketplaceId ||
-      result.sellerSku !== snapshot.sellerSku ||
-      evidence.asin !== snapshot.asin ||
-      evidence.productType !== snapshot.productType ||
-      !snapshot.attributesPresent ||
-      snapshot.images.length !== IMAGE_ATTRIBUTE_NAMES.length ||
-      snapshot.images.some((image, index) =>
-        image.attributeName !== IMAGE_ATTRIBUTE_NAMES[index]
-      ) ||
-      snapshot.issues.some((issue) => issue.severity === "ERROR")) {
-    return "pending";
-  }
-  return evidence.requestedUrls.every((requested, index) => {
-    const actual = snapshot.images[index]?.url ?? null;
-    if (requested === null) return actual === null;
-    const canonicalActual = canonicalImageUrl(actual);
-    const canonicalRequested = canonicalImageUrl(requested);
-    return canonicalActual !== null &&
-      canonicalRequested !== null &&
-      canonicalActual === canonicalRequested;
-  }) ? "verified" : "pending";
+  return analyzeImageReadback(result, observation).decision;
 }
 
 function validatedImageWriteResult(

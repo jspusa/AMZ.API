@@ -279,6 +279,42 @@ describe("image folder batch main owner", () => {
     expect(approveWrite).toHaveBeenCalledOnce();
   });
 
+  it("explains pending from the same fresh GET without exposing URLs or upstream issue text", async () => {
+    const { owner, gateway, approveWrite, canonical } = await setup();
+    vi.mocked(gateway.commitOnce).mockImplementation(async (_patch, fence) => {
+      await fence.assertCurrent();
+      return { ok: true, status: 200, requestId: null, retryAfter: null, payload: { status: "ACCEPTED", issues: [] } };
+    });
+    const review = await previewSkus(owner, ["AFA12AM"]);
+    await submit(owner, review);
+    const initial = await terminal(owner, review);
+    expect(initial.rows[0]).toMatchObject({ readbackDiagnostics: {
+      version: 1, decision: "pending", blockers: ["url-mismatch"],
+      issues: { errorCount: 0, imageErrorCount: 0, nonImageErrorCount: 0, unscopedErrorCount: 0 },
+      slots: { compared: true, targetCount: 10, matchedCount: 8, differentUrlCount: 1, deletionPendingCount: 1, unchangedPreviousCount: 2 },
+    } });
+    canonical.set("AFA12AM", proposed("AFA12AM"));
+    const read = vi.mocked(gateway.read).getMockImplementation()!;
+    vi.mocked(gateway.read).mockImplementation(async (identity, purpose) => {
+      const observation = await read(identity, purpose);
+      observation.snapshot.issues = [{ code: "PRIVATE-CODE", severity: "ERROR", message: "PRIVATE-ISSUE https://private.invalid/token", attributeNames: ["ingredients"] }];
+      return observation;
+    });
+    const before = vi.mocked(gateway.read).mock.calls.length;
+    await owner.handle({ operation: "observe", request: request("GET", {}, { marketplaceId, batchId: review.batchId, refresh: "true" }) });
+    const latest = await terminal(owner, review);
+    expect(latest.rows[0].message).toBe("已讀取 Amazon，尚未符合回查確認條件；請查看本次回查原因，勿重送。");
+    expect(latest.rows[0]).toMatchObject({ state: "accepted", readbackDiagnostics: {
+      version: 1, decision: "pending", blockers: ["error-issues"],
+      issues: { errorCount: 1, imageErrorCount: 0, nonImageErrorCount: 1, unscopedErrorCount: 0 },
+      slots: { compared: true, targetCount: 10, matchedCount: 10, differentUrlCount: 0, deletionPendingCount: 0, unchangedPreviousCount: 0 },
+    } });
+    expect(JSON.stringify((latest.rows[0] as unknown as { readbackDiagnostics: unknown }).readbackDiagnostics)).not.toMatch(/PRIVATE|https:|ingredients|AFA12AM|B09S5VY2JS/u);
+    expect(gateway.read).toHaveBeenCalledTimes(before + 1);
+    expect(gateway.commitOnce).toHaveBeenCalledOnce();
+    expect(approveWrite).toHaveBeenCalledOnce();
+  });
+
   it("recovers exact accepted targets after restart without preparing, previewing, approving, or resending", async () => {
     const { owner, gateway, canonical, context, approveWrite, directory } = await setup();
     vi.mocked(gateway.commitOnce).mockImplementation(async (_patch, fence) => {
@@ -328,7 +364,9 @@ describe("image folder batch main owner", () => {
     vi.mocked(gateway.read).mockImplementation(async (identity, purpose) => { await held; return read(identity, purpose); });
     const before = vi.mocked(gateway.read).mock.calls.length;
     const refresh = () => owner.handle({ operation: "observe", request: request("GET", {}, { marketplaceId, batchId: review.batchId, refresh: "true" }) });
-    expect(value(await refresh()).phase).toBe("readback");
+    const refreshing = value(await refresh());
+    expect(refreshing.phase).toBe("readback");
+    expect(refreshing.rows[0].readbackDiagnostics).toBeUndefined();
     expect(value(await refresh()).phase).toBe("readback");
     await vi.waitFor(() => expect(gateway.read).toHaveBeenCalledTimes(before + 1));
     release();
@@ -474,12 +512,15 @@ describe("image folder batch main owner", () => {
     });
     const review = await previewSkus(owner, ["AFA12AM"]);
     await submit(owner, review);
-    await terminal(owner, review);
+    const initial = await terminal(owner, review);
+    expect(initial.rows[0].readbackDiagnostics).toBeDefined();
     now += 2 * 60 * 60_000;
     const preparationCalls = assertPreparedImageUrls.mock.calls.length;
     vi.mocked(gateway.read).mockRejectedValueOnce(new SpApiError("Network error", { status: 503, code: "UPSTREAM_UNAVAILABLE" }));
     await owner.handle({ operation: "observe", request: request("GET", {}, { marketplaceId, batchId: review.batchId, refresh: "true" }) });
-    expect(await terminal(owner, review)).toMatchObject({ totals: { accepted: 1, verified: 0 }, rows: [{ state: "accepted", code: "UPSTREAM_UNAVAILABLE" }], lastReadbackAt: new Date(now).toISOString() });
+    const failed = await terminal(owner, review);
+    expect(failed).toMatchObject({ totals: { accepted: 1, verified: 0 }, rows: [{ state: "accepted", code: "UPSTREAM_UNAVAILABLE" }], lastReadbackAt: new Date(now).toISOString() });
+    expect(failed.rows[0].readbackDiagnostics).toBeUndefined();
     canonical.set("AFA12AM", proposed("AFA12AM"));
     await owner.handle({ operation: "observe", request: request("GET", {}, { marketplaceId, batchId: review.batchId, refresh: "true" }) });
     expect((await terminal(owner, review)).totals.verified).toBe(1);

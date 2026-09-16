@@ -11,6 +11,8 @@
 
 ## 目前狀態
 
+- Issue #305 接續 0.1.81 同次回查原因：.80 原生 GET 已實際前進，但 10 筆 Accepted／Verified 0 的原因尚未定位；新增封閉診斷 DTO 與畫面原因分類，不再將所有 pending 說成圖片不符。診斷沿用同一次 GET、保留原有嚴格 verified／禁止重送，不另取帳密或呼叫隱藏接口。依[0.1.81 帳本](releases/2026-09-image-readback-reasons.md)接續檢查、審查、可信產物與 native 唯讀原因定位；尚未宣稱新版本安裝或十筆完成。
+
 - Issue #305 已由 PR #306／runtime `f3c159d110bd1692a7a7e1beb9ff4101dd431299` 發布並安裝 0.1.80：頂部功能改完整工作頁，價目表隨入口直接載入，批次圖片手動 GET 啟動新一輪 canonical 回查，重開後可依 exact SKU 恢復既有 accepted 紀錄。335 files／4,326 tests、audit 0、final 兩軸 0 open findings、四條正式 main／push CI attempt 1、Pages HTML＋全部 10 個 JS／CSS bytes 及兩平台可信產物／fuses 均已驗。四區入口／返回、.80 啟動與 Amazon 連線已核對；.79 App／0700 userData 備份保留，ASAR 相符且 vault／ledger bytes 未變。10 個既有 SKU／90 張全部找回，手動 GET 的最近回查由 18:23:55 更新至 18:24:22（2026-09-16，Asia/Taipei），仍為 Accepted 10／Verified 0／unknown 0；同批 canonical 待確認原因未定位，不能斷言為 URL 不符，保持 pending、禁止重送，Issue #305 不結案。另單 SKU 9／9／FBA／PET_FOOD 讀取不是同批 snapshot。Mac→Windows 下載卡 receipts、一般下載密碼登入及兩份完整 authenticated HTTP bytes／hash 均已驗；UI 兩按鈕顯示開始下載，但未找到新本機完成檔，UI 落地 bytes 尚未證明。依[規格](specs/2026-09-workspace-image-recovery.md)與[本輪帳本](releases/2026-09-workspace-image-recovery.md)接續；不以文件 checkout 或 storefront 觀察取代固定 runtime／canonical 證據。
 
 - Issue #302 的下載入口遷移已由 PR #303／Control Console source `6a184fc10d2b30d42a6f956fd056a9a1e16a5e69` 發布；main Validate／Pages attempt 1 成功，線上全部 16 檔及根入口 bytes 已核對，新 canonical URL 已生效。新 ChatGPT Sites 入口只要求下載密碼，不需 ChatGPT 登入；密碼輪替、匿名檔案拒絕、舊兩個下載入口 302 與一般 UI 登入／卡片均已驗。沿用原 0.1.79 可信安裝檔，完整 authenticated HTTP 串流 hash 已相符；一般 UI 兩按鈕雖顯示開始下載，但沒有新本機落地檔案證據，兩層不混用。本輪不新增桌面版本或安裝。詳見[下載入口規格](specs/2026-09-download-portal-url.md)與[分層帳本](releases/2026-09-download-portal-url.md)，已安裝 Notebook Key 的舊提示由相容導向接續。

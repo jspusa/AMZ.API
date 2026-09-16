@@ -1,4 +1,5 @@
 import type { MarketplaceId } from "./marketplaces";
+import type { ListingImageReadbackDiagnostics } from "./listing-image-readback";
 
 export const LISTING_IMAGE_BATCH_MAX_SKUS = 30;
 export const LISTING_IMAGE_BATCH_MAX_IMAGES_PER_SKU = 10;
@@ -27,6 +28,8 @@ export type ListingImageBatchRow = Readonly<{
   message: string | null;
   requestId: string | null;
   acceptedAt: string | null;
+  /** Optional on older Notebook Keys; describes only this row's latest successful canonical GET. */
+  readbackDiagnostics?: ListingImageReadbackDiagnostics;
 }>;
 
 export type ListingImageBatchCapabilities = Readonly<{

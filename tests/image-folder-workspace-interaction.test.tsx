@@ -288,3 +288,83 @@ it.each([false, true])("allows a manual progress read after an active observer d
   expect(text()).toContain("★ Amazon 回查確認");
   expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "PATCH")).toHaveLength(1);
 });
+
+const diagnosticFixture = {
+  version: 1, decision: "pending", blockers: ["error-issues"],
+  issues: { errorCount: 2, imageErrorCount: 0, nonImageErrorCount: 2, unscopedErrorCount: 0 },
+  slots: { compared: true, targetCount: 10, matchedCount: 10, missingCount: 0, deletionPendingCount: 0,
+    differentUrlCount: 0, invalidUrlCount: 0, unchangedPreviousCount: 0, amazonHostedDifferentCount: 0, crossHostAmazonDifferentCount: 0 },
+};
+function pendingRecovery(readbackDiagnostics?: unknown) {
+  return { ...batch, phase: "completed", rows: [{ ...batch.rows[0], state: "accepted", acceptedAt: new Date(initialNow).toISOString(),
+    message: "已讀取 Amazon，尚未符合回查確認條件；請查看本次回查原因，勿重送。", ...(readbackDiagnostics === undefined ? {} : { readbackDiagnostics }) }],
+    totals: { ...batch.totals, ready: 0, submitted: 1, accepted: 1, verified: 0 }, lastReadbackAt: new Date(initialNow).toISOString() };
+}
+async function recoverWithDiagnostics(diagnostics?: unknown) {
+  await mountSafetyFixture();
+  await act(async () => renderer!.root.findByProps({ "aria-label": "找回圖片更新的 SKU" }).props.onChange({ target: { value: "AFA12AM" } }));
+  vi.mocked(fetch).mockResolvedValueOnce(Response.json(pendingRecovery(diagnostics)));
+  await act(async () => { await button("讀取先前圖片進度").props.onClick(); });
+}
+
+it("explains a non-image Amazon error without presenting an exact image match as completed", async () => {
+  await recoverWithDiagnostics(diagnosticFixture);
+  expect(renderer!.root.findByProps({ "aria-label": "AFA12AM 本次回查原因" })).toBeTruthy();
+  expect(text()).toContain("圖片位置符合 10／10");
+  expect(text()).toContain("其他欄位錯誤 2 項");
+  expect(text()).toContain("Amazon 已接受，待回查");
+  expect(text()).not.toContain("★ Amazon 回查確認");
+  expect(vi.mocked(fetch).mock.calls.every(([, init]) => !init?.method || init.method === "GET")).toBe(true);
+});
+
+it("shows Amazon-hosted URL differences only as unverified evidence", async () => {
+  await recoverWithDiagnostics({ ...diagnosticFixture, blockers: ["url-mismatch"],
+    issues: { errorCount: 0, imageErrorCount: 0, nonImageErrorCount: 0, unscopedErrorCount: 0 },
+    slots: { ...diagnosticFixture.slots, matchedCount: 1, differentUrlCount: 9, amazonHostedDifferentCount: 9, crossHostAmazonDifferentCount: 9 } });
+  expect(text()).toContain("圖片位置符合 1／10");
+  expect(text()).toContain("圖片網址不同 9 個位置");
+  expect(text()).toContain("有 9 個位置回傳為不同來源的 Amazon 圖片網址");
+  expect(text()).toContain("尚不能據此確認為本次送出的圖片");
+  expect(text()).not.toContain("★ Amazon 回查確認");
+  expect(button("一次指紋確認並更新 1 個 SKU")).toBeUndefined();
+});
+
+it.each([
+  { ...diagnosticFixture, upstream: "PRIVATE_DIAGNOSTIC_CANARY" },
+  { ...diagnosticFixture, blockers: ["PRIVATE_DIAGNOSTIC_CANARY"] },
+  { ...diagnosticFixture, slots: { ...diagnosticFixture.slots, matchedCount: 11 } },
+])("rejects malformed diagnostic fields before displaying the recovered result", async diagnostics => {
+  await recoverWithDiagnostics(diagnostics);
+  expect(text()).toContain("批次回應與本次商品不一致");
+  expect(text()).not.toContain("PRIVATE_DIAGNOSTIC_CANARY");
+  expect(renderer!.root.findAllByProps({ "aria-label": "AFA12AM 本次回查原因" })).toHaveLength(0);
+  expect(vi.mocked(fetch).mock.calls.every(([, init]) => !init?.method || init.method === "GET")).toBe(true);
+});
+
+it("hides previous diagnostics during a fresh read and after a disconnected observer", async () => {
+  await recoverWithDiagnostics(diagnosticFixture);
+  let reject!: (reason: Error) => void;
+  vi.mocked(fetch).mockImplementationOnce(() => new Promise((_resolve, fail) => { reject = fail; }));
+  let refresh!: Promise<void>;
+  await act(async () => { refresh = button("重新讀取本批次進度").props.onClick(); });
+  expect(renderer!.root.findAllByProps({ "aria-label": "AFA12AM 本次回查原因" })).toHaveLength(0);
+  await act(async () => { reject(new Error("Read disconnected")); await refresh; });
+  expect(text()).toContain("Read disconnected");
+  expect(renderer!.root.findAllByProps({ "aria-label": "AFA12AM 本次回查原因" })).toHaveLength(0);
+  expect(button("重新讀取本批次進度").props.disabled).toBe(false);
+});
+
+it("does not invent zero errors or image comparisons for a legacy pending response", async () => {
+  await recoverWithDiagnostics();
+  expect(text()).toContain("Amazon 已接受，待回查");
+  expect(renderer!.root.findAllByProps({ "aria-label": "AFA12AM 本次回查原因" })).toHaveLength(0);
+  expect(text()).not.toContain("圖片位置符合");
+});
+
+it("keeps the row pending when canonical values match but the operation record is not confirmed", async () => {
+  await recoverWithDiagnostics({ ...diagnosticFixture, decision: "verified", blockers: [],
+    issues: { errorCount: 0, imageErrorCount: 0, nonImageErrorCount: 0, unscopedErrorCount: 0 } });
+  expect(text()).toContain("本次圖片資料已相符，更新紀錄仍待確認");
+  expect(text()).toContain("Amazon 已接受，待回查");
+  expect(text()).not.toContain("★ Amazon 回查確認");
+});

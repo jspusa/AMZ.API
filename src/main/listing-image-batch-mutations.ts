@@ -8,7 +8,7 @@ import {
 import { marketplaceById } from "../shared/marketplaces";
 import { SpExecutionContextError, type SpExecutionContext, type SpExecutionContextAdapter } from "./amazon/sp-execution-context";
 import type { ListingImageUpdateResult } from "./amazon/listing-image-types";
-import { imageReadbackDecision, reconcileImageWrite, recoverableImageWrite, isSimulatedImageWrite, type ListingImageMutationOperations } from "./listing-image-mutations";
+import { analyzeImageReadback, reconcileImageWrite, recoverableImageWrite, isSimulatedImageWrite, type ListingImageMutationOperations } from "./listing-image-mutations";
 import { MainWriteGateError, type MainWriteGatePort, type WriteBinding } from "./write-gate";
 import { publicSpApiError, publicSpApiRequestId, SpApiError, SpApiPreCommitError } from "./amazon/sp-api-error";
 import { abortableDelay } from "./abort-utils";
@@ -366,6 +366,8 @@ export class ListingImageBatchMutations implements ListingImageBatchMutationsPor
 
   private async readbackPass(plan: BatchPlan, revision: number, signal: AbortSignal): Promise<void> {
     const pending = plan.rows.filter(row => row.public.state === "accepted");
+    // A previous pass must not appear to describe a new request that is in flight or fails.
+    for (const row of pending) row.public = { ...row.public, readbackDiagnostics: undefined };
     // One pass, bounded pairs. Neither automatic nor explicit recovery receives write authority.
     for (let index = 0; index < pending.length; index += 2) {
       if (signal.aborted) throw new SpExecutionContextError("SP_CONTEXT_INVALIDATED", "圖片回查已停止。");
@@ -374,8 +376,10 @@ export class ListingImageBatchMutations implements ListingImageBatchMutationsPor
         try {
           const observation = await this.deps.operations.read({ marketplaceId: plan.context.marketplaceId, sellerSku: row.input.sellerSku });
           await this.fence(plan.context, revision);
-          if (!row.accepted || imageReadbackDecision(row.accepted, observation) !== "verified") {
-            row.public = { ...row.public, code: "IMAGE_READBACK_PENDING", message: "已讀取 Amazon，目前圖片欄位仍未完全相符；請稍後再回查，勿重送。" };
+          const readbackDiagnostics = analyzeImageReadback(row.accepted, observation);
+          row.public = { ...row.public, readbackDiagnostics };
+          if (readbackDiagnostics.decision !== "verified") {
+            row.public = { ...row.public, code: "IMAGE_READBACK_PENDING", message: "已讀取 Amazon，尚未符合回查確認條件；請查看本次回查原因，勿重送。" };
             return;
           }
           await this.deps.writeGate.reconcile({ context: plan.context, marketplaceId: plan.context.marketplaceId, sellerSku: row.input.sellerSku,
