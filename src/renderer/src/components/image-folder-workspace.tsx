@@ -277,7 +277,7 @@ export default function ImageFolderWorkspace({ marketplaceId, onBusyChange }: { 
       setRows([]); setBatch(recovered); setAcknowledged(false); setObservationPaused(false); setUncertainSubmission(false);
       submitted.current = true;
     } catch (reason) {
-      if (revision === generation.current) setError(reason instanceof Error ? reason.message : "先前圖片進度未能讀取，沒有重新送出更新。");
+      if (revision === generation.current) { setError(reason instanceof Error ? reason.message : "先前圖片進度未能讀取，沒有重新送出更新。"); setObservationPaused(true); }
     } finally { if (revision === generation.current) { running.current = false; setChecking(false); } }
   };
 

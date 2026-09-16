@@ -57,6 +57,7 @@ export function parseListingImageReadbackDiagnostics(value: unknown): ListingIma
   const slots = value.slots as ListingImageReadbackDiagnostics["slots"];
   if (issues.errorCount !== issues.imageErrorCount + issues.nonImageErrorCount + issues.unscopedErrorCount
     || value.blockers.includes("error-issues") !== (issues.errorCount > 0)
+    || (slots.compared && value.blockers.some(blocker => !["issues-unavailable", "error-issues", "url-mismatch"].includes(blocker)))
     || (slots.compared ? ![9, 10].includes(slots.targetCount) : slotCountKeys.some(key => slots[key] !== 0))
     || slots.targetCount !== slots.matchedCount + slots.missingCount + slots.deletionPendingCount + slots.differentUrlCount + slots.invalidUrlCount
     || slots.unchangedPreviousCount > slots.targetCount - slots.matchedCount

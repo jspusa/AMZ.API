@@ -21,7 +21,9 @@
 - 圖片差異、missing／待刪、與原值相同及不同來源 Amazon media host 只供辨識原因；不能自動改判 verified。
 - 新回查開始及 GET 失敗清掉舊診斷；renderer 在讀取中／observer 斷線時不將舊原因當成本次結果。舊 Bridge 沒有診斷欄位時不補成零錯誤。
 - 「查看本次回查原因」分開顯示核對條件、圖片位置與 Amazon 錯誤分類；整列是否完成仍以 durable row state 為準。
-- Main 紅測試先重現沒有同次分類；renderer 紅測試先重現不顯示原因及接受畸形 DTO。修正後定點測試通過；完整檢查、兩軸 review 與交付結果待記錄。
+- Main 紅測試先重現沒有同次分類；renderer 紅測試先重現不顯示原因及接受畸形 DTO。畸形 Amazon issue 的回歸確認採 fail-closed，合法 WARNING／INFO 不阻擋。
+- 首輪兩軸 review 各發現一項 P2：再次找回失敗會重新顯示舊原因，以及身分／attributes 證據失效仍產生圖片差異分類。兩項均先紅後綠修正：恢復失敗隱藏舊原因並保留原 accepted 紀錄；可信 target gate 與 DTO parser 均禁止無有效商品證據的圖片比較。最終固定來源審查接續完成。
+- Synthetic browser QA 已核對不同 Amazon URL／其他欄位 ERROR 兩種原因顯示；1280px／390px 頁面無整頁橫向溢出。這不等於本批原生回查結果。
 
 ## 交付狀態
 

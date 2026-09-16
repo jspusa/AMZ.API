@@ -4,6 +4,7 @@ import type {
   ListingImageSnapshot,
   ListingImageUpdateResult,
 } from "../src/main/amazon/listing-image-types";
+import type { ListingImageGatewayRead } from "../src/main/amazon/listing-image-gateway";
 import { analyzeImageReadback, imageReadbackDecision, reconcileImageWrite } from
   "../src/main/listing-image-mutations";
 
@@ -90,6 +91,31 @@ function durableResult(
 }
 
 describe("Listing Image canonical write readback", () => {
+  const untrustedTargets: Array<[string, (receipt: ListingImageUpdateResult, observation: ListingImageGatewayRead) => void]> = [
+    ["invalid-evidence", receipt => { delete (receipt as unknown as Record<string, unknown>).imageWriteEvidence; }],
+    ["receipt-not-live-accepted", receipt => { receipt.mode = "demo"; }],
+    ["receipt-not-live-accepted", receipt => { receipt.status = "VALID"; }],
+    ["readback-not-live", (_receipt, observation) => { observation.snapshot.mode = "demo"; }],
+    ["not-fba", (_receipt, observation) => { (observation as { fulfillment: string }).fulfillment = "MFN"; }],
+    ["marketplace-mismatch", (_receipt, observation) => { observation.snapshot.marketplaceId = "A1F83G8C2ARO7P"; }],
+    ["sku-mismatch", (_receipt, observation) => { observation.snapshot.sellerSku = "OTHER-SKU"; }],
+    ["asin-mismatch", (_receipt, observation) => { observation.snapshot.asin = "B000000001"; }],
+    ["product-type-mismatch", (_receipt, observation) => { observation.snapshot.productType = "OTHER_TYPE"; }],
+    ["attributes-missing", (_receipt, observation) => { observation.snapshot.attributesPresent = false; }],
+    ["slot-shape-mismatch", (_receipt, observation) => { observation.snapshot.images.pop(); }],
+  ];
+  it.each(untrustedTargets)("does not compare image URLs against an untrusted target: %s", (blocker, mutate) => {
+    const requested = [...URLS, null];
+    requested[1] = "https://source.example/new.jpg";
+    const receipt = durableResult(requested, 2);
+    const observation: ListingImageGatewayRead = { snapshot: snapshot(), sourceEvidence: {} as never, fulfillment: "FBA" };
+    mutate(receipt, observation);
+    const diagnostics = analyzeImageReadback(receipt, observation);
+    expect(diagnostics).toMatchObject({ decision: "pending", blockers: [blocker], slots: { compared: false } });
+    expect(Object.values(diagnostics.slots).filter(value => typeof value === "number").every(value => value === 0)).toBe(true);
+    expect(reconcileImageWrite(receipt, observation)).toBeNull();
+  });
+
   it("explains slot differences and ERROR scopes without emitting any source values", () => {
     const requested = ["https://source.example/private-main", null, "https://source.example/private-missing", "https://source.example/private-invalid",
       "https://source.example/private-cdn", "https://source.example/private-matched", null, null, null, null];

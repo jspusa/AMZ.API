@@ -582,6 +582,9 @@ export function analyzeImageReadback(
   const exactSlots = Array.isArray(snapshot.images) && snapshot.images.length === IMAGE_ATTRIBUTE_NAMES.length
     && snapshot.images.every((image, index) => image?.attributeName === IMAGE_ATTRIBUTE_NAMES[index]);
   if (!exactSlots) blockers.push("slot-shape-mismatch");
+  // Issue status can block completion without invalidating an otherwise exact target observation.
+  // Evidence, identity, fulfillment or missing attributes must prevent all URL claims.
+  const trustedSlots = blockers.length === 0;
   const issues = { errorCount: 0, imageErrorCount: 0, nonImageErrorCount: 0, unscopedErrorCount: 0 };
   let issuesUnavailable = !Array.isArray(snapshot.issues);
   if (Array.isArray(snapshot.issues)) for (const issue of snapshot.issues) {
@@ -600,7 +603,7 @@ export function analyzeImageReadback(
     differentUrlCount: 0, invalidUrlCount: 0, unchangedPreviousCount: 0,
     amazonHostedDifferentCount: 0, crossHostAmazonDifferentCount: 0,
   };
-  if (evidence && exactSlots) {
+  if (evidence && trustedSlots) {
     slots.compared = true;
     slots.targetCount = evidence.requestedUrls.length;
     evidence.requestedUrls.forEach((requested, index) => {

@@ -368,3 +368,16 @@ it("keeps the row pending when canonical values match but the operation record i
   expect(text()).toContain("Amazon 已接受，待回查");
   expect(text()).not.toContain("★ Amazon 回查確認");
 });
+
+it("does not redisplay previous reasons after a failed recovery request", async () => {
+  await recoverWithDiagnostics(diagnosticFixture);
+  vi.mocked(fetch).mockRejectedValueOnce(new Error("Recovery disconnected"));
+  await act(async () => { await button("讀取先前圖片進度").props.onClick(); });
+  expect(text()).toContain("Recovery disconnected");
+  expect(text()).toContain("AFA12AM");
+  expect(renderer!.root.findAllByProps({ "aria-label": "AFA12AM 本次回查原因" })).toHaveLength(0);
+  vi.mocked(fetch).mockResolvedValueOnce(Response.json(pendingRecovery(diagnosticFixture)));
+  await act(async () => { await button("讀取先前圖片進度").props.onClick(); });
+  expect(renderer!.root.findByProps({ "aria-label": "AFA12AM 本次回查原因" })).toBeTruthy();
+  expect(vi.mocked(fetch).mock.calls.every(([, init]) => !init?.method || init.method === "GET")).toBe(true);
+});

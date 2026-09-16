@@ -11,6 +11,19 @@ function diagnostic() {
 }
 
 describe("closed image readback diagnostics wire schema", () => {
+  it.each([
+    "invalid-evidence", "receipt-not-live-accepted", "readback-not-live", "not-fba",
+    "marketplace-mismatch", "sku-mismatch", "asin-mismatch", "product-type-mismatch", "attributes-missing", "slot-shape-mismatch",
+  ])("rejects image comparison that claims trusted slots despite %s", blocker => {
+    expect(parseListingImageReadbackDiagnostics({ ...diagnostic(), blockers: [blocker, "url-mismatch"] })).toBeNull();
+  });
+
+  it("accepts a trusted slot comparison while issues are unavailable or have a blocking ERROR", () => {
+    expect(parseListingImageReadbackDiagnostics({ ...diagnostic(), blockers: ["issues-unavailable", "url-mismatch"] })).not.toBeNull();
+    expect(parseListingImageReadbackDiagnostics({ ...diagnostic(), blockers: ["error-issues", "url-mismatch"],
+      issues: { errorCount: 1, imageErrorCount: 0, nonImageErrorCount: 1, unscopedErrorCount: 0 } })).not.toBeNull();
+  });
+
   it("accepts a current sanitized diagnostic and detaches it from its source", () => {
     const original = diagnostic();
     const parsed = parseListingImageReadbackDiagnostics(original);
