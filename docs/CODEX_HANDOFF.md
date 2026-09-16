@@ -11,6 +11,8 @@
 
 ## 目前狀態
 
+- Issue #302 將員工下載入口遷至 AMZ.API 專用 ChatGPT Sites 網址，沿用 0.1.79 既有可信安裝檔；本輪是 Control Console Release，不建立桌面新版本。本機 4,298 tests、build 與 production audit 0 已通過；Pages、Sites 發布、密碼輪替、舊入口相容導向與員工實際下載仍待分層驗證。已安裝 Notebook Key 的舊提示仍依賴相容導向。接續[下載入口規格](specs/2026-09-download-portal-url.md)與[本輪帳本](releases/2026-09-download-portal-url.md)，不從本機檢查推定線上成功。
+
 - Issue #299 已由 PR #300／runtime `6d85bd0dd00b7531b382a046c964c35342df712d` 發布 0.1.79：文案問題標籤與原因可換行且不重疊；圖片張數選單集中到圖片健檢頁並收窄；共用 Grain-free／穀物成分核對維持排除產品描述。4,298 tests、audit 0、兩軸 0 open findings、四條 exact-source main／push CI attempt 1、Pages 全 bytes、兩平台可信產物及 fuses 均已驗。原生載入本次 Pages，首頁無張數選單、圖片頁精簡選單與 8 張偏好保留已目視核對；可信 .79 已安裝，.78 App／0700 userData 備份保留、vault／ledger 未變，重開後 Amazon 已連線且可開文案健檢頁。兩次新掃描操作均遭 CUA `user-changed` 阻止，未送出新掃描或 Amazon 寫入。Mac → Windows 下載卡 complete receipts 已核對；員工頁仍待登入與實際下載 bytes 驗證。接續[本輪帳本](releases/2026-09-audit-layout-grain-claims.md)與[規格](specs/2026-09-audit-layout-grain-claims.md)，runtime 來源固定為上述 SHA，舊圖片 unknown／清理驗收不因此重做或解除。
 
 - Issue #294 的 0.1.78 一小時圖片暫存已由 PR #295／runtime `11f3b2addc8c44267f8097c5d764c660094927b1` 發布；4,252 tests、audit 0、兩軸審查、四條正式 CI、Pages 與兩平台可信產物均通過。解鎖後已正常備份並安裝 .78，ASAR／vault／ledger 核對完成且原生首頁已連線。五資料夾／45 圖辨識正確，但首次準備 PUT canceled，唯一 GET-only 回查仍404；此 unknown 不得重傳或靠重啟清除。其餘四個未嘗試 SKU 首次準備已見5個雲端PUT200／4個publicGET200，Mac再度鎖定，Version12 部署後再次取得原生畫面並重選同一四資料夾，已用 GET 恢復原5張，另2個新PUT200；下一個PUT取消且Mac再次鎖定，原生終態與新一小時五 SKU 預檢仍待完成，既有解鎖請求保留。Issue #297 的前置清理阻塞風險已在 public seam 重現，兩軸0 findings／三套server測試通過後，以source `6f9b42a99e0502452dcdc749122775c4c558c828` 發布Supply Boss version12：每次合法新上傳附带最多一筆背景清理，確認刪除與CAS後才釋放額度；不把修正當作已證明live取消根因。真實一小時後410已驗，固定手動清理成功，但截至15:18:48 UTC仍無schedule事件，不能宣稱自動物理刪除已驗。Mac→Windows下載卡上傳receipts已驗，員工頁登入及實際下載仍待。接續[一小時規格](specs/2026-09-image-one-hour-retention.md)與[分層交付帳本](releases/2026-09-image-one-hour-retention.md)，不重做安裝、舊測試或Amazon正式寫入。
@@ -76,7 +78,7 @@
 - 維持完整與未完成／未知資料的區別；沒有證據不能補零、標成功或宣稱 API 已支援。文案 Excel 保留 exact snapshot、帳號／站點／digest／時限；產品要點完整替換必須揭露同語系 overflow 刪除且明確確認。
 - UI 保留綠色自動、淡藍色一鍵、黃色人工語意；首頁健檢為單層寬版 workspace、主程序工作可接回、焦點可恢復，忙碌寫入不能離開。完整既有功能門檻見 [功能驗收契約](FEATURE_CONTRACTS.md)。
 - 公布欄現行來源為固定 Supply Boss API（ADR 0003）；schema v2、v1 唯讀 projection、revision conflict 與 main-memory board session 邊界保持不變。舊 GitHub Issues 公告 trigger 如仍存在，維持 author／label authorization。
-- 安裝入口為 [受保護安全下載頁](https://supply-boss.brave-prawn-0848.chatgpt.site/downloads)。保留現有 vault／備份；Source 版本不等於下載卡或實機版本。公開更新 feed 需要 ADR 0001 指定的獨立批准，不能改值或略過 gate 來繞過。
+- 安裝入口為 [受保護安全下載頁](https://amz-api-downloads.brave-prawn-0848.chatgpt.site/downloads)。保留現有 vault／備份；Source 版本不等於下載卡或實機版本。公開更新 feed 需要 ADR 0001 指定的獨立批准，不能改值或略過 gate 來繞過。
 - Linux／CI／fixture 不代表 live Amazon、真實 Touch ID／Windows Hello、DPAPI 跨使用者或簽章更新成功。真實 mutation 需指定 SKU／欄位的另行操作授權，不能為程式驗收自行送出。
 
 ## 歷史與後續記錄
