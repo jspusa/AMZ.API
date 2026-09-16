@@ -58,7 +58,7 @@ FBA 廣告策略表只會把 Sales & Traffic 的 exact Seller SKU＋ASIN 與目�
 
 ## 第一次使用
 
-1. 前往 [AMZ.API Notebook Key 安全下載頁](https://supply-boss.brave-prawn-0848.chatgpt.site/downloads)，通過內部密碼驗證後下載 Mac `.dmg` 或 Windows 11 Pro x64 的 NSIS installer。下載頁只提供這兩個員工安裝入口；portable ZIP 與 checksum manifest 只保留為內部驗證 artifact，不另顯示成下載卡。安裝檔保存在私有 R2，不使用公開 GitHub Release 直連；GitHub Pages 也不包含密碼或真實檔案網址。
+1. 前往 [AMZ.API Notebook Key 安全下載頁](https://amz-api-downloads.brave-prawn-0848.chatgpt.site/downloads)，通過內部密碼驗證後下載 Mac `.dmg` 或 Windows 11 Pro x64 的 NSIS installer。下載頁只提供這兩個員工安裝入口；portable ZIP 與 checksum manifest 只保留為內部驗證 artifact，不另顯示成下載卡。安裝檔保存在私有 R2，不使用公開 GitHub Release 直連；GitHub Pages 也不包含密碼或真實檔案網址。
 2. 目前 Windows artifact 是內部未簽章版；Windows SmartScreen 會顯示發行者未知警告。請只從上述安全下載頁取得並核對頁面提供的 SHA-256，不要從 PR 的測試結果下載，也不要關閉全系統 SmartScreen 來繞過警告。
 3. 開啟 App，按右上角「Notebook Key 安全連線」，再開啟本機 SP-API 安全輸入。敏感欄位會在 main process 建立的本機 sheet 中開啟，不會進入 GitHub Pages renderer。
 4. 在本機 sheet 輸入 Private Seller App 的：
@@ -141,7 +141,7 @@ Linux 只能驗證 TypeScript、單元測試與 renderer/main/preload bundle；`
 - 正式 Notebook Key 啟動後約 15 秒背景檢查，之後每 6 小時重查；有新版會在背景下載並顯示小滑板人進度。下載完成後不會自行關閉程式，只顯示一次「更新並重啟」。Amazon／憑證安全操作尚未結束時會拒絕重啟；按下後立即關閉憑證編輯器、停止接受新的 Amazon／憑證操作，再以 Windows 靜默 NSIS 或 macOS updater 安裝並重開。若 installer 當場拋錯或稍後發出 error，操作 gate 與按鈕狀態都會回復，不會把 App 永久鎖住。
 - GitHub Pages renderer 會先偵測目前 Notebook Key 是否已有新的 updater bridge；舊版仍可正常載入頁面，但只顯示「需先安裝簽章版」，不會呼叫不存在的 IPC。這個 Bootstrap 相容層是讓既有使用者安全走完最後一次手動安裝，不是繞過簽章。
 - 現有未簽章／不同簽章身分的安裝無法憑空加入可信更新鏈；Mac 與 Windows 都必須最後手動安裝一次 Bootstrap Notebook Key。之後例行桌機能力更新不再需要回到網站，例外只剩首次安裝、修復或簽章身分遷移。
-- 員工可見的 [Notebook Key 安全下載頁](https://supply-boss.brave-prawn-0848.chatgpt.site/downloads) 仍只顯示 Mac DMG 與 Windows NSIS installer 兩張卡。自動更新若採 GitHub provider，Release 資產技術上是公開下載來源；發布 job 因此要求 `desktop-release` environment 的 `PUBLIC_DESKTOP_UPDATE_FEED=approved`，未取得明確核准不得發布。
+- 員工可見的 [Notebook Key 安全下載頁](https://amz-api-downloads.brave-prawn-0848.chatgpt.site/downloads) 仍只顯示 Mac DMG 與 Windows NSIS installer 兩張卡。自動更新若採 GitHub provider，Release 資產技術上是公開下載來源；發布 job 因此要求 `desktop-release` environment 的 `PUBLIC_DESKTOP_UPDATE_FEED=approved`，未取得明確核准不得發布。
 - 未簽章測試版只供內部測試。CI 不能冒充 Gatekeeper／SmartScreen reputation、Touch ID、Windows Hello 或真實裝置更新已通過。
 
 正式 Release 的 `mac-release`、`windows-release`、`desktop-release` 環境、憑證種類、保護欄位與逐項驗證由 [簽章 preflight](docs/releases/signed-update-preflight.md) 統一維護。兩平台同 source 驗證及公開 feed 核准都完成後才可發布。
