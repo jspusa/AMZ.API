@@ -4022,7 +4022,7 @@ export default function ContentAuditPanel({
           <span className="automation-badge manual">需人工</span><p>疑似錯字、產品名稱、產品亮點、五大賣點、產品敘述與成分內容由你決定。</p>
         </div>
         <p className="price-intro">
-          一次掃描所選站點全部 FBA SKU，先以 Amazon relationships 排除沒有可編輯文案的 parent 容器，再列出疑似錯字、少於五個賣點，以及有可靠商品類型證據但缺成分的商品。產品名稱少於 60、產品亮點少於 110、每項產品要點少於 150 或超過 200，以及產品敘述少於 1,800 個 Unicode 字元也會標示原因；成分宣稱會依 Amazon ingredients 明確證據核對多成分、Tendon／Tendons 與 Chicken／hypoallergenic，資料未完成時不推測。
+          一次掃描所選站點全部 FBA SKU，先以 Amazon relationships 排除沒有可編輯文案的 parent 容器，再列出疑似錯字、少於五個賣點，以及有可靠商品類型證據但缺成分的商品。產品名稱少於 60、產品亮點少於 110、每項產品要點少於 150 或超過 200，以及產品敘述少於 1,800 個 Unicode 字元也會標示原因；成分宣稱會依 Amazon ingredients 明確證據核對多成分、Tendon／Tendons、Chicken／hypoallergenic 及 Grain-free／穀物；此宣稱核對只含品名、亮點與產品要點，不含產品描述，資料未完成時不推測。
         </p>
         <div className="content-export-note content-audit-privacy">
           <strong>Amazon 唯讀＋AMZ.API 共用英文辭典</strong>

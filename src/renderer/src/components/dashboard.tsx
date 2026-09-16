@@ -2434,12 +2434,6 @@ export default function Dashboard({
           <section id="home-audits" tabIndex={-1} aria-labelledby="home-audits-title">
           <div className="home-section-heading">
             <h2 id="home-audits-title">商品健檢</h2>
-            <label className="home-image-minimum"><span>圖片至少</span>
-              <select aria-label="首頁圖片健檢最低張數" value={imageAuditMinimumImages} disabled={primaryAuditJobsRunning}
-                onChange={event => changeImageAuditMinimumImages(Number(event.currentTarget.value))}>
-                {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(value => <option key={value} value={value}>{value} 張</option>)}
-              </select>
-            </label>
             <button type="button" className="audit-review-home-button" onClick={openReviewOverview}>健檢總表</button>
             <AuditSuiteHomeCard
               imageMinimumImages={imageAuditMinimumImages}

@@ -1,6 +1,6 @@
 # AMZ.API — Codex 交接入口
 
-更新：2026-09-14。Repository：`jspusa/AMZ.API`；控制台：`https://jspusa.github.io/AMZ.API/`。
+更新：2026-09-16。Repository：`jspusa/AMZ.API`；控制台：`https://jspusa.github.io/AMZ.API/`。
 
 ## 開始工作
 
@@ -10,6 +10,8 @@
 4. 建立可審查變更，核對同一 commit 的 Actions 後才合併／發布。發布、artifact、安裝和 live 驗證分開記錄，不能從前一步推定後一步成功。
 
 ## 目前狀態
+
+- Issue #299 接續使用者健檢修正：文案問題標籤與原因可換行且不重疊；首頁移除圖片張數選單，集中到圖片健檢頁並縮短寬度；新增 Grain-free 與明確穀物成分的共用核對，產品描述維持排除。shared main／renderer 規則隨 0.1.79 發布，檢查、CI、Pages、產物、安裝與員工下載依[本輪帳本](releases/2026-09-audit-layout-grain-claims.md)分開記錄。完整需求見[規格](specs/2026-09-audit-layout-grain-claims.md)，舊圖片 unknown／清理驗收不因此重做或解除。
 
 - Issue #294 的 0.1.78 一小時圖片暫存已由 PR #295／runtime `11f3b2addc8c44267f8097c5d764c660094927b1` 發布；4,252 tests、audit 0、兩軸審查、四條正式 CI、Pages 與兩平台可信產物均通過。解鎖後已正常備份並安裝 .78，ASAR／vault／ledger 核對完成且原生首頁已連線。五資料夾／45 圖辨識正確，但首次準備 PUT canceled，唯一 GET-only 回查仍404；此 unknown 不得重傳或靠重啟清除。其餘四個未嘗試 SKU 首次準備已見5個雲端PUT200／4個publicGET200，Mac再度鎖定，Version12 部署後再次取得原生畫面並重選同一四資料夾，已用 GET 恢復原5張，另2個新PUT200；下一個PUT取消且Mac再次鎖定，原生終態與新一小時五 SKU 預檢仍待完成，既有解鎖請求保留。Issue #297 的前置清理阻塞風險已在 public seam 重現，兩軸0 findings／三套server測試通過後，以source `6f9b42a99e0502452dcdc749122775c4c558c828` 發布Supply Boss version12：每次合法新上傳附带最多一筆背景清理，確認刪除與CAS後才釋放額度；不把修正當作已證明live取消根因。真實一小時後410已驗，固定手動清理成功，但截至15:18:48 UTC仍無schedule事件，不能宣稱自動物理刪除已驗。Mac→Windows下載卡上傳receipts已驗，員工頁登入及實際下載仍待。接續[一小時規格](specs/2026-09-image-one-hour-retention.md)與[分層交付帳本](releases/2026-09-image-one-hour-retention.md)，不重做安裝、舊測試或Amazon正式寫入。
 

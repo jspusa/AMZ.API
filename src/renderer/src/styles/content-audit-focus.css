@@ -37,6 +37,31 @@
 :root [data-audit-reading="true"] .content-audit-panel .content-audit-source-deadline { padding: 12px 14px; margin: 0 0 18px; border: 1px solid #e5e7eb; border-radius: 10px; background: #fff; color: #596579; }
 :root [data-audit-reading="true"] .content-audit-panel .content-audit-source-deadline p { margin: 0; font-size: 13px; }
 :root [data-audit-reading="true"] .content-audit-panel .content-audit-source-deadline p + p { margin-top: 6px; }
+/* Issue rows may include both a kind and an origin badge. Let the reason
+   wrap below intact labels instead of assigning it an unbounded auto column. */
+.content-audit-panel .content-audit-issues > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 10px;
+  min-width: 0;
+}
+.content-audit-panel .content-audit-issues > div > span {
+  flex: 0 0 auto;
+  max-width: 100%;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+.content-audit-panel .content-audit-issues > div > p {
+  flex: 1 1 24rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.content-audit-panel .content-audit-issues > div > small {
+  flex: 1 1 100%;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
 @media (max-width: 680px) {
   :root [data-audit-reading="true"] .content-audit-panel .content-audit-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .content-audit-command-actions { width: 100%; }

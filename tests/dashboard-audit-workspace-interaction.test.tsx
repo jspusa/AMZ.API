@@ -10,6 +10,7 @@ import Dashboard, {
 } from "../src/renderer/src/components/dashboard";
 import PriceListPanel from "../src/renderer/src/components/price-list-panel";
 import VinePanel from "../src/renderer/src/components/vine-panel";
+import { initializeDisplayPreferences } from "../src/renderer/src/display-preferences-client";
 import type {
   SalesTrendPoint,
   SalesTrendSnapshot,
@@ -68,7 +69,7 @@ afterEach(async () => {
   }
 });
 
-async function mountDashboard() {
+async function mountDashboard(imageAuditMinimumImages = 8) {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
     .IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -132,6 +133,12 @@ async function mountDashboard() {
       currentScrollY = value;
     },
     fbaOS: {
+      preferences: {
+        read: vi.fn(async () => ({ fontSize: "standard", accent: "default", mode: "light", imageAuditMinimumImages })),
+        update: vi.fn(async (patch: { imageAuditMinimumImages?: number }) => ({
+          fontSize: "standard", accent: "default", mode: "light", imageAuditMinimumImages, ...patch,
+        })),
+      },
       app: {
         version: vi.fn(async () => "0.1.46"),
         openExternal: vi.fn(async () => undefined),
@@ -173,6 +180,7 @@ async function mountDashboard() {
   });
   const fetchMock = vi.fn((_input: string, _options?: RequestInit) => new Promise<Response>(() => undefined));
   vi.stubGlobal("fetch", fetchMock);
+  await initializeDisplayPreferences();
 
   const flushAnimationFrames = async () => {
     await act(async () => {
@@ -275,14 +283,29 @@ describe("dashboard audit workspace interactions", () => {
       .toBe(false);
   });
 
-  it("changes the image minimum without dispatching a health check", async () => {
-    const { root, fetchMock } = await mountDashboard();
-    const minimumSelect = root.findByProps({ "aria-label": "首頁圖片健檢最低張數" });
-    expect(minimumSelect.props.value).toBe(8);
+  it("sets the remembered image minimum only inside the image audit and reuses it for run-all", async () => {
+    const { root, fetchMock, windowMock, flushTimeouts, flushAnimationFrames } = await mountDashboard(10);
+    expect(root.findAllByProps({ "aria-label": "首頁圖片健檢最低張數" })).toHaveLength(0);
+    expect(root.findByProps({ id: "home-audits" }).findAllByType("select")).toHaveLength(0);
+    await act(async () => root.findByProps({ "data-audit-workspace-launch": "image" }).props.onClick());
+    const minimumSelect = root.findByProps({ "aria-label": "圖片健檢最低張數" });
+    expect(minimumSelect.props.value).toBe(10);
+    expect(minimumSelect.findAllByType("option").map(option => option.props.value)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    expect(windowMock.fbaOS.preferences.update).not.toHaveBeenCalled();
     const beforeMinimumChange = fetchMock.mock.calls.length;
-    await act(async () => minimumSelect.props.onChange({ currentTarget: { value: "6" } }));
-    expect(root.findByProps({ "aria-label": "首頁圖片健檢最低張數" }).props.value).toBe(6);
+    await act(async () => minimumSelect.props.onChange({ target: { value: "6" } }));
+    expect(root.findByProps({ "aria-label": "圖片健檢最低張數" }).props.value).toBe(6);
+    expect(windowMock.fbaOS.preferences.update).toHaveBeenCalledExactlyOnceWith({ imageAuditMinimumImages: 6 });
     expect(fetchMock.mock.calls.length).toBe(beforeMinimumChange);
+    await act(async () => root.findByProps({ className: "audit-workspace-back" }).props.onClick());
+    await flushTimeouts();
+    await flushAnimationFrames();
+    expect(root.findByProps({ id: "home-audits" }).findAllByType("select")).toHaveLength(0);
+    await act(async () => root.findByProps({ className: "audit-suite-start" }).props.onClick());
+    const starts = fetchMock.mock.calls.filter(([input, options]) => input === "/api/sp-api/standalone-audit" && options?.method === "POST")
+      .map(([, options]) => JSON.parse(options!.body as string));
+    expect(starts.find(request => request.kind === "image").options).toEqual({ minimumImages: 6 });
+    expect(starts.find(request => request.kind === "subscription").options).toEqual({ months: 6 });
   });
 
   it("moves skip-link and menu shortcut focus without changing the trusted URL or fetching", async () => {

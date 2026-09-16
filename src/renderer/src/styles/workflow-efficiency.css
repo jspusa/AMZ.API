@@ -102,7 +102,11 @@
 .image-batch-import td small { display: block; }
 .image-batch-import select { width: 100%; min-width: 110px; padding: 6px; border: 1px solid var(--line); border-radius: 6px; color: var(--ink); background: var(--surface); }
 .image-batch-import button { flex-shrink: 0; }
-.image-audit-minimum { margin: 12px 0; }
+.ops-marketplace.image-audit-minimum {
+  flex-direction: row; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 12px 0;
+}
+.image-audit-minimum > span { font-size: 13px; letter-spacing: normal; text-transform: none; }
+.image-audit-minimum select { width: 6em; max-width: 100%; flex: 0 0 auto; }
 .image-drop-zone[aria-disabled="true"] { cursor: wait; opacity: .65; }
 .image-drop-zone:focus-visible { outline: 2px solid currentColor; outline-offset: 3px; }
 @media (max-width: 600px) {
@@ -122,6 +126,3 @@
 .bulletin-health-summary button { padding:8px 12px; border-radius:8px; border:1px solid var(--line); background:var(--surface); color:var(--ink); }
 .bulletin-calendar .is-clearance, .bulletin-calendar-agenda .is-clearance { color:#a84319; background:#fff1e6; }
 .bulletin-calendar-legend .is-clearance { background:#c55b29; }
-
-.home-image-minimum { display:inline-flex; align-items:center; gap:8px; color:var(--muted); font-size:13px; }
-.home-image-minimum select { padding:7px 10px; border:1px solid var(--line); border-radius:8px; background:var(--surface); color:var(--ink); }
