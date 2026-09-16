@@ -8,6 +8,7 @@ describe("folder image batch router boundary", () => {
   it.each([
     ["GET", {}, "capabilities"],
     ["GET", {batchId:"image-batch.fixture"}, "observe"],
+    ["GET", {recoverSkus:'["SKU1"]'}, "recover"],
     ["POST", {}, "preview"],
     ["PATCH", {}, "commit"],
   ] as const)("dispatches %s %j to its main owner", async (method, query, operation) => {

@@ -17,9 +17,8 @@ describe("shared audit detail reading surface", () => {
   });
   it("covers both low-frequency audit surfaces without touching Settings", async () => {
     const dashboard = await source("src/renderer/src/components/dashboard.tsx");
-    for (const name of ["aged-inventory-audit-drawer", "review-audit-drawer"]) {
-      expect(dashboard).toContain(`className="order-drawer ${name}"\n            data-audit-reading="true"`);
-    }
+    expect(dashboard).toContain('className="order-drawer aged-inventory-audit-drawer"\n            data-audit-reading="true"');
+    expect(dashboard).toMatch(/reviewAuditOpen && <AuditWorkspaceShell presentation="workspace"[\s\S]*?surfaceClassName="review-audit-drawer"/u);
     expect(await source("src/renderer/src/components/system-health-control.tsx")).not.toContain('data-audit-reading');
   });
   it("keeps large data in scroll owners and never hides warnings or filters artwork", async () => {

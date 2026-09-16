@@ -11,6 +11,8 @@ JSPUSA 的 GitHub 控制台＋macOS／Windows 11 本機 Notebook Key Amazon 營�
 
 ## 已整合功能
 
+頂端產品、價格、營運與報表選單會直接開啟完整工作頁，與健檢使用一致操作方式。資料夾圖片更新的「重新讀取本批次進度」會重新向 Amazon 唯讀核對；重開程式後也可輸入最多 30 個 exact Seller SKU「找回先前圖片更新」，不必重新上傳或送出。只有完整圖片欄位相符才顯示回查確認，來源到期及 Amazon 已接受都不會直接當成完成。
+
 本輪另加入首頁「營運情報與事件」：Coupon／促銷、US AWD 庫存與在途、Buy Box／價格健康、SP 廣告成效及本機事件中心；包含 main 能力，需要支援的新 Notebook Key。功能範圍、已知限制及尚待完成的檢查／發布證據見 [2026-09 營運情報記錄](docs/releases/2026-09-operations-intelligence.md)，不代表已在使用者帳號 live 通過。
 
 | 區域 | 功能 | 自動化程度 |
@@ -42,7 +44,7 @@ JSPUSA 的 GitHub 控制台＋macOS／Windows 11 本機 Notebook Key Amazon 營�
 | 營運 | FBA 廣告策略表：同一日期範圍整合目前 FBA SKU、SKU 粒度品項銷售與 Sponsored Products advertised-product 報表，產生 T1–T4、可覆寫 SP 預算／目標 ACoS、實際花費／歸因銷售／購買次數與中文 Excel | 三份 main-owned 唯讀報表；缺值不補 0；SB／SD／規格與價格保持人工留白 |
 | 報表 | 文件庫列出 Amazon 官方 109 個唯一公開 report types、用途、角色、FBA 邊界與 App 接線狀態；Vendor 類型不顯示，並可依可用性快速篩選 | 公開文件＋唯讀規劃 |
 | 健檢 | 首頁一鍵直接啟動文案、圖片、A+、未綁變體、Subscribe & Save、B2B 價格、廣告覆蓋七張既有卡片的 main-owned 工作，名稱與順序完全共用；首頁入口改用同一個寬版單層工作區，優先顯示摘要、進度、操作與結果，不再把結果限制在小型 modal；判定規則、資料來源及安全範圍只在低調的「詳細說明 ›」展開後顯示 | 全部唯讀；執行中工作會沿用，啟動或執行失敗各自在原卡片 fail honest |
-| 健檢 | 從任一單項卡啟動文案、圖片、A+、未綁變體、Subscribe & Save、B2B、廣告覆蓋、庫齡或評論後，可返回首頁並讓 Notebook Key 主程序繼續執行，首頁持續顯示該站點進度並可重新接回結果；非首頁工具仍可保留既有 drawer | renderer 只觀察 main-owned、account／mode／marketplace-scoped 工作；離開工作區不會取消工作，切換安全 context 會失效；B2B 寫入處理中仍禁止離開 |
+| 健檢 | 從任一單項卡啟動文案、圖片、A+、未綁變體、Subscribe & Save、B2B、廣告覆蓋、庫齡或評論後，可返回首頁並讓 Notebook Key 主程序繼續執行，首頁持續顯示該站點進度並可重新接回結果；頂端功能選單同樣直接進入完整工作頁 | renderer 只觀察 main-owned、account／mode／marketplace-scoped 工作；離開工作區不會取消工作，切換安全 context 會失效；B2B 寫入處理中仍禁止離開 |
 | 健檢 | FBA 180 天以上庫齡／預估冗餘、評論主題與 Vine 進度依此順序收在首頁預設折疊的「低頻健檢」 | 各自獨立，不納入一鍵全部；Vine 用六欄表格顯示，評論達已註冊名額 2/3 時亮綠燈「可綁變體」，否則亮紅燈「等待Vine回收」 |
 | 系統 | 作業系統安全儲存密文、防重送帳本、預檢票證、自我檢查、字級、API 版本更新建議、公開會計 API 能力與安全下載規劃 | 自動／能力邊界 |
 

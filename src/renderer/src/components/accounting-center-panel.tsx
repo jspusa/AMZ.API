@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import AuditWorkspaceShell, { type AuditSurfacePresentation } from "./audit-workspace-shell";
 import {
   LatestAccountingRequest,
   accountingDateRequirement,
@@ -220,41 +221,26 @@ export function AccountingCenterPanel({ marketplaceId }: { marketplaceId: string
 export function AccountingCenterDrawer({
   marketplaceId,
   onClose,
+  presentation = "dialog",
 }: {
   marketplaceId: string;
   onClose: () => void;
+  presentation?: AuditSurfacePresentation;
 }) {
   useEffect(() => {
+    if (presentation !== "dialog") return;
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key === "Escape") onClose();
     };
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [onClose]);
+  }, [onClose, presentation]);
 
-  return createPortal(
-    <div
-      className="drawer-backdrop"
-      role="presentation"
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget) onClose();
-      }}
-    >
-      <aside
-        className="order-drawer accounting-drawer"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="accounting-drawer-title"
-      >
-        <div className="drawer-header">
-          <div><p className="eyebrow">FBA · PUBLIC API</p><h2 id="accounting-drawer-title">帳務</h2></div>
-          <button type="button" onClick={onClose} autoFocus aria-label="關閉帳務">×</button>
-        </div>
+  const surface = <AuditWorkspaceShell presentation={presentation} eyebrow="FBA · PUBLIC API"
+    title="帳務" closeLabel="關閉帳務" surfaceClassName="accounting-drawer" onBack={onClose} autoFocusClose>
         <AccountingCenterPanel marketplaceId={marketplaceId} />
-      </aside>
-    </div>,
-    document.body,
-  );
+  </AuditWorkspaceShell>;
+  return presentation === "workspace" ? surface : createPortal(surface, document.body);
 }
 
 export default AccountingCenterPanel;

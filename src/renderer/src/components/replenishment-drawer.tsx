@@ -1,5 +1,7 @@
 "use client";
 
+import AuditWorkspaceShell, { type AuditSurfacePresentation } from "./audit-workspace-shell";
+
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   MARKETPLACES as MARKETPLACE_METADATA,
@@ -135,11 +137,15 @@ export default function ReplenishmentDrawer({
   initialSellerSku = "",
   onContextResolved,
   onClose,
+  presentation = "dialog",
+  onBusyChange,
 }: {
   initialMarketplaceId: string;
   initialSellerSku?: string;
   onContextResolved?: (marketplaceId: string, sellerSku: string) => void;
   onClose: () => void;
+  presentation?: AuditSurfacePresentation;
+  onBusyChange?: (busy: boolean) => void;
 }) {
   const [marketplaceId, setMarketplaceId] = useState(initialMarketplaceId);
   const [sku, setSku] = useState(initialSellerSku);
@@ -189,13 +195,20 @@ export default function ReplenishmentDrawer({
     setCopied(false);
   };
 
+  const busy = loading || profileLoading || profileSaving;
   useEffect(() => {
+    onBusyChange?.(busy);
+    return () => onBusyChange?.(false);
+  }, [busy, onBusyChange]);
+
+  useEffect(() => {
+    if (presentation !== "dialog") return;
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !loading) onClose();
+      if (event.key === "Escape" && !busy) onClose();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [loading, onClose]);
+  }, [busy, onClose, presentation]);
 
   const lookup = useCallback(async (event?: FormEvent) => {
     event?.preventDefault();
@@ -361,14 +374,8 @@ export default function ReplenishmentDrawer({
   };
 
   return (
-    <div className="drawer-backdrop" role="presentation" onMouseDown={(event) => {
-      if (event.target === event.currentTarget && !loading) onClose();
-    }}>
-      <aside className="order-drawer restock-drawer" role="dialog" aria-modal="true" aria-labelledby="restock-title">
-        <div className="drawer-header">
-          <div><p className="eyebrow">FBA INVENTORY · ORDERS</p><h2 id="restock-title">補貨建議</h2></div>
-          <button type="button" onClick={onClose} disabled={loading} aria-label="關閉補貨建議">×</button>
-        </div>
+    <AuditWorkspaceShell presentation={presentation} eyebrow="FBA INVENTORY · ORDERS" title="補貨建議"
+      closeLabel="關閉補貨建議" surfaceClassName="restock-drawer" busy={busy} onBack={onClose}>
         <p className="price-intro">用 FBA 可售、reserved、三種在途庫存與近 30 天銷速，算出可審核的補貨量。</p>
         <div className="automation-summary"><span className="automation-badge automatic">自動</span><p>從全域 SKU 開啟即計算；交期、庫存與箱入數不合理時會先阻擋。</p><span className="automation-badge manual">需人工</span><p>最終箱規、placement、運輸與實體入庫仍由你確認。</p></div>
 
@@ -435,7 +442,6 @@ export default function ReplenishmentDrawer({
         )}
 
         <div className="drawer-api-footnote">FBA Inventory v1 · Sales v1 · Reports v2021-06-30 · FBA only · 建議不等於入庫確認</div>
-      </aside>
-    </div>
+    </AuditWorkspaceShell>
   );
 }

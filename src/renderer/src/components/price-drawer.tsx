@@ -1,5 +1,7 @@
 "use client";
 
+import AuditWorkspaceShell, { type AuditSurfacePresentation } from "./audit-workspace-shell";
+
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   MARKETPLACES as MARKETPLACE_METADATA,
@@ -183,11 +185,15 @@ export default function PriceDrawer({
   initialSellerSku = "",
   onContextResolved,
   onClose,
+  presentation = "dialog",
+  onBusyChange,
 }: {
   initialMarketplaceId: string;
   initialSellerSku?: string;
   onContextResolved?: (marketplaceId: string, sellerSku: string) => void;
   onClose: () => void;
+  presentation?: AuditSurfacePresentation;
+  onBusyChange?: (busy: boolean) => void;
 }) {
   const [marketplaceId, setMarketplaceId] = useState(initialMarketplaceId);
   const [skuInput, setSkuInput] = useState(initialSellerSku);
@@ -252,6 +258,7 @@ export default function PriceDrawer({
   }, [guardrailError, listing, marketplace.currency, newPrice, parsedNewPrice]);
 
   const closeDrawer = useCallback(() => {
+    if (actionLoading) return;
     const hasUnsavedChange =
       phase !== "result" && Boolean(listing && newPrice && parsedNewPrice !== null);
     if (hasUnsavedChange && !window.confirm("尚有未送出的價格變更，確定要捨棄嗎？")) {
@@ -259,9 +266,15 @@ export default function PriceDrawer({
     }
     lookupAbortRef.current?.abort();
     onClose();
-  }, [listing, newPrice, onClose, parsedNewPrice, phase]);
+  }, [actionLoading, listing, newPrice, onClose, parsedNewPrice, phase]);
 
   useEffect(() => {
+    onBusyChange?.(actionLoading);
+    return () => onBusyChange?.(false);
+  }, [actionLoading, onBusyChange]);
+
+  useEffect(() => {
+    if (presentation !== "dialog") return;
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key !== "Escape" || actionLoading) return;
       if (phase === "confirm") {
@@ -274,7 +287,7 @@ export default function PriceDrawer({
     };
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [actionLoading, closeDrawer, phase]);
+  }, [actionLoading, closeDrawer, phase, presentation]);
 
   const resetListing = (nextMarketplaceId?: string) => {
     lookupAbortRef.current?.abort();
@@ -549,28 +562,8 @@ export default function PriceDrawer({
   };
 
   return (
-    <div
-      className="drawer-backdrop"
-      role="presentation"
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget && !actionLoading) closeDrawer();
-      }}
-    >
-      <aside
-        className="order-drawer price-drawer"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="price-drawer-title"
-      >
-        <div className="drawer-header">
-          <div>
-            <p className="eyebrow">LISTINGS ITEMS · V2021-08-01</p>
-            <h2 id="price-drawer-title">定價與訂閱</h2>
-          </div>
-          <button type="button" onClick={closeDrawer} disabled={actionLoading} aria-label="關閉調價中心">
-            ×
-          </button>
-        </div>
+    <AuditWorkspaceShell presentation={presentation} eyebrow="LISTINGS ITEMS · V2021-08-01"
+      title="定價與訂閱" closeLabel="關閉調價中心" surfaceClassName="price-drawer" busy={actionLoading} onBack={closeDrawer}>
 
         {phase === "edit" && (
           <>
@@ -876,7 +869,6 @@ export default function PriceDrawer({
         <div className="privacy-footnote price-footnote">
           憑證只留在這台電腦的系統安全儲存區。正式調價會先核對舊價、跑 Amazon 預檢，再送出單一 SKU 更新。
         </div>
-      </aside>
-    </div>
+    </AuditWorkspaceShell>
   );
 }

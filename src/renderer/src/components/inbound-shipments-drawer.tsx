@@ -3,6 +3,7 @@
 import { useEffect } from "react";
 import type { InboundShipmentCache } from "../inbound-shipments";
 import InboundShipmentsPanel from "./inbound-shipments-panel";
+import AuditWorkspaceShell, { type AuditSurfacePresentation } from "./audit-workspace-shell";
 
 export default function InboundShipmentsDrawer({
   marketplaceId,
@@ -11,6 +12,7 @@ export default function InboundShipmentsDrawer({
   cachedResult,
   onCachedResultChange,
   onClose,
+  presentation = "dialog",
 }: {
   marketplaceId: string;
   marketplaceShort: string;
@@ -18,36 +20,20 @@ export default function InboundShipmentsDrawer({
   cachedResult?: InboundShipmentCache | null;
   onCachedResultChange?: (cache: InboundShipmentCache) => void;
   onClose: () => void;
+  presentation?: AuditSurfacePresentation;
 }) {
   useEffect(() => {
+    if (presentation !== "dialog") return;
     const close = (event: KeyboardEvent) => {
       if (event.key === "Escape") onClose();
     };
     window.addEventListener("keydown", close);
     return () => window.removeEventListener("keydown", close);
-  }, [onClose]);
+  }, [onClose, presentation]);
 
   return (
-    <div
-      className="drawer-backdrop"
-      role="presentation"
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget) onClose();
-      }}
-    >
-      <aside
-        className="order-drawer inbound-shipments-drawer"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="inbound-shipments-title"
-      >
-        <div className="drawer-header">
-          <div>
-            <p className="eyebrow">FBA FULFILLMENT INBOUND · READ ONLY</p>
-            <h2 id="inbound-shipments-title">FBA 入庫貨件追蹤</h2>
-          </div>
-          <button type="button" onClick={onClose} aria-label="關閉 FBA 入庫貨件追蹤" autoFocus>×</button>
-        </div>
+    <AuditWorkspaceShell presentation={presentation} eyebrow="FBA FULFILLMENT INBOUND · READ ONLY"
+      title="FBA 入庫貨件追蹤" closeLabel="關閉 FBA 入庫貨件追蹤" surfaceClassName="inbound-shipments-drawer" onBack={onClose} autoFocusClose>
         <InboundShipmentsPanel
           marketplaceId={marketplaceId}
           marketplaceShort={marketplaceShort}
@@ -55,7 +41,6 @@ export default function InboundShipmentsDrawer({
           cachedResult={cachedResult}
           onCachedResultChange={onCachedResultChange}
         />
-      </aside>
-    </div>
+    </AuditWorkspaceShell>
   );
 }

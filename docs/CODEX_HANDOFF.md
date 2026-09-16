@@ -11,6 +11,8 @@
 
 ## 目前狀態
 
+- Issue #305 接續 0.1.80：頂部功能改完整工作頁，價目表改入口直接載入，批次圖片手動 GET 啟動新一輪 canonical 回查，重開後可按 exact SKU 找回既有 accepted 紀錄。無重新上傳／PATCH；實作、檢查、兩軸 review 與各層發布／實機證據依[規格](specs/2026-09-workspace-image-recovery.md)及[本輪帳本](releases/2026-09-workspace-image-recovery.md)接續，不沿用前版證據。
+
 - Issue #302 的下載入口遷移已由 PR #303／Control Console source `6a184fc10d2b30d42a6f956fd056a9a1e16a5e69` 發布；main Validate／Pages attempt 1 成功，線上全部 16 檔及根入口 bytes 已核對，新 canonical URL 已生效。新 ChatGPT Sites 入口只要求下載密碼，不需 ChatGPT 登入；密碼輪替、匿名檔案拒絕、舊兩個下載入口 302 與一般 UI 登入／卡片均已驗。沿用原 0.1.79 可信安裝檔，完整 authenticated HTTP 串流 hash 已相符；一般 UI 兩按鈕雖顯示開始下載，但沒有新本機落地檔案證據，兩層不混用。本輪不新增桌面版本或安裝。詳見[下載入口規格](specs/2026-09-download-portal-url.md)與[分層帳本](releases/2026-09-download-portal-url.md)，已安裝 Notebook Key 的舊提示由相容導向接續。
 
 - Issue #299 已由 PR #300／runtime `6d85bd0dd00b7531b382a046c964c35342df712d` 發布 0.1.79：文案問題標籤與原因可換行且不重疊；圖片張數選單集中到圖片健檢頁並收窄；共用 Grain-free／穀物成分核對維持排除產品描述。4,298 tests、audit 0、兩軸 0 open findings、四條 exact-source main／push CI attempt 1、Pages 全 bytes、兩平台可信產物及 fuses 均已驗。原生載入本次 Pages，首頁無張數選單、圖片頁精簡選單與 8 張偏好保留已目視核對；可信 .79 已安裝，.78 App／0700 userData 備份保留、vault／ledger 未變，重開後 Amazon 已連線且可開文案健檢頁。兩次新掃描操作均遭 CUA `user-changed` 阻止，未送出新掃描或 Amazon 寫入。Mac → Windows 下載卡 complete receipts 已核對；員工頁仍待登入與實際下載 bytes 驗證。接續[本輪帳本](releases/2026-09-audit-layout-grain-claims.md)與[規格](specs/2026-09-audit-layout-grain-claims.md)，runtime 來源固定為上述 SHA，舊圖片 unknown／清理驗收不因此重做或解除。

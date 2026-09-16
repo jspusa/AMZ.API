@@ -261,9 +261,9 @@ describe("dashboard top navigation layout", () => {
     expect(source).toContain("data-audit-workspace-launch");
     expect(source).toContain("returnTarget.scrollY");
     expect(source).toContain("focus({ preventScroll: true })");
-    expect(source).toContain("disabled={Boolean(activeAuditWorkspace) || inlineTool}");
+    expect(source).toContain("disabled={Boolean(activeAuditWorkspace) || inlineTool || Boolean(activeShortcut) || reportLibraryOpen || reviewAuditOpen}");
     expect(source).toContain(
-      "disabled={salesTrendLoading || Boolean(activeAuditWorkspace) || openTool !== null}",
+      "disabled={salesTrendLoading || Boolean(activeAuditWorkspace) || openTool !== null || Boolean(activeShortcut) || reportLibraryOpen || reviewAuditOpen}",
     );
     expect(source).toContain(
       "inert={openTool !== null && !inlineTool ? true : undefined}",

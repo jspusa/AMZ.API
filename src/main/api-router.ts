@@ -1147,7 +1147,7 @@ export class ApiRouter {
           request,
         });
       case "GET /api/sp-api/listing-images-batch":
-        return this.listingImageBatchMutations.handle({operation: request.query.batchId === undefined ? "capabilities" : "observe", request});
+        return this.listingImageBatchMutations.handle({operation: request.query.recoverSkus !== undefined ? "recover" : request.query.batchId === undefined ? "capabilities" : "observe", request});
       case "POST /api/sp-api/listing-images-batch":
         return this.listingImageBatchMutations.handle({operation:"preview",request});
       case "PATCH /api/sp-api/listing-images-batch":

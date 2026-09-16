@@ -740,12 +740,14 @@ function ExpiryCountdown({
 export default function OperationsBulletinCard({
   initialResponse,
   marketplaceId, mode, onOpenHealth,
+  presentation = "card",
   todayDateKey: injectedTodayDateKey,
 }: Readonly<{
   initialResponse?: OperationsBoardResponse;
   marketplaceId?: MarketplaceId;
   mode?: "live" | "demo";
   onOpenHealth?: () => void;
+  presentation?: "card" | "workspace";
   todayDateKey?: string;
 }>) {
   const todayDateKey = useTaipeiDateKey(injectedTodayDateKey);
@@ -1056,8 +1058,10 @@ export default function OperationsBulletinCard({
   return (
     <details
       className="operations-bulletin"
-      open={expanded}
-      onToggle={(event) => setExpanded(event.currentTarget.open)}
+      open={presentation === "workspace" || expanded}
+      onToggle={(event) => {
+        if (presentation !== "workspace") setExpanded(event.currentTarget.open);
+      }}
     >
       <summary>
         <span className="operations-bulletin-icon" aria-hidden="true">

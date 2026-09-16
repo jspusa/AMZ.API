@@ -1,6 +1,18 @@
-/* The seven primary audits use one page-level workspace. Dialog presentation
-   remains available to the product navigation without leaking modal layout
-   constraints into the dashboard route. */
+/* Function navigation and audits share the page-level workspace. */
+.dashboard-home-sections,
+.dashboard-home-section-body {
+  display: contents;
+}
+
+.navigation-section-body > [hidden] {
+  display: none;
+}
+
+.navigation-section-body > .operations-intelligence-disclosure > summary,
+.navigation-section-body .operations-bulletin > summary {
+  display: none;
+}
+
 .workspace-content.workspace-content-audit {
   width: min(1440px, calc(100% - 48px));
   padding-top: 22px;
@@ -97,6 +109,20 @@
 .audit-workspace-body.business-pricing-audit-drawer,
 .audit-workspace-body.unbound-variation-audit-drawer,
 .audit-workspace-body.ads-drawer {
+  width: 100%;
+  height: auto;
+  max-width: none;
+  max-height: none;
+  overflow: visible;
+}
+
+.audit-workspace-body.price-drawer,
+.audit-workspace-body.promotion-drawer,
+.audit-workspace-body.restock-drawer,
+.audit-workspace-body.inbound-shipments-drawer,
+.audit-workspace-body.accounting-drawer,
+.audit-workspace-body.review-audit-drawer,
+.audit-workspace-body.report-library-drawer {
   width: 100%;
   height: auto;
   max-width: none;

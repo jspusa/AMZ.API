@@ -1,5 +1,9 @@
 # Architecture
 
+頂端功能選單統一進入 main 的單層完整工作頁；工具與健檢共用 presentation，返回焦點／捲動、background owner 與寫入忙碌鎖定保持原有邊界。價目表隨 Dashboard entry 載入，避免 Pages 換版後舊程式再要求已移除的延遲 chunk。首頁公告與營運情報在導覽時保留既有 instance；純導覽不新增同步工作。
+
+圖片批次普通 GET 只投影目前工作；使用者明確 `refresh=true` 才啟動新的 bounded GET-only canonical 回查。既有 GET 另接受最多 30 個 exact `recoverSkus`，透過 Write Gate 的固定 images／當前帳號站點 inspection 找回最新 durable receipt，再回查。恢復計畫沒有 Preview Ticket，不能 commit；舊成功不能蓋過較新未知。已接受、相符驗證與回查失敗分開，`lastReadbackAt` 是最近回查輪次結束時間，不代表 Amazon 圖片下載或前台審核完成。詳見[全頁工具與圖片恢復](specs/2026-09-workspace-image-recovery.md)。
+
 成分宣稱共用 owner `shared/content-claims.ts` 亦核對 Grain-free／Grain free 與明確穀物或穀物來源成分；品名、亮點、要點參與，產品描述排除。豆類、未指定來源澱粉及否定／可能含有文字不作正向穀物證據。main audit／Excel 與 renderer 投影、快速編輯 fresh evidence 核對沿用同一規則。圖片最低張數只在全站圖片健檢頁設定，首頁全部執行沿用已保存選值。
 
 變體預檢若明確要求來源已有的商品事實，`variation-preserved-required-fields.ts` 在 main 私有缺欄證據與 CHILD PTD 上投影可保留的單筆純量欄位。renderer 的 `preserveRequiredFields` 只傳勾選名稱；完整原值、selector 與 PATCH 由 main 複製，前後相同也納入確認內容。完整 attribute digest 保留陣列順序，與 fill-only／維度使用的 digest 分開，綁定 Preview 與持久回查；原生確認前及送出前的重新讀取必須相符；目標的身分、theme、維度、完整性與同群商品組合另以 main 私有摘要綁定，任何相關漂移都需重新檢查。未指定保留意圖時保留原 fingerprint 相容性，不能以舊完成收據證明新意圖。變體寫入使用既有同站點／SKU reservation，避免其他 Listing 寫入在檢查及送出間交錯。

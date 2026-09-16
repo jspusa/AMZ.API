@@ -23,30 +23,31 @@ function value(response: ApiResponse): ListingImageBatchSnapshot {
   expect(response.body.kind).toBe("json");
   return response.body.kind === "json" ? response.body.value as ListingImageBatchSnapshot : {} as ListingImageBatchSnapshot;
 }
-async function setup(overrides: Partial<Pick<ListingImageBatchDependencies, "readbackDelaysMs" | "now" | "assertPreparedImageUrls">> = {}) {
+async function setup(overrides: Partial<Pick<ListingImageBatchDependencies, "readbackDelaysMs" | "now" | "assertPreparedImageUrls">> & { mode?: () => "live" | "demo" } = {}) {
   const directory = await mkdtemp(join(tmpdir(), "amz-image-batch-"));
   const store = new LocalStore(join(directory, "store.json"));
   await store.initialize();
-  const context = createScriptedSpExecutionContextAdapter(() => ({ marketplaceId, mode: "live", accountScope: "image-batch-test-account" }));
+  const context = createScriptedSpExecutionContextAdapter(() => ({ marketplaceId, mode: overrides.mode?.() ?? "live", accountScope: "image-batch-test-account" }));
   const approveWrite = vi.fn(async (_reason: string) => undefined);
   const writeGate = new MainWriteGate({ store, context, approveWrite, now: overrides.now });
   const canonical = new Map<string, readonly (string | null)[]>();
+  const demoCanonical = new Map<string, readonly (string | null)[]>();
   const gateway: ListingImageGateway = {
-    mode: () => "live",
+    mode: () => overrides.mode?.() ?? "live",
     read: vi.fn<ListingImageGateway["read"]>(async identity => ({
       fulfillment: "FBA", sourceEvidence: {} as ListingImageSourceEvidence,
-      snapshot: { mode: "live", marketplaceId, sellerSku: identity.sellerSku, asin: "B09S5VY2JS", productType: "PET_FOOD", title: "Turkey treats", attributesPresent: true,
-        images: attributes.map((attributeName, index) => ({ attributeName, label: String(index + 1), url: (canonical.get(identity.sellerSku) ?? old)[index] ?? null,
+      snapshot: { mode: overrides.mode?.() ?? "live", marketplaceId, sellerSku: identity.sellerSku, asin: "B09S5VY2JS", productType: "PET_FOOD", title: "Turkey treats", attributesPresent: true,
+        images: attributes.map((attributeName, index) => ({ attributeName, label: String(index + 1), url: ((overrides.mode?.() === "demo" ? demoCanonical : canonical).get(identity.sellerSku) ?? old)[index] ?? null,
           capability: { attributeName, label: String(index + 1), supported: true, editable: true, required: index === 0, reason: null } })),
         fetchedAt: new Date().toISOString(), requestId: null, issues: [], notice: "" },
     })),
     validationPreview: vi.fn(async () => ({ ok: true, status: 200, requestId: null, retryAfter: null, payload: { status: "VALID", issues: [] } })),
     commitOnce: vi.fn(async (patch, fence) => { await fence.assertCurrent(); canonical.set(patch.sellerSku, patch.requestedUrls); return { ok: true, status: 200, requestId: "batch-commit", retryAfter: null, payload: { status: "ACCEPTED", issues: [], submissionId: "batch-submission" } }; }),
-    replaceDemoImages: vi.fn(),
+    replaceDemoImages: vi.fn(async (patch, fence) => { await fence.assertCurrent(); demoCanonical.set(patch.sellerSku, patch.requestedUrls); }),
   };
   const assertPreparedImageUrls = vi.fn(async (_input: Parameters<ListingImageBatchDependencies["assertPreparedImageUrls"]>[0]) => (overrides.now ?? Date.now)() + 60 * 60_000);
   const owner = new ListingImageBatchMutations({ context, writeGate, operations: createListingImageMutationOperations(gateway), assertPreparedImageUrls, readbackDelaysMs: [0], ...overrides });
-  return { owner, gateway, approveWrite, canonical, context, writeGate, assertPreparedImageUrls };
+  return { owner, gateway, approveWrite, canonical, context, writeGate, assertPreparedImageUrls, directory };
 }
 
 async function previewSkus(owner: ListingImageBatchMutations, skus = ["AFA12AM", "AFA13AM"]): Promise<ListingImageBatchSnapshot> {
@@ -251,6 +252,239 @@ describe("image folder batch main owner", () => {
     expect(await terminal(owner, again)).toMatchObject({ phase: "stopped", totals: { submitted: 0 } });
     expect(gateway.commitOnce).toHaveBeenCalledTimes(2);
     expect(approveWrite).toHaveBeenCalledOnce();
+  });
+
+  it("refreshes an accepted terminal batch from fresh canonical GET after Amazon finishes later", async () => {
+    const { owner, gateway, approveWrite, canonical } = await setup();
+    vi.mocked(gateway.commitOnce).mockImplementation(async (_patch, fence) => {
+      await fence.assertCurrent();
+      return { ok: true, status: 200, requestId: null, retryAfter: null,
+        payload: { status: "ACCEPTED", issues: [], submissionId: "processing" } };
+    });
+    const preview = await previewSkus(owner, ["AFA12AM"]);
+    await submit(owner, preview);
+    expect(await terminal(owner, preview)).toMatchObject({ phase: "completed", totals: { accepted: 1, verified: 0 } });
+    canonical.set("AFA12AM", proposed("AFA12AM"));
+    const previousReads = vi.mocked(gateway.read).mock.calls.length;
+    const observed = value(await owner.handle({ operation: "observe", request: request("GET", {}, { marketplaceId, batchId: preview.batchId }) }));
+    expect(observed.totals.verified).toBe(0);
+    expect(gateway.read).toHaveBeenCalledTimes(previousReads);
+    const refreshed = value(await owner.handle({ operation: "observe", request: request("GET", {}, {
+      marketplaceId, batchId: preview.batchId, refresh: "true",
+    }) }));
+    expect(refreshed.phase).toBe("readback");
+    expect(await terminal(owner, preview)).toMatchObject({ phase: "completed", totals: { accepted: 1, verified: 1 }, rows: [{ state: "verified" }] });
+    expect(gateway.read).toHaveBeenCalledTimes(previousReads + 1);
+    expect(gateway.commitOnce).toHaveBeenCalledOnce();
+    expect(approveWrite).toHaveBeenCalledOnce();
+  });
+
+  it("recovers exact accepted targets after restart without preparing, previewing, approving, or resending", async () => {
+    const { owner, gateway, canonical, context, approveWrite, directory } = await setup();
+    vi.mocked(gateway.commitOnce).mockImplementation(async (_patch, fence) => {
+      await fence.assertCurrent();
+      return { ok: true, status: 200, requestId: null, retryAfter: null,
+        payload: { status: "ACCEPTED", issues: [], submissionId: "processing" } };
+    });
+    const review = await previewSkus(owner);
+    await submit(owner, review);
+    expect((await terminal(owner, review)).totals).toMatchObject({ accepted: 2, verified: 0 });
+    owner.clear();
+    const store = new LocalStore(join(directory, "store.json"));
+    await store.initialize();
+    const resumed = new ListingImageBatchMutations({ context,
+      writeGate: new MainWriteGate({ store, context, approveWrite }),
+      operations: createListingImageMutationOperations(gateway),
+      assertPreparedImageUrls: vi.fn(async () => { throw new Error("Recovery must never prepare sources"); }),
+      readbackDelaysMs: [0],
+    });
+    const previews = vi.mocked(gateway.validationPreview).mock.calls.length;
+    canonical.set("AFA12AM", proposed("AFA12AM"));
+    canonical.set("AFA13AM", proposed("AFA13AM"));
+    const recovered = value(await resumed.handle({ operation: "recover", request: request("GET", {}, {
+      marketplaceId, recoverSkus: JSON.stringify(["AFA12AM", "AFA13AM"]),
+    }) }));
+    expect(recovered.phase).toBe("readback");
+    expect(JSON.stringify(recovered)).not.toMatch(/imageWriteEvidence|accountScope|proposalFingerprint|submissionId|idempotencyKey/u);
+    expect((await terminal(resumed, recovered)).totals).toMatchObject({ accepted: 2, verified: 2 });
+    expect((await submit(resumed, recovered)).status).toBe(200);
+    expect(gateway.validationPreview).toHaveBeenCalledTimes(previews);
+    expect(approveWrite).toHaveBeenCalledOnce();
+    expect(gateway.commitOnce).toHaveBeenCalledTimes(2);
+  });
+
+  it("coalesces overlapping manual reads and preserves pending rows when canonical values still differ", async () => {
+    const { owner, gateway, approveWrite } = await setup();
+    vi.mocked(gateway.commitOnce).mockImplementation(async (_patch, fence) => {
+      await fence.assertCurrent();
+      return { ok: true, status: 200, requestId: null, retryAfter: null, payload: { status: "ACCEPTED", issues: [] } };
+    });
+    const review = await previewSkus(owner, ["AFA12AM"]);
+    await submit(owner, review);
+    await terminal(owner, review);
+    const read = vi.mocked(gateway.read).getMockImplementation()!;
+    let release!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    vi.mocked(gateway.read).mockImplementation(async (identity, purpose) => { await held; return read(identity, purpose); });
+    const before = vi.mocked(gateway.read).mock.calls.length;
+    const refresh = () => owner.handle({ operation: "observe", request: request("GET", {}, { marketplaceId, batchId: review.batchId, refresh: "true" }) });
+    expect(value(await refresh()).phase).toBe("readback");
+    expect(value(await refresh()).phase).toBe("readback");
+    await vi.waitFor(() => expect(gateway.read).toHaveBeenCalledTimes(before + 1));
+    release();
+    const latest = await terminal(owner, review);
+    expect(latest).toMatchObject({ totals: { accepted: 1, verified: 0 }, rows: [{ state: "accepted", code: "IMAGE_READBACK_PENDING" }] });
+    expect(latest.lastReadbackAt).toEqual(expect.any(String));
+    expect(gateway.commitOnce).toHaveBeenCalledOnce();
+    expect(approveWrite).toHaveBeenCalledOnce();
+  });
+
+  it("keeps the owner's readback limit at two even when another terminal plan is refreshed", async () => {
+    const { owner, gateway } = await setup();
+    vi.mocked(gateway.commitOnce).mockImplementation(async (_patch, fence) => {
+      await fence.assertCurrent();
+      return { ok: true, status: 200, requestId: null, retryAfter: null, payload: { status: "ACCEPTED", issues: [] } };
+    });
+    const first = await previewSkus(owner, ["AFA12AM", "AFA13AM"]);
+    await submit(owner, first);
+    await terminal(owner, first);
+    const second = await previewSkus(owner, ["AFA14AM"]);
+    await submit(owner, second);
+    await terminal(owner, second);
+    const read = vi.mocked(gateway.read).getMockImplementation()!;
+    let release!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    vi.mocked(gateway.read).mockImplementation(async (identity, purpose) => { await held; return read(identity, purpose); });
+    const before = vi.mocked(gateway.read).mock.calls.length;
+    const refresh = (batchId: string) => owner.handle({ operation: "observe", request: request("GET", {}, { marketplaceId, batchId, refresh: "true" }) });
+    expect((await refresh(first.batchId)).status).toBe(202);
+    expect((await refresh(second.batchId)).status).toBe(409);
+    await vi.waitFor(() => expect(gateway.read).toHaveBeenCalledTimes(before + 2));
+    release();
+    await terminal(owner, first);
+    expect(gateway.commitOnce).toHaveBeenCalledTimes(3);
+  });
+
+  it("discards a late manual read after the security context clears and leaves its accepted evidence intact", async () => {
+    const { owner, gateway, context, writeGate } = await setup();
+    vi.mocked(gateway.commitOnce).mockImplementation(async (_patch, fence) => {
+      await fence.assertCurrent();
+      return { ok: true, status: 200, requestId: null, retryAfter: null, payload: { status: "ACCEPTED", issues: [] } };
+    });
+    const review = await previewSkus(owner, ["AFA12AM"]);
+    await submit(owner, review);
+    await terminal(owner, review);
+    const read = vi.mocked(gateway.read).getMockImplementation()!;
+    let release!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    vi.mocked(gateway.read).mockImplementation(async (identity, purpose) => { await held; return read(identity, purpose); });
+    await owner.handle({ operation: "observe", request: request("GET", {}, { marketplaceId, batchId: review.batchId, refresh: "true" }) });
+    context.invalidate("lock-screen"); writeGate.clearEphemeral(); owner.clear(); release();
+    await new Promise(resolve => setTimeout(resolve, 10));
+    expect((await owner.handle({ operation: "observe", request: request("GET", {}, { marketplaceId, batchId: review.batchId }) })).status).toBe(410);
+    const inspections = await writeGate.inspect({ context: await context.capture(marketplaceId), marketplaceId, sellerSku: "AFA12AM", operations: ["images"], project: entry => entry });
+    expect(inspections).toMatchObject([{ state: "unknown", response: { status: "ACCEPTED" } }]);
+    expect(gateway.commitOnce).toHaveBeenCalledOnce();
+  });
+
+  it("recovers the live accepted target when a newer same-account demo simulation exists", async () => {
+    let mode: "live" | "demo" = "live";
+    const { owner, gateway, context, writeGate, approveWrite } = await setup({ mode: () => mode });
+    const liveReview = await previewSkus(owner, ["AFA12AM"]);
+    await submit(owner, liveReview);
+    expect((await terminal(owner, liveReview)).rows[0].state).toBe("verified");
+    mode = "demo"; context.invalidate("mode-changed"); writeGate.clearEphemeral(); owner.clear();
+    const demoReview = await previewSkus(owner, ["AFA12AM"]);
+    await submit(owner, demoReview);
+    expect((await terminal(owner, demoReview)).rows[0].state).toBe("simulated");
+    mode = "live"; context.invalidate("mode-changed"); writeGate.clearEphemeral(); owner.clear();
+    const before = vi.mocked(gateway.read).mock.calls.length;
+    const recovered = value(await owner.handle({ operation: "recover", request: request("GET", {}, {
+      marketplaceId, recoverSkus: JSON.stringify(["AFA12AM"]),
+    }) }));
+    expect((await terminal(owner, recovered)).rows[0].state).toBe("verified");
+    expect(gateway.read).toHaveBeenCalledTimes(before + 1);
+    expect(gateway.commitOnce).toHaveBeenCalledOnce();
+    expect(gateway.replaceDemoImages).toHaveBeenCalledOnce();
+    expect(approveWrite).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(["unknown", "malformed-demo", "unresolved-demo", "contradictory-demo"] as const)("does not hide a newer %s attempt behind an older accepted receipt during recovery", async kind => {
+    const { owner, gateway, context, writeGate } = await setup();
+    const review = await previewSkus(owner, ["AFA12AM"]);
+    await submit(owner, review);
+    await terminal(owner, review);
+    const current = await context.capture(marketplaceId);
+    const [older] = await writeGate.inspect({ context: current, marketplaceId, sellerSku: "AFA12AM", operations: ["images"], project: entry => entry });
+    const response = kind === "unknown" ? null : {
+      ...(older.response as Record<string, unknown>), mode: "demo", status: kind === "contradictory-demo" ? "ACCEPTED" : "SIMULATED",
+      ...(kind === "malformed-demo" ? { imageWriteEvidence: null } : {}),
+    };
+    vi.spyOn(writeGate, "inspect").mockResolvedValue([
+      { ...older, state: kind === "malformed-demo" || kind === "contradictory-demo" ? "completed" : "unknown", response, createdAt: older.createdAt + 1 }, older,
+    ]);
+    const before = vi.mocked(gateway.read).mock.calls.length;
+    const recovered = value(await owner.handle({ operation: "recover", request: request("GET", {}, {
+      marketplaceId, recoverSkus: JSON.stringify(["AFA12AM"]),
+    }) }));
+    expect(recovered).toMatchObject({ phase: "completed", totals: { accepted: 0, verified: 0 }, rows: [{ state: "unknown", code: "IMAGE_WRITE_EVIDENCE_UNAVAILABLE" }] });
+    expect(gateway.read).toHaveBeenCalledTimes(before);
+    expect(gateway.commitOnce).toHaveBeenCalledOnce();
+  });
+
+  it("does not recover another account's target or invent a receipt when none exists", async () => {
+    const { owner, gateway, context, writeGate } = await setup();
+    const inspect = vi.spyOn(writeGate, "inspect");
+    const result = value(await owner.handle({ operation: "recover", request: request("GET", {}, { marketplaceId, recoverSkus: JSON.stringify(["AFA12AM"]) }) }));
+    expect(result.rows[0]).toMatchObject({ state: "blocked", code: "IMAGE_WRITE_NOT_FOUND", acceptedAt: null });
+    expect(inspect.mock.calls[0][0]).toMatchObject({ context: await context.capture(marketplaceId), marketplaceId, sellerSku: "AFA12AM", operations: ["images"], requireComplete: true });
+    expect(gateway.read).not.toHaveBeenCalled();
+    expect(gateway.commitOnce).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [], ["AFA12AM", "AFA12AM"], [" AFA12AM"], [null], Array.from({ length: 31 }, (_, index) => `SKU${index}`),
+  ].map(skus => ({ skus })))("rejects invalid recovery selections $skus before touching the ledger or Amazon", async ({ skus }) => {
+    const { owner, gateway, writeGate } = await setup();
+    const inspect = vi.spyOn(writeGate, "inspect");
+    expect((await owner.handle({ operation: "recover", request: request("GET", {}, { marketplaceId, recoverSkus: JSON.stringify(skus) }) })).status).toBe(400);
+    expect(inspect).not.toHaveBeenCalled();
+    expect(gateway.read).not.toHaveBeenCalled();
+  });
+
+  it("rejects malformed JSON and mixed recovery authority", async () => {
+    const { owner, gateway, writeGate } = await setup();
+    const inspect = vi.spyOn(writeGate, "inspect");
+    const queries: Record<string, string>[] = [
+      { marketplaceId, recoverSkus: "not-json" },
+      { marketplaceId, recoverSkus: '["AFA12AM"]', batchId: "other" },
+      { marketplaceId, recoverSkus: '["AFA12AM"]', accountScope: "other-account" },
+    ];
+    for (const query of queries) expect((await owner.handle({ operation: "recover", request: request("GET", {}, query) })).status).toBe(400);
+    expect(inspect).not.toHaveBeenCalled();
+    expect(gateway.read).not.toHaveBeenCalled();
+  });
+
+  it("keeps the readback unresolved when a GET fails and never reuses source expiry as write authority", async () => {
+    let now = Date.now();
+    const { owner, gateway, canonical, assertPreparedImageUrls } = await setup({ now: () => now });
+    vi.mocked(gateway.commitOnce).mockImplementation(async (_patch, fence) => {
+      await fence.assertCurrent();
+      return { ok: true, status: 200, requestId: null, retryAfter: null, payload: { status: "ACCEPTED", issues: [] } };
+    });
+    const review = await previewSkus(owner, ["AFA12AM"]);
+    await submit(owner, review);
+    await terminal(owner, review);
+    now += 2 * 60 * 60_000;
+    const preparationCalls = assertPreparedImageUrls.mock.calls.length;
+    vi.mocked(gateway.read).mockRejectedValueOnce(new SpApiError("Network error", { status: 503, code: "UPSTREAM_UNAVAILABLE" }));
+    await owner.handle({ operation: "observe", request: request("GET", {}, { marketplaceId, batchId: review.batchId, refresh: "true" }) });
+    expect(await terminal(owner, review)).toMatchObject({ totals: { accepted: 1, verified: 0 }, rows: [{ state: "accepted", code: "UPSTREAM_UNAVAILABLE" }], lastReadbackAt: new Date(now).toISOString() });
+    canonical.set("AFA12AM", proposed("AFA12AM"));
+    await owner.handle({ operation: "observe", request: request("GET", {}, { marketplaceId, batchId: review.batchId, refresh: "true" }) });
+    expect((await terminal(owner, review)).totals.verified).toBe(1);
+    expect(assertPreparedImageUrls).toHaveBeenCalledTimes(preparationCalls);
+    expect(gateway.commitOnce).toHaveBeenCalledOnce();
   });
 
   it("stops later SKUs after an uncertain PATCH and refuses replay under a fresh plan", async () => {

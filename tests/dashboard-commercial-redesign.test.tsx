@@ -73,7 +73,7 @@ describe("commercial dashboard navigation and empty-state honesty", () => {
     const auditCards = Array.from(document.getElementsByTagName("section")).filter((section) =>
       Array.from(section.getElementsByTagName("button")).some((button) =>
         button.hasAttribute("data-audit-workspace-launch")
-      ) && section.getAttribute("id") !== "home-audits"
+      ) && (section.getAttribute("class") ?? "").split(/\s+/u).includes("content-audit-home-card")
     );
     expect(auditCards).toHaveLength(7);
     expect(auditCards.map((card) => Array.from(card.getElementsByTagName("button"))

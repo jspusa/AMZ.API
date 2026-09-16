@@ -1,5 +1,7 @@
 "use client";
 
+import AuditWorkspaceShell, { type AuditSurfacePresentation } from "./audit-workspace-shell";
+
 import {
   FormEvent,
   useCallback,
@@ -204,11 +206,15 @@ export default function PromotionCenterDrawer({
   initialSellerSku = "",
   onContextResolved,
   onClose,
+  presentation = "dialog",
+  onBusyChange,
 }: {
   initialMarketplaceId: string;
   initialSellerSku?: string;
   onContextResolved?: (marketplaceId: string, sellerSku: string) => void;
   onClose: () => void;
+  presentation?: AuditSurfacePresentation;
+  onBusyChange?: (busy: boolean) => void;
 }) {
   const [tab, setTab] = useState<"sale" | "official" | "sns">("sale");
   const [marketplaceId, setMarketplaceId] = useState(initialMarketplaceId);
@@ -280,6 +286,7 @@ export default function PromotionCenterDrawer({
     saleAction === "cancel" || Boolean(discountRatio && discountRatio >= 0.2);
 
   const closeDrawer = useCallback(() => {
+    if (saleLoading || snsLoading) return;
     if (
       salePhase === "confirm" &&
       !window.confirm("尚有已通過預檢的折扣變更，確定要捨棄嗎？")
@@ -287,15 +294,21 @@ export default function PromotionCenterDrawer({
       return;
     }
     onClose();
-  }, [onClose, salePhase]);
+  }, [onClose, salePhase, saleLoading, snsLoading]);
 
   useEffect(() => {
+    onBusyChange?.(saleLoading || snsLoading);
+    return () => onBusyChange?.(false);
+  }, [saleLoading, snsLoading, onBusyChange]);
+
+  useEffect(() => {
+    if (presentation !== "dialog") return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape" && !saleLoading && !snsLoading) closeDrawer();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [closeDrawer, saleLoading, snsLoading]);
+  }, [closeDrawer, saleLoading, snsLoading, presentation]);
 
   const resetSale = () => {
     setSaleSku("");
@@ -585,28 +598,8 @@ export default function PromotionCenterDrawer({
   };
 
   return (
-    <div
-      className="drawer-backdrop"
-      role="presentation"
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget) closeDrawer();
-      }}
-    >
-      <aside
-        className="order-drawer promotion-drawer"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="promotion-drawer-title"
-      >
-        <div className="drawer-header">
-          <div>
-            <p className="eyebrow">SALE PRICE</p>
-            <h2 id="promotion-drawer-title">促銷</h2>
-          </div>
-          <button type="button" onClick={closeDrawer} aria-label="關閉促銷">
-            ×
-          </button>
-        </div>
+    <AuditWorkspaceShell presentation={presentation} eyebrow="SALE PRICE" title="促銷"
+      closeLabel="關閉促銷" surfaceClassName="promotion-drawer" busy={saleLoading || snsLoading} onBack={closeDrawer}>
         <p className="price-intro promotion-intro">
           Sale Price（SKU 限時售價）可直接寫入 Amazon；API 無法安全完成的促銷工作集中放在「Amazon 官方完成」。
         </p>
@@ -973,7 +966,6 @@ export default function PromotionCenterDrawer({
           <strong>能力邊界</strong>
           <span>Listings Items v2021-08-01 discounted_price（Sale Price）· 其他促銷集中導向 Amazon 官方頁 · 不使用 Seller Central 私有接口</span>
         </div>
-      </aside>
-    </div>
+    </AuditWorkspaceShell>
   );
 }
