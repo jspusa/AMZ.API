@@ -1,4 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
+import { expectedOldHash, imageWriteEvidence, validReadbackIssue, type ListingImageWriteEvidence } from "./listing-image-write-evidence";
+export { recoverableImageWrite, isSimulatedImageWrite } from "./listing-image-write-evidence";
 import type { ApiRequest, ApiResponse } from "../shared/contracts";
 import {
   parseListingImageReadbackDiagnostics,
@@ -144,10 +146,6 @@ function normalizeImageUrls(
     const value = values[index];
     return typeof value === "string" && value.trim() ? value.trim() : null;
   }) as unknown as ListingImageUrlVector;
-}
-
-function expectedOldHash(values: readonly (string | null)[]): string {
-  return createHash("sha256").update(JSON.stringify(values)).digest("hex");
 }
 
 function assertCanonicalObservation(
@@ -443,17 +441,6 @@ function updateResult(
   };
 }
 
-type ListingImageWriteEvidence = Readonly<{
-  version: 1 | 2;
-  asin: string;
-  productType: string;
-  fulfillment: "FBA";
-  expectedOldHash: string;
-  previousUrls: readonly (string | null)[];
-  requestedUrls: readonly (string | null)[];
-  changedSlots: readonly ListingImageSlot[];
-}>;
-
 type DurableListingImageUpdateResult = ListingImageUpdateResult & Readonly<{
   imageWriteEvidence: ListingImageWriteEvidence;
 }>;
@@ -486,82 +473,11 @@ function canonicalImageUrl(value: string | null): string | null {
   }
 }
 
-function exactUrlVector(value: unknown, length: number): value is readonly (string | null)[] {
-  return Array.isArray(value) &&
-    value.length === length &&
-    value.every((url) => url === null || typeof url === "string");
-}
-
-function exactChangedSlots(
-  value: unknown,
-  previousUrls: readonly (string | null)[],
-  requestedUrls: readonly (string | null)[],
-): value is readonly ListingImageSlot[] {
-  if (!Array.isArray(value) || value.length === 0 ||
-      !value.every((slot) =>
-        Number.isSafeInteger(slot) && slot >= 0 && slot < requestedUrls.length
-      )) return false;
-  const expected = requestedUrls.flatMap((url, index) =>
-    url === previousUrls[index] ? [] : [index]
-  );
-  return value.length === expected.length &&
-    value.every((slot, index) => slot === expected[index]);
-}
-
-function imageWriteEvidence(
-  result: ListingImageUpdateResult,
-): ListingImageWriteEvidence | null {
-  const raw = (result as ListingImageUpdateResult & {
-    imageWriteEvidence?: unknown;
-  }).imageWriteEvidence;
-  // Version 1 receipts retain their original nine-slot bytes and hash. New
-  // writes bind all ten slots; a later GET never invents a tenth legacy target.
-  const length = isRecord(raw) && raw.version === 1 ? 9 : IMAGE_ATTRIBUTE_NAMES.length;
-  if (!isRecord(raw) ||
-      (raw.version !== 1 && raw.version !== 2) ||
-      typeof raw.asin !== "string" ||
-      !/^[A-Z0-9]{10}$/u.test(raw.asin) ||
-      typeof raw.productType !== "string" ||
-      !raw.productType ||
-      raw.fulfillment !== "FBA" ||
-      typeof raw.expectedOldHash !== "string" ||
-      !/^[a-f0-9]{64}$/u.test(raw.expectedOldHash) ||
-      !exactUrlVector(raw.previousUrls, length) ||
-      !exactUrlVector(raw.requestedUrls, length) ||
-      !exactChangedSlots(raw.changedSlots, raw.previousUrls, raw.requestedUrls) ||
-      raw.expectedOldHash !== expectedOldHash(raw.previousUrls) ||
-      !raw.requestedUrls[0]) {
-    return null;
-  }
-  if (!exactUrlVector(result.previousUrls, length) ||
-      !exactUrlVector(result.requestedUrls, length) ||
-      JSON.stringify(result.previousUrls) !== JSON.stringify(raw.previousUrls) ||
-      JSON.stringify(result.requestedUrls) !== JSON.stringify(raw.requestedUrls) ||
-      !exactChangedSlots(
-        result.changedSlots,
-        raw.previousUrls,
-        raw.requestedUrls,
-      ) ||
-      JSON.stringify(result.changedSlots) !== JSON.stringify(raw.changedSlots)) {
-    return null;
-  }
-  return raw as unknown as ListingImageWriteEvidence;
-}
-
 // Exact known media hosts are only a diagnostic hint. They confer no URL equivalence or fetch authority.
 const AMAZON_MEDIA_DIAGNOSTIC_HOSTS = new Set([
   "m.media-amazon.com", "images-na.ssl-images-amazon.com", "images-fe.ssl-images-amazon.com",
   "images-eu.ssl-images-amazon.com", "media-origin-na-ssl.integ.amazon.com",
 ]);
-
-function validReadbackIssue(value: unknown): value is ListingIssue {
-  return isRecord(value) && (value.code === null || typeof value.code === "string")
-    && typeof value.severity === "string" && ["ERROR", "WARNING", "INFO"].includes(value.severity)
-    && typeof value.message === "string" && Array.isArray(value.attributeNames)
-    && value.attributeNames.every(name => typeof name === "string")
-    && [value.categories, value.marketplaceIds].every(items => items === undefined
-      || (Array.isArray(items) && items.every(item => typeof item === "string")));
-}
 
 export function analyzeImageReadback(
   result: ListingImageUpdateResult | undefined,
@@ -642,41 +558,6 @@ export function imageReadbackDecision(
   observation: ListingImageGatewayRead,
 ): "verified" | "pending" {
   return analyzeImageReadback(result, observation).decision;
-}
-
-function validatedImageWriteResult(
-  response: unknown,
-  identity: ListingImageIdentity,
-  mode: "live" | "demo",
-  status: "ACCEPTED" | "SIMULATED",
-): Readonly<{ result: ListingImageUpdateResult; asin: string; productType: string }> | null {
-  if (!isRecord(response) || response.mode !== mode || response.status !== status ||
-      response.marketplaceId !== identity.marketplaceId || response.sellerSku !== identity.sellerSku ||
-      typeof response.completedAt !== "string" || !Number.isFinite(Date.parse(response.completedAt)) ||
-      !(response.submissionId === null || typeof response.submissionId === "string") ||
-      !(response.requestId === null || typeof response.requestId === "string") ||
-      !Array.isArray(response.issues) || typeof response.notice !== "string") return null;
-  const result = response as unknown as ListingImageUpdateResult;
-  const evidence = imageWriteEvidence(result);
-  if (!evidence || [...evidence.previousUrls, ...evidence.requestedUrls].some(url => {
-    if (url === null) return false;
-    try { const parsed = new URL(url); return parsed.protocol !== "https:" || Boolean(parsed.username || parsed.password || parsed.hash); }
-    catch { return true; }
-  })) return null;
-  return { result, asin: evidence.asin, productType: evidence.productType };
-}
-
-/** Rebuilds only a validated accepted target; never derives one from a null/unknown receipt. */
-export function recoverableImageWrite(
-  response: unknown,
-  identity: ListingImageIdentity,
-): Readonly<{ result: ListingImageUpdateResult; asin: string; productType: string }> | null {
-  return validatedImageWriteResult(response, identity, "live", "ACCEPTED");
-}
-
-/** Only an exact, complete simulation receipt can be excluded from live recovery. */
-export function isSimulatedImageWrite(response: unknown, identity: ListingImageIdentity): boolean {
-  return validatedImageWriteResult(response, identity, "demo", "SIMULATED") !== null;
 }
 
 export function reconcileImageWrite(
@@ -818,9 +699,11 @@ type ImageSnapshotBinding = Readonly<{
   sellerSku: string;
   identity: ImageTargetIdentity;
   expectedOldHash: string;
+  imageWriteRevision?: string;
 }>;
 type BoundListingImageRouteInput = ListingImageRouteInput & Readonly<{
   expectedImageIdentity: ImageTargetIdentity;
+  imageWriteRevision?: string;
 }>;
 
 function parseUrls(value: unknown): Array<string | null> | null {
@@ -1038,6 +921,7 @@ export class ListingImageMutations implements ListingImageMutationsPort {
         sellerSku: input.sellerSku,
         idempotencyKey: key,
         proposalFingerprint: proposalFingerprint(input),
+        ...(context.mode === "live" && input.imageWriteRevision ? { imageUpdate: { ...input.expectedImageIdentity, predecessorRevision: input.imageWriteRevision } } : {}),
       }],
     };
   }
@@ -1055,7 +939,7 @@ export class ListingImageMutations implements ListingImageMutationsPort {
       throw new SpApiError("原圖片與本次查詢不一致，請重新查詢商品。", { status: 409, code: "STALE_LISTING" });
     }
     if (this.snapshots.get(input.snapshotToken) !== binding) throw new SpApiError("圖片查詢已更新，請重新查詢商品並預檢。", { status: 409, code: "IMAGE_SNAPSHOT_CHANGED" });
-    return { ...input, expectedImageIdentity: binding.identity };
+    return { ...input, expectedImageIdentity: binding.identity, ...(binding.imageWriteRevision ? { imageWriteRevision: binding.imageWriteRevision } : {}) };
   }
 
   private async previewRoute(request: ApiRequest): Promise<ApiResponse> {
@@ -1066,12 +950,18 @@ export class ListingImageMutations implements ListingImageMutationsPort {
       const bound = await this.bindSnapshot(input, context);
       await this.assertImagePreparation?.({ urls: bound.urls, previousUrls: bound.expectedUrls, context, sellerSku: bound.sellerSku });
       await this.context.assertCurrent(context);
+      const imageWriteRevision = context.mode === "live"
+        ? await this.writeGate.captureImageWriteRevision?.({ context, sellerSku: input.sellerSku }) : undefined;
       const result = await this.operations.preview(bound);
       await this.context.assertCurrent(context);
       await this.bindSnapshot(input, context);
       const key = validIdempotencyKey(input.idempotencyKey);
       if (key) {
-        await this.writeGate.stagePreview(this.binding(bound, context, key));
+        const previewBound = { ...bound, ...(imageWriteRevision ? { imageWriteRevision } : {}) };
+        await this.writeGate.stagePreview(this.binding(previewBound, context, key));
+        await this.bindSnapshot(input, context);
+        const snapshot = this.snapshots.get(input.snapshotToken)!;
+        this.snapshots.set(input.snapshotToken, { ...snapshot, ...(imageWriteRevision ? { imageWriteRevision } : {}) });
       }
       return json(publicImageResult(result));
     } catch (error) {

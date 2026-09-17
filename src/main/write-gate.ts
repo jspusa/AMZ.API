@@ -32,6 +32,8 @@ export type WriteIntent = Readonly<{
   sellerSku: string;
   idempotencyKey: string;
   proposalFingerprint: string;
+  /** Only an image owner that has read and previewed a fresh proposal supplies this. */
+  imageUpdate?: IdempotentOperationAvailabilityInput["imageUpdate"];
 }>;
 
 export type WriteBinding = Readonly<{
@@ -106,7 +108,10 @@ export type MainWriteGateInspectInput<TResult> = Readonly<{
   project(inspection: MainWriteGateInspection): TResult | null;
 }>;
 
+type ImageWriteRevisionInput = Readonly<{ context: SpExecutionContext; sellerSku: string }>;
+
 export interface MainWriteGatePort {
+  captureImageWriteRevision?(input: ImageWriteRevisionInput): Promise<string>;
   stagePreview(binding: WriteBinding): Promise<void>;
   execute<T>(input: MainWriteGateExecuteInput<T>): Promise<T>;
   inspect?<TResult>(
@@ -192,7 +197,7 @@ type WriteLedgerPort = Pick<
   | "runIdempotentOperation"
   | "assertIdempotentOperationsAvailable"
   | "reconcileIdempotentOperations"
-> & Partial<Pick<LocalStore, "inspectIdempotentOperations">>;
+> & Partial<Pick<LocalStore, "inspectIdempotentOperations" | "captureImageWriteRevision">>;
 
 export type MainWriteGateDependencies = Readonly<{
   store: WriteLedgerPort;
@@ -218,6 +223,7 @@ type DurableIntent = Readonly<{
   fingerprint: string;
   operationType: LedgerOperationType;
   businessPriceDuplicateRepair: boolean;
+  imageUpdate?: IdempotentOperationAvailabilityInput["imageUpdate"];
 }>;
 
 const STANDARD_PREVIEW_TTL_MS = 2 * 60_000;
@@ -272,6 +278,7 @@ function bindingFingerprint(binding: WriteBinding): string {
       intent.sellerSku,
       intent.idempotencyKey,
       intent.proposalFingerprint,
+      intent.imageUpdate ?? null,
     ]),
   ]);
 }
@@ -342,9 +349,28 @@ export class MainWriteGate implements MainWriteGatePort {
     this.randomUUID = input.randomUUID ?? nodeRandomUUID;
   }
 
+  async captureImageWriteRevision(input: ImageWriteRevisionInput): Promise<string> {
+    await this.context.assertCurrent(input.context);
+    if (!this.store.captureImageWriteRevision) throw new MainWriteGateError("WRITE_INSPECTION_UNAVAILABLE");
+    const revision = await this.store.captureImageWriteRevision({
+      accountScope: input.context.accountScope, marketplaceId: input.context.marketplaceId, sellerSku: input.sellerSku,
+    });
+    await this.context.assertCurrent(input.context);
+    return revision;
+  }
+
   async stagePreview(binding: WriteBinding): Promise<void> {
     this.assertValidBinding(binding);
     const generation = this.ephemeralGeneration;
+    await this.context.assertCurrent(binding.context);
+    for (const intent of binding.intents) {
+      if (!intent.imageUpdate) continue;
+      if (!this.store.captureImageWriteRevision) throw new MainWriteGateError("WRITE_INSPECTION_UNAVAILABLE");
+      const revision = await this.store.captureImageWriteRevision({
+        accountScope: binding.context.accountScope, marketplaceId: intent.marketplaceId, sellerSku: intent.sellerSku,
+      });
+      if (revision !== intent.imageUpdate.predecessorRevision) throw new MainWriteGateError("PREVIEW_CHANGED");
+    }
     await this.context.assertCurrent(binding.context);
     if (generation !== this.ephemeralGeneration) {
       throw new SpExecutionContextError(
@@ -421,6 +447,7 @@ export class MainWriteGate implements MainWriteGatePort {
           fingerprint: durable.fingerprint,
           businessPriceDuplicateRepair:
             durable.businessPriceDuplicateRepair,
+          ...(durable.imageUpdate ? { imageUpdate: durable.imageUpdate } : {}),
           execute: async ({ recordAccepted }) => {
             try {
               await this.context.assertCurrent(input.binding.context);
@@ -578,6 +605,13 @@ export class MainWriteGate implements MainWriteGatePort {
       ) {
         throw new MainWriteGateError("WRITE_BINDING_INVALID");
       }
+      if (intent.imageUpdate && (binding.context.mode !== "live" ||
+        !["images", "images-batch"].includes(binding.family) || intent.operation !== "images" ||
+        !/^[A-Z0-9]{10}$/.test(intent.imageUpdate.asin) ||
+        !intent.imageUpdate.productType || intent.imageUpdate.productType.trim() !== intent.imageUpdate.productType ||
+        !/^[a-f0-9]{64}$/.test(intent.imageUpdate.predecessorRevision))) {
+        throw new MainWriteGateError("WRITE_BINDING_INVALID");
+      }
       intentIds.add(intent.intentId);
     }
   }
@@ -714,6 +748,7 @@ export class MainWriteGate implements MainWriteGatePort {
         : intent.operation,
       businessPriceDuplicateRepair:
         intent.operation === "business_price_repair",
+      ...(intent.imageUpdate ? { imageUpdate: intent.imageUpdate } : {}),
     };
   }
 
@@ -727,9 +762,11 @@ export class MainWriteGate implements MainWriteGatePort {
       marketplaceId: durable.intent.marketplaceId,
       sellerSku: durable.intent.sellerSku,
       accountScope: binding.context.accountScope,
+      executionMode: binding.context.mode,
       fingerprint: durable.fingerprint,
       businessPriceDuplicateRepair:
         durable.businessPriceDuplicateRepair,
+      ...(durable.imageUpdate ? { imageUpdate: durable.imageUpdate } : {}),
     };
   }
 

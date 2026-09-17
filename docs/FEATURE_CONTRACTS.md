@@ -91,6 +91,12 @@
 - 拖入、上傳及準備圖片不要求登入、密碼、Touch ID 或 Windows Hello。Production main 預設先使用 `HostedListingImages` v2，不讀圖片登入資料或 R2 vault；只有未提供 hosted owner 的 composition 才保留 custom R2 port，不因 hosted 失敗而切換。專用登入／vault owner 與 IPC 退休，但既有圖片登入加密檔不讀取、不解密、不刪除。匿名 v2 僅提供固定額度內的 image-only PUT／GET，公開 URL 固定綁 UUID／hash；UUID 不是員工或裝置認證，v1 圖片、下載、公布欄及 admin 的原驗證邊界保留。上傳結果不明只 GET 查詢既有操作，不因 context 清除而重傳；匿名讀回原檔 bytes 核對後才可用於預檢，額度或網路錯誤明示停止，不要求登入。完整規格見 [免登入圖片準備](specs/2026-09-passwordless-image-preparation.md)。
 - 圖片確認頁顯示 exact SKU／ASIN 與變更位置，不要求重打 SKU；main 以自身保存的查詢憑據綁定 exact context／SKU／ASIN／Product Type 與原圖片，renderer 只回傳不透明識別值。預檢及正式提交重新核對，重新查詢撤銷舊憑據；只有最後 Amazon 更新才使用與文案相同的 native gate。main 仍核對 fresh Preview、context／identity／PTD、原生授權及 durable claim，保留一次 PATCH 與 canonical readback；圖片準備不授權 Amazon mutation。缺少此能力的舊 Notebook Key 明示升級提示。現行規格見 [免登入圖片準備](specs/2026-09-passwordless-image-preparation.md)；原始直接上傳與確認的需求沿革保留於 [直接上傳、效期與 Vine 修正](specs/2026-09-direct-images-expiry-vine.md)及 [圖片生物辨識與確認](specs/2026-09-image-biometric-confirmation.md)。
 
+## 已受理圖片後的獨立新更新
+
+- 先前圖片有可信且身分完全相符的 live `ACCEPTED` receipt 時，單 SKU／批次都可開始新圖片更新，不必等舊 CDN URL canonical verified。新工作仍完整核對 canonical 原值、FBA／PTD、Validation Preview，取得新原生批准並逐 intent 只 PATCH 一次；指定位置外的圖片保留。
+- 同圖明確重新套用、換位或還原都可作新工作。舊 receipt／accepted-unverified 狀態保留，相同 idempotency key 不可重送；換 UUID／hash、時間經過或來源到期本身不能解鎖。真正結果不明、缺失／malformed receipt、歧義／未證明 legacy 與文案 collision 維持保護，不延伸到價格等其他流程。
+- Preview 綁定 main 捕捉的前筆每 SKU ledger revision，提交及原子 claim 重新核對；較新 unknown、紀錄或 context 變更不能被舊預覽略過。公開 batch owner 搭配真 Gate／Store、單 SKU parity 及負例驗證見[本輪規格](specs/2026-09-image-new-update-after-accepted.md)；原 GET 恢復仍只讀，只有 strict canonical 相符才能 verified。
+
 ## 資料夾圖片批次與暫存清理
 
 「圖片／資料夾批次更新」也接受單張或多張圖片；每圖可帶入檔名位置與 SKU、勾選 exact FBA family 候選或手工輸入多個 SKU。共用圖只替換指定位置，由 main 保留其餘圖片，無需主圖或連續編號。每個 SKU／位置衝突、超限、缺少配對與已知父商品明示阻擋；修改配對撤銷舊預覽。保留最多 30 SKU／300 配置／每 SKU 10 位置、一次原生確認和禁止重送。新能力缺席時保留資料夾入口並提示升級，不能把指定位置降級為完整清除。[共用圖片規格](specs/2026-09-shared-image-batch.md)。

@@ -7,6 +7,7 @@ import type {
   ContentAuditSnapshotLookup,
 } from "./amazon/content-audit-snapshot-evidence";
 import { SpApiError, SpApiPreCommitError } from "./amazon/sp-api-error";
+import { recoverableImageWrite } from "./listing-image-write-evidence";
 
 export type {
   ContentAuditSnapshotEvidence,
@@ -271,6 +272,8 @@ type OperationInput<T> = {
   fingerprint: string;
   businessPriceDuplicateRepair?: boolean;
   executionMode?: "live" | "demo";
+  /** Main-only fresh image preview, bound to the exact preceding ledger revision. */
+  imageUpdate?: Readonly<{ asin: string; productType: string; predecessorRevision: string }>;
   execute: (control: Readonly<{
     recordAccepted(response: T): Promise<void>;
   }>) => Promise<T>;
@@ -285,6 +288,8 @@ export type IdempotentOperationAvailabilityInput = Pick<
   | "accountScope"
   | "fingerprint"
   | "businessPriceDuplicateRepair"
+  | "executionMode"
+  | "imageUpdate"
 >;
 
 const OPERATION_TTL_MS = 24 * 60 * 60 * 1_000;
@@ -921,6 +926,45 @@ function businessPriceRepairTombstoneKey(idempotencyKey: string): string {
     .digest("hex")}`;
 }
 
+type ImageWriteScope = Pick<IdempotentOperationAvailabilityInput, "accountScope" | "marketplaceId" | "sellerSku">;
+
+function scopedAttributeWrites(ledger: Readonly<Record<string, LedgerEntry>>, scope: ImageWriteScope) {
+  return Object.entries(ledger).filter(([, entry]) =>
+    LISTING_ATTRIBUTE_OPERATION_TYPES.has(entry.operationType) && entry.marketplaceId === scope.marketplaceId &&
+    entry.sellerSku === scope.sellerSku && (entry.state !== "completed" || entry.expiresAt >= Date.now()) &&
+    (entry.accountScope === scope.accountScope || entry.accountScope === "legacy-unknown"));
+}
+
+function imageWriteRevision(ledger: Readonly<Record<string, LedgerEntry>>, scope: ImageWriteScope): string {
+  return createHash("sha256").update(JSON.stringify(scopedAttributeWrites(ledger, scope)
+    .sort(([left], [right]) => left.localeCompare(right)))).digest("hex");
+}
+
+function validAcceptedImageEnvelope(entry: LedgerEntry): boolean {
+  return (entry.state === "pending" || entry.state === "unknown") &&
+    typeof entry.fingerprint === "string" && /^[a-f0-9]{64}$/u.test(entry.fingerprint) &&
+    typeof entry.ownerToken === "string" && /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/iu.test(entry.ownerToken) &&
+    [entry.createdAt, entry.updatedAt, entry.expiresAt].every(value => Number.isSafeInteger(value) && value > 0);
+}
+
+/** Acceptance ends uncertainty about dispatch, not uncertainty about the displayed image.
+ * A separately previewed/approved image update may follow it; the old receipt is never completed or removed here.
+ */
+function blockingAttributeWrite(ledger: Readonly<Record<string, LedgerEntry>>, input: IdempotentOperationAvailabilityInput): LedgerEntry | undefined {
+  const update = input.imageUpdate;
+  const freshImageUpdate = input.operationType === "images" && input.executionMode === "live" && update;
+  if (freshImageUpdate && (!/^[a-f0-9]{64}$/.test(update.predecessorRevision) || update.predecessorRevision !== imageWriteRevision(ledger, input))) {
+    throw new SpApiPreCommitError(new SpApiError("預檢後已有其他商品更新，請重新核對本次圖片。", { status: 409, code: "PREVIEW_CHANGED" }));
+  }
+  return scopedAttributeWrites(ledger, input).find(([, entry]) => {
+    if (entry.state === "completed") return false;
+    if (!freshImageUpdate || !validAcceptedImageEnvelope(entry) || entry.operationType !== "images" || entry.accountScope !== input.accountScope ||
+      (entry.executionMode !== undefined && entry.executionMode !== "live")) return true;
+    const accepted = recoverableImageWrite(entry.response, { marketplaceId: input.marketplaceId, sellerSku: input.sellerSku });
+    return !accepted || accepted.asin !== update.asin || accepted.productType !== update.productType;
+  })?.[1];
+}
+
 export class LocalStore {
   readonly filePath: string;
   private data: StoreData | null = null;
@@ -1532,15 +1576,7 @@ export class LocalStore {
         }
       }
       if (LISTING_ATTRIBUTE_OPERATION_TYPES.has(input.operationType)) {
-        const activeAttributeWrite = Object.values(data.ledger).find(
-          (entry) =>
-            LISTING_ATTRIBUTE_OPERATION_TYPES.has(entry.operationType) &&
-            entry.marketplaceId === input.marketplaceId &&
-            entry.sellerSku === input.sellerSku &&
-            entry.state !== "completed" &&
-            (entry.accountScope === input.accountScope ||
-              entry.accountScope === "legacy-unknown"),
-        );
+        const activeAttributeWrite = blockingAttributeWrite(data.ledger, input);
         if (activeAttributeWrite) throw operationError(activeAttributeWrite.state);
       }
       const sequenceAt = Math.max(
@@ -1709,15 +1745,7 @@ export class LocalStore {
           if (blocking) throw operationError(blocking.state);
         }
         if (LISTING_ATTRIBUTE_OPERATION_TYPES.has(input.operationType)) {
-          const activeAttributeWrite = Object.values(data.ledger).find(
-            (entry) =>
-              LISTING_ATTRIBUTE_OPERATION_TYPES.has(entry.operationType) &&
-              entry.marketplaceId === input.marketplaceId &&
-              entry.sellerSku === input.sellerSku &&
-              entry.state !== "completed" &&
-              (entry.accountScope === input.accountScope ||
-                entry.accountScope === "legacy-unknown"),
-          );
+          const activeAttributeWrite = blockingAttributeWrite(data.ledger, input);
           if (activeAttributeWrite) throw operationError(activeAttributeWrite.state);
         }
       }
@@ -1803,6 +1831,13 @@ export class LocalStore {
     this.mutationQueue = task.catch(() => undefined);
     await task;
     return structuredClone(inspected);
+  }
+
+  /** A main-only revision, not a ledger handle or a permission exposed to the renderer. */
+  async captureImageWriteRevision(input: ImageWriteScope): Promise<string> {
+    const task = this.mutationQueue.then(async () => imageWriteRevision((await this.read()).ledger, input));
+    this.mutationQueue = task.then(() => undefined, () => undefined);
+    return task;
   }
 
   /** Fixed main-only B2B observation, not a general ledger enumeration API. */

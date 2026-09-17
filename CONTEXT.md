@@ -29,12 +29,16 @@ Short-lived main-only evidence that one Write Binding passed preview; it is neit
 _Avoid_: Commit token, write receipt
 
 **Unknown Write Result**:
-A durable outcome meaning Amazon may have received a mutation but canonical evidence cannot yet prove success or rejection, so resend remains forbidden.
-_Avoid_: Failed write, retryable error
+A durable outcome meaning a mutation may have been sent without a trustworthy accepted or rejected receipt; it remains protected from resend and cannot be bypassed by starting a new image intent.
+_Avoid_: Accepted but unverified, failed write, retryable error
 
 **Accepted Write**:
-A durable outcome meaning Amazon returned an exact accepted receipt for one mutation, while canonical readback has not yet verified the target; resend remains forbidden.
-_Avoid_: Successful write, failed write, retryable write
+A durable outcome meaning Amazon returned an exact accepted receipt for one mutation, while canonical readback has not yet verified the target. Replaying that intent remains forbidden; a separately authorized Fresh Image Update may follow qualifying image evidence without changing this history.
+_Avoid_: Verified write, unknown result, retryable write
+
+**Fresh Image Update**:
+A new image intent that revalidates canonical state, identity and PTD, binds the preceding per-SKU ledger revision in main, and obtains fresh Preview and native approval before one atomic claim and PATCH. It may follow an exact known live image Accepted Write, including an explicit reapply, move or rollback of the same image; a new UUID or different bytes alone never authorize it.
+_Avoid_: Resend, receipt recovery, clearing the previous write, general Listing collision bypass
 
 **Readback Reconciliation**:
 A GET-only comparison of an Accepted Write's exact target with canonical Amazon state that may promote it to verified without sending another mutation.

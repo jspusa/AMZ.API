@@ -495,7 +495,7 @@ describe("image folder batch main owner", () => {
     expect(gateway.commitOnce).not.toHaveBeenCalled();
   });
 
-  it("keeps accepted-but-pending writes non-replayable and never retries them from GET", async () => {
+  it("never replays accepted writes from the old batch or GET but permits a freshly approved reapplication", async () => {
     const { owner, gateway, approveWrite } = await setup();
     vi.mocked(gateway.commitOnce).mockImplementation(async (_patch, fence) => { await fence.assertCurrent(); return { ok: true, status: 200, requestId: null, retryAfter: null,
       payload: { status: "ACCEPTED", issues: [], submissionId: "processing" } }; });
@@ -503,19 +503,35 @@ describe("image folder batch main owner", () => {
     await submit(owner, preview);
     expect(await terminal(owner, preview)).toMatchObject({ phase: "completed", totals: { accepted: 2, verified: 0 }, rows: [{ state: "accepted" }, { state: "accepted" }] });
     expect((await submit(owner, preview)).status).toBe(200);
-    const again = await previewSkus(owner);
-    await submit(owner, again);
-    expect(await terminal(owner, again)).toMatchObject({ phase: "stopped", totals: { submitted: 0 } });
+    await owner.handle({ operation: "observe", request: request("GET", {}, { marketplaceId, batchId: preview.batchId, refresh: "true" }) });
+    expect((await terminal(owner, preview)).totals).toMatchObject({ accepted: 2, verified: 0 });
     expect(gateway.commitOnce).toHaveBeenCalledTimes(2);
     expect(approveWrite).toHaveBeenCalledOnce();
+
+    const again = await previewSkus(owner);
+    expect(again.batchId).not.toBe(preview.batchId);
+    expect(again.reviewToken).not.toBe(preview.reviewToken);
+    expect(again.rows.map(row => row.requestedUrls)).toEqual(preview.rows.map(row => row.requestedUrls));
+    expect(approveWrite).toHaveBeenCalledOnce();
+    await submit(owner, again);
+    expect(await terminal(owner, again)).toMatchObject({ phase: "completed", totals: { submitted: 2, accepted: 2, verified: 0 } });
+    expect(gateway.commitOnce).toHaveBeenCalledTimes(4);
+    expect(approveWrite).toHaveBeenCalledTimes(2);
+    expect((await submit(owner, again)).status).toBe(200);
+    await owner.handle({ operation: "observe", request: request("GET", {}, { marketplaceId, batchId: again.batchId, refresh: "true" }) });
+    await terminal(owner, again);
+    expect(value(await owner.handle({ operation: "observe", request: request("GET", {}, { marketplaceId, batchId: preview.batchId }) })))
+      .toMatchObject({ batchId: preview.batchId, totals: { accepted: 2, verified: 0 } });
+    expect(gateway.commitOnce).toHaveBeenCalledTimes(4);
+    expect(approveWrite).toHaveBeenCalledTimes(2);
   });
 
-  it.each([1, 10])("marks a new %i-SKU selected-slot batch unsent when an older accepted batch blocks it before native approval", async count => {
+  it.each([1, 10])("approves a fresh %i-SKU selected-slot batch after an accepted batch and keeps recovery targets distinct", async count => {
     const { owner, gateway, approveWrite, canonical } = await setup();
     const skus = Array.from({ length: count }, (_, index) => `AFA${21 + index}AM`);
     vi.mocked(gateway.commitOnce).mockImplementation(async (_patch, fence) => {
       await fence.assertCurrent();
-      return { ok: true, status: 200, requestId: null, retryAfter: null, payload: { status: "ACCEPTED", issues: [], submissionId: "older-processing" } };
+      return { ok: true, status: 200, requestId: null, retryAfter: null, payload: { status: "ACCEPTED", issues: [], submissionId: "processing" } };
     });
     const older = value(await owner.handle({ operation: "preview", request: request("POST", {
       marketplaceId, replacementMode: "complete", rows: skus.map(sellerSku => ({ sellerSku,
@@ -523,38 +539,58 @@ describe("image folder batch main owner", () => {
     }) }));
     await submit(owner, older);
     expect((await terminal(owner, older)).totals).toMatchObject({ accepted: count, verified: 0 });
-    approveWrite.mockClear(); vi.mocked(gateway.commitOnce).mockClear();
+    expect(approveWrite).toHaveBeenCalledOnce();
+    expect(gateway.commitOnce).toHaveBeenCalledTimes(count);
+
+    const readsBeforeRecovery = vi.mocked(gateway.read).mock.calls.length;
+    const recoveredOlder = value(await owner.handle({ operation: "recover", request: request("GET", {}, {
+      marketplaceId, recoverSkus: JSON.stringify(skus),
+    }) }));
+    const historical = await terminal(owner, recoveredOlder);
+    expect(historical.totals).toMatchObject({ accepted: count, verified: 0 });
+    expect(historical.rows.map(row => row.requestedUrls)).toEqual(older.rows.map(row => row.requestedUrls));
+    expect(gateway.read).toHaveBeenCalledTimes(readsBeforeRecovery + count);
+    expect(approveWrite).toHaveBeenCalledOnce();
+    expect(gateway.commitOnce).toHaveBeenCalledTimes(count);
+
     const fresh = value(await owner.handle({ operation: "preview", request: request("POST", {
       marketplaceId, replacementMode: "selected-slots", rows: skus.map(sellerSku => ({ sellerSku,
         urls: [...Array<null>(8).fill(null), `https://images.example.com/${sellerSku}-shared-new.jpg`, null] })),
     }) }));
     expect(fresh.totals.ready).toBe(count);
+    expect(fresh.rows).toEqual(skus.map(sellerSku => expect.objectContaining({ sellerSku, changedSlots: [9],
+      previousUrls: old, requestedUrls: [...old.slice(0, 8), `https://images.example.com/${sellerSku}-shared-new.jpg`, null] })));
+    expect(approveWrite).toHaveBeenCalledOnce();
     expect((await owner.handle({ operation: "commit", request: request("PATCH", {
       marketplaceId, batchId: fresh.batchId, reviewToken: fresh.reviewToken, selectedSlotsAcknowledged: true,
     }) })).status).toBe(202);
-    const stopped = await terminal(owner, fresh);
-    expect(stopped).toMatchObject({ phase: "stopped", blockedByPreviousWrite: true, message: "前一次送出結果尚未確認。系統已禁止重送，請先回查 Amazon 狀態。", totals: { ready: 0, submitted: 0 } });
-    expect(approveWrite).not.toHaveBeenCalled();
-    expect(gateway.commitOnce).not.toHaveBeenCalled();
-    expect(stopped.rows).toEqual(skus.map(sellerSku => expect.objectContaining({ sellerSku, state: "not-started", code: "UPDATE_STATUS_UNKNOWN" })));
-    const reads = vi.mocked(gateway.read).mock.calls.length;
-    expect(value(await owner.handle({ operation: "observe", request: request("GET", {}, {
-      marketplaceId, batchId: fresh.batchId, refresh: "true",
-    }) })).batchId).toBe(fresh.batchId);
-    expect(gateway.read).toHaveBeenCalledTimes(reads);
-    const recovered = value(await owner.handle({ operation: "recover", request: request("GET", {}, {
+    const submitted = await terminal(owner, fresh);
+    expect(submitted).toMatchObject({ phase: "completed", totals: { submitted: count, accepted: count, verified: 0 } });
+    expect(submitted.blockedByPreviousWrite).toBeUndefined();
+    expect(approveWrite).toHaveBeenCalledTimes(2);
+    expect(approveWrite.mock.calls[1][0]).toContain(`${count} SKU`);
+    expect(gateway.commitOnce).toHaveBeenCalledTimes(2 * count);
+    expect(vi.mocked(gateway.commitOnce).mock.calls.slice(count).map(([patch]) => ({ sellerSku: patch.sellerSku, requestedUrls: patch.requestedUrls })))
+      .toEqual(fresh.rows.map(row => ({ sellerSku: row.sellerSku, requestedUrls: row.requestedUrls })));
+
+    const readsBeforeLatestRecovery = vi.mocked(gateway.read).mock.calls.length;
+    const recoveredLatest = value(await owner.handle({ operation: "recover", request: request("GET", {}, {
       marketplaceId, recoverSkus: JSON.stringify(skus),
     }) }));
-    expect(recovered.batchId).not.toBe(fresh.batchId);
-    const historical = await terminal(owner, recovered);
-    expect(historical.totals).toMatchObject({ accepted: count, verified: 0 });
-    expect(historical.rows.map(row => row.requestedUrls)).toEqual(older.rows.map(row => row.requestedUrls));
-    expect(gateway.read).toHaveBeenCalledTimes(reads + count);
-    for (const row of older.rows) canonical.set(row.sellerSku, row.requestedUrls);
-    await owner.handle({ operation: "observe", request: request("GET", {}, { marketplaceId, batchId: recovered.batchId, refresh: "true" }) });
-    expect((await terminal(owner, recovered)).totals).toMatchObject({ accepted: count, verified: count });
-    expect(approveWrite).not.toHaveBeenCalled();
-    expect(gateway.commitOnce).not.toHaveBeenCalled();
+    expect(recoveredLatest.batchId).not.toBe(fresh.batchId);
+    expect(recoveredLatest.batchId).not.toBe(recoveredOlder.batchId);
+    const latest = await terminal(owner, recoveredLatest);
+    expect(latest.totals).toMatchObject({ accepted: count, verified: 0 });
+    expect(latest.rows.map(row => row.requestedUrls)).toEqual(fresh.rows.map(row => row.requestedUrls));
+    expect(latest.rows.map(row => row.requestedUrls)).not.toEqual(historical.rows.map(row => row.requestedUrls));
+    expect(gateway.read).toHaveBeenCalledTimes(readsBeforeLatestRecovery + count);
+    for (const row of fresh.rows) canonical.set(row.sellerSku, row.requestedUrls);
+    await owner.handle({ operation: "observe", request: request("GET", {}, { marketplaceId, batchId: recoveredLatest.batchId, refresh: "true" }) });
+    expect((await terminal(owner, recoveredLatest)).totals).toMatchObject({ accepted: count, verified: count });
+    expect(value(await owner.handle({ operation: "observe", request: request("GET", {}, { marketplaceId, batchId: recoveredOlder.batchId }) })))
+      .toMatchObject({ totals: { accepted: count, verified: 0 }, rows: historical.rows });
+    expect(approveWrite).toHaveBeenCalledTimes(2);
+    expect(gateway.commitOnce).toHaveBeenCalledTimes(2 * count);
   });
 
   it.each(["content-only", "mixed", "inspection-unavailable"] as const)("does not misdirect a %s Listing blocker into image-only recovery", async scenario => {
