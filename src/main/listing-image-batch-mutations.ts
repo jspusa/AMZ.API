@@ -3,7 +3,7 @@ import type { ApiRequest, ApiResponse } from "../shared/contracts";
 import {
   LISTING_IMAGE_BATCH_MAX_IMAGES_PER_SKU, LISTING_IMAGE_BATCH_MAX_SKUS,
   type ListingImageBatchCapabilities, type ListingImageBatchRow, type ListingImageBatchRowInput,
-  type ListingImageBatchSnapshot,
+  type ListingImageBatchSnapshot, type ListingImageReplacementMode,
 } from "../shared/listing-image-batch";
 import { marketplaceById } from "../shared/marketplaces";
 import { SpExecutionContextError, type SpExecutionContext, type SpExecutionContextAdapter } from "./amazon/sp-execution-context";
@@ -38,9 +38,10 @@ export type ListingImageBatchDependencies = Readonly<{
 }>;
 
 type BoundInput = Parameters<ListingImageMutationOperations["preview"]>[0];
-type PlanRow = { public: ListingImageBatchRow; input: BoundInput; preview: ListingImageUpdateResult | null; accepted?: ListingImageUpdateResult };
+type PlanRow = { public: ListingImageBatchRow; input: BoundInput; preparedUrls: readonly (string | null)[]; preview: ListingImageUpdateResult | null; accepted?: ListingImageUpdateResult };
 type BatchPlan = {
   batchId: string; reviewToken: string; context: SpExecutionContext; expiresAt: number;
+  replacementMode: ListingImageReplacementMode;
   phase: ListingImageBatchSnapshot["phase"]; rows: PlanRow[]; message: string | null;
   lastReadbackAt: string | null;
 };
@@ -56,14 +57,14 @@ function isolatedPreviewFailure(error: unknown): error is SpApiError {
     && ![401, 403, 429].includes(error.status) && ISOLATED_PREVIEW_CODES.has(error.code);
 }
 const capabilities: ListingImageBatchCapabilities = Object.freeze({
-  capability: "listing-image-batch-v1", maxSkus: 30, maxImagesPerSku: 10, replacementMode: "complete", confirmationMode: "native", readbackRecovery: "exact-sku-v1",
+  capability: "listing-image-batch-v1", maxSkus: 30, maxImagesPerSku: 10, replacementMode: "complete", selectedSlotReplacement: true, confirmationMode: "native", readbackRecovery: "exact-sku-v1",
 });
 
 function exactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
   return Object.keys(value).every(key => keys.includes(key));
 }
 
-function parseRows(value: unknown): ListingImageBatchRowInput[] | null {
+function parseRows(value: unknown, replacementMode: ListingImageReplacementMode): ListingImageBatchRowInput[] | null {
   if (!Array.isArray(value) || !value.length || value.length > LISTING_IMAGE_BATCH_MAX_SKUS) return null;
   const seen = new Set<string>();
   const rows: ListingImageBatchRowInput[] = [];
@@ -82,16 +83,20 @@ function parseRows(value: unknown): ListingImageBatchRowInput[] | null {
       } catch { return null; }
       urls.push(url);
     }
-    if (!urls[0] || new Set(urls.filter(Boolean)).size !== urls.filter(Boolean).length) return null;
-    const firstEmpty = urls.indexOf(null);
-    if (firstEmpty >= 0 && urls.slice(firstEmpty).some(url => url !== null)) return null;
+    const populated = urls.filter(Boolean);
+    if (!populated.length || new Set(populated).size !== populated.length) return null;
+    if (replacementMode === "complete") {
+      if (!urls[0]) return null;
+      const firstEmpty = urls.indexOf(null);
+      if (firstEmpty >= 0 && urls.slice(firstEmpty).some(url => url !== null)) return null;
+    }
     seen.add(sellerSku);
     rows.push({ sellerSku, urls });
   }
   return rows;
 }
 
-/** Owns a bounded exact image-replacement plan; no raw transport or renderer identity evidence. */
+/** Owns the canonical merge and bounded image plan; no raw transport or renderer identity evidence. */
 export class ListingImageBatchMutations implements ListingImageBatchMutationsPort {
   private readonly plans = new Map<string, BatchPlan>();
   private revision = 0;
@@ -130,8 +135,8 @@ export class ListingImageBatchMutations implements ListingImageBatchMutationsPor
     if (revision !== this.revision) throw new SpExecutionContextError("SP_CONTEXT_INVALIDATED", "Amazon 執行環境已更新；請重新開始圖片批次。");
   }
 
-  private async preparedExpiry(row: BoundInput, context: SpExecutionContext, revision: number): Promise<number> {
-    const expiry = await this.deps.assertPreparedImageUrls({urls:row.urls, sellerSku:row.sellerSku, context});
+  private async preparedExpiry(row: PlanRow, context: SpExecutionContext, revision: number): Promise<number> {
+    const expiry = await this.deps.assertPreparedImageUrls({urls:row.preparedUrls, sellerSku:row.input.sellerSku, context});
     await this.fence(context, revision);
     if (!Number.isSafeInteger(expiry) || expiry <= this.now() + LISTING_IMAGE_MIN_VALIDITY_MS) {
       throw new SpApiError("圖片暫存期限不足十分鐘；請重新準備原始圖片。", {status:409,code:"IMAGE_PREPARATION_EXPIRED"});
@@ -143,7 +148,7 @@ export class ListingImageBatchMutations implements ListingImageBatchMutationsPor
     const rows = plan.rows.map(row => structuredClone(row.public));
     return {
       ...capabilities, batchId: plan.batchId, reviewToken: plan.reviewToken, marketplaceId: plan.context.marketplaceId,
-      mode: plan.context.mode, phase: plan.phase, lastReadbackAt: plan.lastReadbackAt, expiresAt: new Date(plan.expiresAt).toISOString(), rows, message: plan.message,
+      mode: plan.context.mode, replacementMode: plan.replacementMode, phase: plan.phase, lastReadbackAt: plan.lastReadbackAt, expiresAt: new Date(plan.expiresAt).toISOString(), rows, message: plan.message,
       totals: { skus: rows.length, ready: rows.filter(row => row.state === "ready").length,
         blocked: rows.filter(row => row.state === "blocked").length, unchanged: rows.filter(row => row.state === "unchanged").length,
         submitted: rows.filter(row => ["accepted", "verified", "unknown", "rejected", "simulated"].includes(row.state)).length,
@@ -164,9 +169,11 @@ export class ListingImageBatchMutations implements ListingImageBatchMutationsPor
   private async buildPreview(request: ApiRequest): Promise<ApiResponse> {
     const body = bodyRecord(request);
     const marketplaceId = parseMarketplace(body?.marketplaceId);
-    const rows = parseRows(body?.rows);
-    if (!body || !exactKeys(body, ["marketplaceId", "replacementMode", "rows"]) || !marketplaceId || !rows || body.replacementMode !== "complete") {
-      return invalid("請提供 1–30 個不同的完整 SKU，每個 SKU 需有主圖與十個明確圖片位置。", 400, "INVALID_IMAGE_BATCH");
+    const replacementMode = body?.replacementMode;
+    if (replacementMode !== "complete" && replacementMode !== "selected-slots") return invalid("圖片批次更新方式無效。", 400, "INVALID_IMAGE_BATCH");
+    const rows = parseRows(body?.rows, replacementMode);
+    if (!body || !exactKeys(body, ["marketplaceId", "replacementMode", "rows"]) || !marketplaceId || !rows) {
+      return invalid("請提供 1–30 個不同的完整 SKU 與十個明確圖片位置；完整替換需要主圖，指定位置至少需要一張圖片。", 400, "INVALID_IMAGE_BATCH");
     }
     const revision = this.revision;
     const context = await this.deps.context.capture(marketplaceId);
@@ -178,13 +185,13 @@ export class ListingImageBatchMutations implements ListingImageBatchMutationsPor
     }
     while (this.plans.size >= 4) this.plans.delete(this.plans.keys().next().value!);
     const plan: BatchPlan = { batchId: `image-batch.${this.uuid()}`, reviewToken: `image-review.${this.uuid()}`, context,
-      expiresAt: this.now() + PREVIEW_TTL_MS, phase: "ready", rows: [], message: null, lastReadbackAt: null };
+      replacementMode, expiresAt: this.now() + PREVIEW_TTL_MS, phase: "ready", rows: [], message: null, lastReadbackAt: null };
     for (const row of rows) {
-      const pending: PlanRow = { input: { marketplaceId, sellerSku: row.sellerSku, expectedUrls: Array<null>(10).fill(null), urls: [...row.urls] }, preview: null,
+      const pending: PlanRow = { input: { marketplaceId, sellerSku: row.sellerSku, expectedUrls: Array<null>(10).fill(null), urls: [...row.urls] }, preparedUrls: [...row.urls], preview: null,
         public: { sellerSku: row.sellerSku, asin: null, title: "", previousUrls: Array<null>(10).fill(null), requestedUrls: [...row.urls], changedSlots: [], deletedSlots: [],
           state: "blocked", code: null, message: null, requestId: null, acceptedAt: null } };
       try {
-        await this.preparedExpiry(pending.input, context, revision);
+        await this.preparedExpiry(pending, context, revision);
         await this.fence(context, revision);
         const observation = await this.deps.operations.read({ marketplaceId, sellerSku: row.sellerSku });
         await this.fence(context, revision);
@@ -193,10 +200,12 @@ export class ListingImageBatchMutations implements ListingImageBatchMutationsPor
         await this.fence(context, revision);
         const snapshot = observation.snapshot;
         if (snapshot.mode !== context.mode || snapshot.marketplaceId !== context.marketplaceId) throw new SpExecutionContextError("SP_CONTEXT_INVALIDATED", "圖片讀取結果不屬於目前帳號或站點。");
-        const input: BoundInput = { marketplaceId, sellerSku: row.sellerSku, expectedUrls: snapshot.images.map(image => image.url), urls: [...row.urls],
+        const expectedUrls = snapshot.images.map(image => image.url);
+        const urls = replacementMode === "selected-slots" ? row.urls.map((url, index) => url ?? expectedUrls[index]) : [...row.urls];
+        const input: BoundInput = { marketplaceId, sellerSku: row.sellerSku, expectedUrls, urls,
           expectedImageIdentity: { asin: snapshot.asin!, productType: snapshot.productType } };
-        const changedSlots = row.urls.flatMap((url, index) => url === input.expectedUrls[index] ? [] : [index + 1]);
-        const deletedSlots = changedSlots.filter(slot => input.expectedUrls[slot - 1] && row.urls[slot - 1] === null);
+        const changedSlots = input.urls.flatMap((url, index) => url === input.expectedUrls[index] ? [] : [index + 1]);
+        const deletedSlots = changedSlots.filter(slot => input.expectedUrls[slot - 1] && input.urls[slot - 1] === null);
         pending.input = input;
         pending.public = { ...pending.public, asin: snapshot.asin, title: snapshot.title,
           previousUrls: input.expectedUrls, requestedUrls: input.urls, changedSlots, deletedSlots, state: changedSlots.length ? "ready" : "unchanged" };
@@ -226,7 +235,7 @@ export class ListingImageBatchMutations implements ListingImageBatchMutationsPor
   private async recheckReadySources(plan: BatchPlan, revision: number): Promise<number> {
     let earliest = Infinity;
     for (const row of plan.rows.filter(row => row.public.state === "ready")) {
-      try { earliest = Math.min(earliest, await this.preparedExpiry(row.input, plan.context, revision)); }
+      try { earliest = Math.min(earliest, await this.preparedExpiry(row, plan.context, revision)); }
       catch (error) {
         await this.fence(plan.context, revision);
         if (!isolatedPreviewFailure(error)) throw error;
@@ -241,7 +250,8 @@ export class ListingImageBatchMutations implements ListingImageBatchMutationsPor
     const intents = plan.rows.filter(row => row.public.state === "ready").map((row, index) => ({
       intentId: row.input.sellerSku, operation: "images" as const, marketplaceId: plan.context.marketplaceId,
       sellerSku: row.input.sellerSku, idempotencyKey: `${plan.batchId}-${index}`,
-      proposalFingerprint: createHash("sha256").update(JSON.stringify(row.input)).digest("hex"),
+      proposalFingerprint: createHash("sha256").update(JSON.stringify(plan.replacementMode === "complete" ? row.input
+        : { replacementMode: plan.replacementMode, input: row.input, preparedUrls: row.preparedUrls })).digest("hex"),
     }));
     if (!intents.length) throw new SpApiError("沒有可送出的圖片變更。", { status: 422, code: "NO_CHANGES" });
     return { family: "images-batch", previewKey: plan.batchId, context: plan.context, previewExpiresAt:plan.expiresAt, intents: [intents[0], ...intents.slice(1)] };
@@ -298,7 +308,7 @@ export class ListingImageBatchMutations implements ListingImageBatchMutationsPor
       if (context.mode !== "live") return invalid("先前 Amazon 圖片更新只能在正式連線模式回查。", 409, "IMAGE_RECOVERY_LIVE_REQUIRED");
       if (!this.deps.writeGate.inspect) throw new MainWriteGateError("WRITE_INSPECTION_UNAVAILABLE");
       const plan: BatchPlan = { batchId: `image-batch.${this.uuid()}`, reviewToken: `image-recovery.${this.uuid()}`, context,
-        expiresAt: this.now() + TERMINAL_TTL_MS, phase: "completed", rows: [], message: null, lastReadbackAt: null };
+        replacementMode: "complete", expiresAt: this.now() + TERMINAL_TTL_MS, phase: "completed", rows: [], message: null, lastReadbackAt: null };
       for (const sellerSku of skus as string[]) {
         const inspections = await this.deps.writeGate.inspect({ context, marketplaceId, sellerSku, operations: ["images"], requireComplete: true,
           // Keep null/malformed newer attempts so an older accepted receipt cannot replace them.
@@ -320,7 +330,7 @@ export class ListingImageBatchMutations implements ListingImageBatchMutationsPor
         const code = recovered ? null : !latest ? "IMAGE_WRITE_NOT_FOUND" : "IMAGE_WRITE_EVIDENCE_UNAVAILABLE";
         plan.rows.push({ input: { marketplaceId, sellerSku, expectedUrls: previousUrls, urls: requestedUrls,
           ...(recovered ? { expectedImageIdentity: { asin: recovered.asin, productType: recovered.productType } } : {}) }, preview: null,
-          ...(recovered ? { accepted: recovered.result } : {}), public: {
+          preparedUrls: [], ...(recovered ? { accepted: recovered.result } : {}), public: {
             sellerSku, asin: recovered?.asin ?? null, title: "", previousUrls, requestedUrls, changedSlots,
             deletedSlots: changedSlots.filter(slot => previousUrls[slot - 1] && requestedUrls[slot - 1] === null),
             state: recovered ? "accepted" : !latest ? "blocked" : "unknown", code,
@@ -411,11 +421,18 @@ export class ListingImageBatchMutations implements ListingImageBatchMutationsPor
   private async commit(request: ApiRequest): Promise<ApiResponse> {
     if (this.building) return invalid("圖片批次正在重新預檢，請等待最新清單。", 409, "OPERATION_IN_PROGRESS");
     const body = bodyRecord(request);
-    if (!body || !exactKeys(body, ["marketplaceId", "batchId", "reviewToken", "completeReplacementAcknowledged"]) || body.completeReplacementAcknowledged !== true) {
+    if (!body || !exactKeys(body, ["marketplaceId", "batchId", "reviewToken", "completeReplacementAcknowledged", "selectedSlotsAcknowledged"])) {
       return invalid("請先核對整批圖片及所有將清除的位置，再確認完整替換。", 422, "IMAGE_BATCH_REPLACEMENT_ACKNOWLEDGEMENT_REQUIRED");
     }
     const plan = await this.findPlan(request, true);
     if ("status" in plan) return plan;
+    if (plan.replacementMode === "selected-slots") {
+      if (body.selectedSlotsAcknowledged !== true || Object.hasOwn(body, "completeReplacementAcknowledged")) {
+        return invalid("請先核對指定位置的圖片更新；其他圖片會保留。", 422, "IMAGE_BATCH_SELECTED_SLOTS_ACKNOWLEDGEMENT_REQUIRED");
+      }
+    } else if (body.completeReplacementAcknowledged !== true || Object.hasOwn(body, "selectedSlotsAcknowledged")) {
+      return invalid("請先核對整批圖片及所有將清除的位置，再確認完整替換。", 422, "IMAGE_BATCH_REPLACEMENT_ACKNOWLEDGEMENT_REQUIRED");
+    }
     if (this.building) return invalid("圖片批次正在重新預檢，請等待最新清單。", 409, "OPERATION_IN_PROGRESS");
     if (body.reviewToken !== plan.reviewToken) return invalid("這份確認與預檢內容不一致，請重新核對。", 409, "IMAGE_BATCH_REVIEW_CHANGED");
     if (["completed", "stopped"].includes(plan.phase)) return json(this.snapshot(plan));
@@ -450,13 +467,14 @@ export class ListingImageBatchMutations implements ListingImageBatchMutationsPor
           const rows = plan.rows.filter(row => row.public.state === "ready");
           const positions = rows.reduce((sum, row) => sum + row.public.changedSlots.length, 0);
           const deleted = rows.reduce((sum, row) => sum + row.public.deletedSlots.length, 0);
-          return `確認整批圖片｜${marketplaceById(plan.context.marketplaceId)?.code}｜${rows.length} SKU／${positions} 位置／清除 ${deleted}｜已逐項核對完整替換｜驗證碼 ${verificationCode}`;
+          const scope = plan.replacementMode === "selected-slots" ? "已核對指定位置，其他圖片保留" : "已逐項核對完整替換";
+          return `確認整批圖片｜${marketplaceById(plan.context.marketplaceId)?.code}｜${rows.length} SKU／${positions} 位置／清除 ${deleted}｜${scope}｜驗證碼 ${verificationCode}`;
         },
         beforeApproval: async () => {
           for (const row of plan.rows.filter(item => item.public.state === "ready")) {
             try {
               await this.fence(plan.context, revision);
-              await this.preparedExpiry(row.input, plan.context, revision);
+              await this.preparedExpiry(row, plan.context, revision);
               const fresh = await this.deps.operations.preview(row.input);
               await this.fence(plan.context, revision);
               this.assertResult(fresh, row, plan.context.mode, true);
@@ -485,7 +503,7 @@ export class ListingImageBatchMutations implements ListingImageBatchMutationsPor
               try {
                 result = await session.attempt<ListingImageUpdateResult>({ intentId: row.input.sellerSku, execute: async ({ recordAccepted, assertCurrent }) => {
                   try {
-                    await this.preparedExpiry(row.input, plan.context, revision);
+                    await this.preparedExpiry(row, plan.context, revision);
                     await this.fence(plan.context, revision);
                   } catch (error) {
                     throw new SpApiPreCommitError(error instanceof SpApiError ? error : new SpApiError("圖片準備已失效。", { status: 409, code: "IMAGE_PREPARATION_EXPIRED" }));
@@ -494,7 +512,7 @@ export class ListingImageBatchMutations implements ListingImageBatchMutationsPor
                     await assertCurrent();
                     await this.fence(plan.context, revision);
                     try {
-                      await this.preparedExpiry(row.input, plan.context, revision);
+                      await this.preparedExpiry(row, plan.context, revision);
                       await this.fence(plan.context, revision);
                     } catch (error) {
                       throw new SpApiPreCommitError(error instanceof SpApiError ? error : new SpApiError("圖片準備已失效。", { status: 409, code: "IMAGE_PREPARATION_EXPIRED" }));

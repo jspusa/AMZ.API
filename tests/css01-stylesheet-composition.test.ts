@@ -106,6 +106,7 @@ describe("CSS01 renderer stylesheet composition", () => {
         '@import "./workflow-efficiency.css";',
         '@import "./inventory-health.css";',
         '@import "./audit-review.css";',
+        '@import "./shared-images.css";',
         '@import "./appearance.css";',
         '@import "./dark-palette.generated.css";',
         '@import "./dark-surfaces.css";',
@@ -169,8 +170,8 @@ describe("CSS01 renderer stylesheet composition", () => {
         relative(rootDirectory, file).split(sep).join("/"),
       ),
     ).toEqual(RENDERER_STYLESHEET_CONTRACT.expectedFiles);
-    expect(composition.canonicalJson).toHaveLength(1221779);
-    expect(byteLengthWithLfLineEndings(composition.css)).toBe(885819);
+    expect(composition.canonicalJson).toHaveLength(1227153);
+    expect(byteLengthWithLfLineEndings(composition.css)).toBe(889414);
     expect(composition.fingerprint).toBe(
       RENDERER_STYLESHEET_CONTRACT.fingerprint,
     );
@@ -199,8 +200,8 @@ describe("CSS01 renderer stylesheet composition", () => {
     });
 
     expect(composition.css).toContain("\r\n");
-    expect(Buffer.byteLength(composition.css)).toBe(915716);
-    expect(byteLengthWithLfLineEndings(composition.css)).toBe(885819);
+    expect(Buffer.byteLength(composition.css)).toBe(919363);
+    expect(byteLengthWithLfLineEndings(composition.css)).toBe(889414);
     expect(composition.fingerprint).toBe(
       RENDERER_STYLESHEET_CONTRACT.fingerprint,
     );

@@ -68,6 +68,174 @@ async function terminal(owner: ListingImageBatchMutations, preview: ListingImage
 }
 
 describe("image folder batch main owner", () => {
+  it("advertises selected-position support while retaining the complete-replacement capability", async () => {
+    const { owner, gateway, assertPreparedImageUrls } = await setup();
+    const response = await owner.handle({ operation: "capabilities", request: request("GET") });
+    expect(response).toMatchObject({ status: 200, body: { kind: "json", value: {
+      capability: "listing-image-batch-v1", replacementMode: "complete", selectedSlotReplacement: true,
+      maxSkus: 30, maxImagesPerSku: 10, confirmationMode: "native", readbackRecovery: "exact-sku-v1",
+    } } });
+    expect(gateway.read).not.toHaveBeenCalled();
+    expect(assertPreparedImageUrls).not.toHaveBeenCalled();
+  });
+
+  it("merges a sparse selected position into each fresh canonical image set without deleting other images", async () => {
+    const { owner, gateway, canonical, assertPreparedImageUrls, approveWrite } = await setup();
+    const original = Array.from({ length: 10 }, (_, index) => `https://images.example.com/original-${index + 1}.jpg`);
+    canonical.set("AFA21AM", original);
+    const sharedImage = "https://images.example.com/prepared-series.jpg";
+    const selected = [null, null, null, null, null, null, null, null, sharedImage, null];
+    const response = await owner.handle({ operation: "preview", request: request("POST", {
+      marketplaceId, replacementMode: "selected-slots", rows: [{ sellerSku: "AFA21AM", urls: selected }],
+    }) });
+    expect(response.status).toBe(200);
+    expect(value(response)).toMatchObject({ replacementMode: "selected-slots", totals: { ready: 1, deletedSlots: 0 }, rows: [{
+      previousUrls: original, requestedUrls: [...original.slice(0, 8), sharedImage, original[9]],
+      changedSlots: [9], deletedSlots: [], state: "ready",
+    }] });
+    expect(assertPreparedImageUrls).toHaveBeenCalled();
+    for (const [input] of assertPreparedImageUrls.mock.calls) {
+      expect(input).toMatchObject({ sellerSku: "AFA21AM", urls: selected });
+    }
+    expect(gateway.validationPreview).toHaveBeenCalledOnce();
+    expect(gateway.commitOnce).not.toHaveBeenCalled();
+    expect(approveWrite).not.toHaveBeenCalled();
+  });
+
+  it("updates only selected slots for multiple SKUs after one mode-specific native approval", async () => {
+    const { owner, gateway, approveWrite, canonical, assertPreparedImageUrls } = await setup();
+    const skus = ["AFA21AM", "AFA22AM"];
+    const rows = skus.map(sellerSku => ({ sellerSku, urls: [null, null, null, null, null, null, null, null,
+      `https://images.example.com/${sellerSku}-shared.jpg`, null] }));
+    const review = value(await owner.handle({ operation: "preview", request: request("POST", { marketplaceId, replacementMode: "selected-slots", rows }) }));
+    const body = { marketplaceId, batchId: review.batchId, reviewToken: review.reviewToken, selectedSlotsAcknowledged: true };
+    expect((await owner.handle({ operation: "commit", request: request("PATCH", body) })).status).toBe(202);
+    const result = await terminal(owner, review);
+    expect(result).toMatchObject({ replacementMode: "selected-slots", totals: { submitted: 2, accepted: 2, verified: 2, deletedSlots: 0 } });
+    expect(approveWrite).toHaveBeenCalledOnce();
+    expect(approveWrite.mock.calls[0][0]).toContain("指定位置");
+    expect(approveWrite.mock.calls[0][0]).toContain("其他圖片保留");
+    expect(gateway.commitOnce).toHaveBeenCalledTimes(2);
+    for (const row of rows) {
+      expect(canonical.get(row.sellerSku)).toEqual([old[0], old[1], null, null, null, null, null, null, row.urls[8], null]);
+    }
+    for (const [input] of assertPreparedImageUrls.mock.calls) {
+      expect(input.urls).toEqual(rows.find(row => row.sellerSku === input.sellerSku)!.urls);
+    }
+    expect((await owner.handle({ operation: "commit", request: request("PATCH", body) })).status).toBe(200);
+    await owner.handle({ operation: "observe", request: request("GET", {}, { marketplaceId, batchId: review.batchId, refresh: "true" }) });
+    expect(gateway.commitOnce).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(["complete", "selected-slots"] as const)("rejects missing, mixed, and other-mode acknowledgements for %s", async replacementMode => {
+    const { owner, gateway, approveWrite } = await setup();
+    const review = value(await owner.handle({ operation: "preview", request: request("POST", {
+      marketplaceId, replacementMode, rows: [{ sellerSku: "AFA21AM", urls: proposed("AFA21AM") }],
+    }) }));
+    const body = { marketplaceId, batchId: review.batchId, reviewToken: review.reviewToken };
+    const other = replacementMode === "complete" ? { selectedSlotsAcknowledged: true } : { completeReplacementAcknowledged: true };
+    for (const acknowledgement of [{}, other, { completeReplacementAcknowledged: true, selectedSlotsAcknowledged: true }]) {
+      expect((await owner.handle({ operation: "commit", request: request("PATCH", { ...body, ...acknowledgement }) })).status).toBe(422);
+    }
+    expect(approveWrite).not.toHaveBeenCalled();
+    expect(gateway.commitOnce).not.toHaveBeenCalled();
+  });
+
+  it("rejects a selected-slot row when a preserved canonical image changes after review", async () => {
+    const { owner, gateway, canonical, approveWrite } = await setup();
+    const selected = [null, "https://images.example.com/new-shared.jpg", ...Array<null>(8).fill(null)];
+    const review = value(await owner.handle({ operation: "preview", request: request("POST", {
+      marketplaceId, replacementMode: "selected-slots", rows: [{ sellerSku: "AFA21AM", urls: selected }],
+    }) }));
+    canonical.set("AFA21AM", ["https://images.example.com/changed-main.jpg", ...old.slice(1)]);
+    expect((await owner.handle({ operation: "commit", request: request("PATCH", {
+      marketplaceId, batchId: review.batchId, reviewToken: review.reviewToken, selectedSlotsAcknowledged: true,
+    }) })).status).toBe(202);
+    expect(await terminal(owner, review)).toMatchObject({ phase: "stopped", totals: { submitted: 0 }, rows: [{ state: "blocked", code: "STALE_LISTING" }] });
+    expect(approveWrite).not.toHaveBeenCalled();
+    expect(gateway.commitOnce).not.toHaveBeenCalled();
+  });
+
+  it("rechecks selected sources at the final send fence and keeps expired sources from being sent", async () => {
+    const { owner, gateway, assertPreparedImageUrls } = await setup();
+    const selected = [null, "https://images.example.com/shared.jpg", ...Array<null>(8).fill(null)];
+    assertPreparedImageUrls.mockImplementation(async input => {
+      expect(input.urls).toEqual(selected);
+      if (vi.mocked(gateway.validationPreview).mock.calls.length >= 3) throw new SpApiError("圖片已過期。", { status: 409, code: "IMAGE_PREPARATION_EXPIRED" });
+      return Date.now() + 60 * 60_000;
+    });
+    const review = value(await owner.handle({ operation: "preview", request: request("POST", {
+      marketplaceId, replacementMode: "selected-slots", rows: [{ sellerSku: "AFA21AM", urls: selected }],
+    }) }));
+    await owner.handle({ operation: "commit", request: request("PATCH", {
+      marketplaceId, batchId: review.batchId, reviewToken: review.reviewToken, selectedSlotsAcknowledged: true,
+    }) });
+    expect(await terminal(owner, review)).toMatchObject({ totals: { submitted: 0 }, rows: [{ state: "not-started", code: "IMAGE_PREPARATION_EXPIRED" }] });
+    expect(gateway.commitOnce).not.toHaveBeenCalled();
+  });
+
+  it("keeps an uncertain selected-slot write non-replayable through a new complete-replacement plan", async () => {
+    const { owner, gateway, approveWrite } = await setup();
+    vi.mocked(gateway.commitOnce).mockRejectedValue(new SpApiError("Unknown transport outcome", { status: 503, code: "UPDATE_STATUS_UNKNOWN" }));
+    const review = value(await owner.handle({ operation: "preview", request: request("POST", {
+      marketplaceId, replacementMode: "selected-slots", rows: ["AFA12AM", "AFA13AM"].map(sellerSku => ({
+        sellerSku, urls: [null, `https://images.example.com/${sellerSku}-shared.jpg`, ...Array<null>(8).fill(null)],
+      })),
+    }) }));
+    await owner.handle({ operation: "commit", request: request("PATCH", {
+      marketplaceId, batchId: review.batchId, reviewToken: review.reviewToken, selectedSlotsAcknowledged: true,
+    }) });
+    expect(await terminal(owner, review)).toMatchObject({ phase: "stopped", rows: [{ state: "unknown" }, { state: "not-started" }] });
+    const another = await previewSkus(owner);
+    await submit(owner, another);
+    expect(await terminal(owner, another)).toMatchObject({ phase: "stopped", totals: { submitted: 0 } });
+    expect(gateway.commitOnce).toHaveBeenCalledOnce();
+    expect(approveWrite).toHaveBeenCalledOnce();
+  });
+
+  it("retains FBA, current MAIN, duplicate-image, and editable-slot validation for selected replacements", async () => {
+    const { owner, gateway, canonical, approveWrite } = await setup();
+    canonical.set("EMPTYMAIN", [null, old[1], ...Array<null>(8).fill(null)]);
+    const read = vi.mocked(gateway.read).getMockImplementation()!;
+    vi.mocked(gateway.read).mockImplementation(async (...args) => {
+      const result = await read(...args);
+      if (args[0].sellerSku === "FBM") return { ...result, fulfillment: "FBM" } as unknown as Awaited<ReturnType<ListingImageGateway["read"]>>;
+      if (args[0].sellerSku !== "READONLY") return result;
+      return { ...result, snapshot: { ...result.snapshot, images: result.snapshot.images.map((image, index) => index === 8
+        ? { ...image, capability: { ...image.capability, editable: false } } : image) } };
+    });
+    const select = (url: string) => [null, null, null, null, null, null, null, null, url, null];
+    const response = await owner.handle({ operation: "preview", request: request("POST", {
+      marketplaceId, replacementMode: "selected-slots", rows: [
+        { sellerSku: "EMPTYMAIN", urls: select("https://images.example.com/a.jpg") },
+        { sellerSku: "DUPLICATE", urls: select(old[0]!) },
+        { sellerSku: "READONLY", urls: select("https://images.example.com/b.jpg") },
+        { sellerSku: "FBM", urls: select("https://images.example.com/c.jpg") },
+      ],
+    }) });
+    expect(response.status).toBe(200);
+    expect(value(response).rows.map(row => [row.state, row.code])).toEqual([
+      ["blocked", "MAIN_IMAGE_REQUIRED"], ["blocked", "DUPLICATE_IMAGE_URL"],
+      ["blocked", "IMAGE_FIELD_READ_ONLY"], ["blocked", "LISTING_IDENTITY_MISMATCH"],
+    ]);
+    expect(approveWrite).not.toHaveBeenCalled();
+    expect(gateway.commitOnce).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["all-preserve", Array<null>(10).fill(null)],
+    ["short", [null, "https://images.example.com/shared.jpg"]],
+    ["duplicate selected URL", [null, "https://images.example.com/shared.jpg", "https://images.example.com/shared.jpg", ...Array<null>(7).fill(null)]],
+  ])("rejects an invalid %s selected-slot request before image preparation or Amazon reads", async (_label, urls) => {
+    const { owner, gateway, assertPreparedImageUrls } = await setup();
+    expect((await owner.handle({ operation: "preview", request: request("POST", {
+      marketplaceId, replacementMode: "selected-slots", rows: [{ sellerSku: "AFA21AM", urls }],
+    }) })).status).toBe(400);
+    expect(gateway.read).not.toHaveBeenCalled();
+    expect(assertPreparedImageUrls).not.toHaveBeenCalled();
+  });
+
+
   it("ends review ten minutes before the earliest source expires even when the normal ticket is longer", async () => {
     let now = Date.parse("2026-09-14T00:48:00.000Z");
     const {owner,gateway,approveWrite} = await setup({now:()=>now,assertPreparedImageUrls:async()=>Date.parse("2026-09-14T01:00:00.000Z")});

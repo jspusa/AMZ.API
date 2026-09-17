@@ -3,10 +3,11 @@ import type { ListingImageReadbackDiagnostics } from "./listing-image-readback";
 
 export const LISTING_IMAGE_BATCH_MAX_SKUS = 30;
 export const LISTING_IMAGE_BATCH_MAX_IMAGES_PER_SKU = 10;
+export type ListingImageReplacementMode = "complete" | "selected-slots";
 
 export type ListingImageBatchRowInput = Readonly<{
   sellerSku: string;
-  /** Complete replacement: omitted positions must be represented by null. */
+  /** Ten explicit positions. Null clears in complete mode and preserves in selected-slots mode. */
   urls: readonly (string | null)[];
 }>;
 
@@ -37,6 +38,8 @@ export type ListingImageBatchCapabilities = Readonly<{
   maxSkus: 30;
   maxImagesPerSku: 10;
   replacementMode: "complete";
+  /** Absent on older Notebook Keys that only accept complete replacements. */
+  selectedSlotReplacement?: true;
   confirmationMode: "native";
   readbackRecovery?: "exact-sku-v1";
 }>;
@@ -47,7 +50,7 @@ export type ListingImageBatchSnapshot = Readonly<{
   reviewToken: string;
   marketplaceId: MarketplaceId;
   mode: "live" | "demo";
-  replacementMode: "complete";
+  replacementMode: ListingImageReplacementMode;
   phase: "ready" | "revalidating" | "awaiting-approval" | "submitting" | "readback" | "completed" | "stopped";
   expiresAt: string;
   rows: readonly ListingImageBatchRow[];
@@ -59,7 +62,7 @@ export type ListingImageBatchSnapshot = Readonly<{
 
 export type ListingImageBatchPreviewInput = Readonly<{
   marketplaceId: MarketplaceId;
-  replacementMode: "complete";
+  replacementMode: ListingImageReplacementMode;
   rows: readonly ListingImageBatchRowInput[];
 }>;
 
@@ -67,5 +70,10 @@ export type ListingImageBatchCommitInput = Readonly<{
   marketplaceId: MarketplaceId;
   batchId: string;
   reviewToken: string;
+}> & Readonly<{
   completeReplacementAcknowledged: true;
+  selectedSlotsAcknowledged?: never;
+} | {
+  selectedSlotsAcknowledged: true;
+  completeReplacementAcknowledged?: never;
 }>;

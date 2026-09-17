@@ -1,0 +1,25 @@
+.image-folder-pickers { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
+.image-folder-pickers button:first-child { background: var(--surface-blue, #eaf4fc); color: var(--text, #1e3d54); }
+.image-shared-selection { margin: 20px 0; min-width: 0; }
+.image-shared-item { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr); align-items: start; gap: 14px 24px; margin: 16px 0; padding: 20px; border: 1px solid var(--border, #cfd8e4); border-radius: 12px; background: var(--surface, #fff); }
+.image-shared-file { grid-column: 1 / -1; display: flex; align-items: center; gap: 14px; min-width: 0; }
+.image-shared-file > strong { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.image-shared-thumbnail { width: 88px; height: 88px; flex: 0 0 88px; object-fit: contain; border-radius: 8px; background: #fff; border: 1px solid var(--border, #cfd8e4); }
+.image-shared-item > label { display: flex; flex-direction: column; gap: 8px; min-width: 0; font-weight: 600; }
+.image-shared-item :is(select, textarea) { box-sizing: border-box; width: 100%; min-height: 44px; padding: 10px 12px; border: 1px solid var(--border, #cfd8e4); border-radius: 8px; color: inherit; background: var(--surface-soft, #fff9e8); font: inherit; font-weight: 400; }
+.image-shared-item textarea { resize: vertical; }
+.image-shared-item > p, .image-shared-suggestions { grid-column: 1 / -1; }
+.image-shared-item > p { margin: 0; }
+.image-shared-suggestions { min-width: 0; }
+.image-shared-suggestions > p { color: var(--muted, #506579); }
+.image-shared-candidates { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr)); gap: 8px; max-height: 340px; overflow-y: auto; }
+.image-shared-candidates label { display: grid; grid-template-columns: 20px minmax(0, 1fr); gap: 3px 8px; align-content: start; padding: 10px 12px; border: 1px solid var(--border, #cfd8e4); border-radius: 8px; background: var(--surface-soft, #f2f7f5); font-size: 13px; overflow-wrap: anywhere; cursor: pointer; }
+.image-shared-candidates input { grid-row: 1 / 4; width: 17px; height: 17px; margin: 2px 0 0; }
+.image-shared-candidates :is(strong, span, small) { grid-column: 2; }
+.image-shared-item :is(select, textarea):focus-visible { outline: 3px solid #509ddc; outline-offset: 3px; }
+@media (max-width: 640px) {
+  .image-shared-item { grid-template-columns: minmax(0, 1fr); padding: 14px; gap: 12px; }
+  .image-shared-file { flex-wrap: wrap; }
+  .image-shared-thumbnail { width: 64px; height: 64px; flex-basis: 64px; }
+  .image-shared-file > button { margin-left: auto; }
+}
