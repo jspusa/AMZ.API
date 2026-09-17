@@ -2004,7 +2004,7 @@ export default function BusinessPricingAuditPanel({
           )}
           <AuditSkuFilter scope={viewScope} skus={skuBatch.skus} availableSkus={visibleSnapshot.rows.map(row => row.sellerSku)}
             disabled={loading || editLoading || batchBusy} onChange={skus => { skuBatch.setSkus(skus); setPage(1); }} />
-          <div className="business-pricing-summary is-interactive" role="group" aria-label="B2B 價格健檢摘要與篩選">
+          <div className="business-pricing-summary business-pricing-summary--b2b is-interactive" role="group" aria-label="B2B 價格健檢摘要與篩選">
             {FILTERS.map((option) => (
               <button
                 key={option.value}

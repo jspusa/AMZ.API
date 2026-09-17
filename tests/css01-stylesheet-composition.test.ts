@@ -170,8 +170,8 @@ describe("CSS01 renderer stylesheet composition", () => {
         relative(rootDirectory, file).split(sep).join("/"),
       ),
     ).toEqual(RENDERER_STYLESHEET_CONTRACT.expectedFiles);
-    expect(composition.canonicalJson).toHaveLength(1226128);
-    expect(byteLengthWithLfLineEndings(composition.css)).toBe(888610);
+    expect(composition.canonicalJson).toHaveLength(1227153);
+    expect(byteLengthWithLfLineEndings(composition.css)).toBe(889414);
     expect(composition.fingerprint).toBe(
       RENDERER_STYLESHEET_CONTRACT.fingerprint,
     );
@@ -200,8 +200,8 @@ describe("CSS01 renderer stylesheet composition", () => {
     });
 
     expect(composition.css).toContain("\r\n");
-    expect(Buffer.byteLength(composition.css)).toBe(918537);
-    expect(byteLengthWithLfLineEndings(composition.css)).toBe(888610);
+    expect(Buffer.byteLength(composition.css)).toBe(919363);
+    expect(byteLengthWithLfLineEndings(composition.css)).toBe(889414);
     expect(composition.fingerprint).toBe(
       RENDERER_STYLESHEET_CONTRACT.fingerprint,
     );
