@@ -1,6 +1,6 @@
 # AMZ.API — Codex 交接入口
 
-更新：2026-09-16。Repository：`jspusa/AMZ.API`；控制台：`https://jspusa.github.io/AMZ.API/`。
+更新：2026-09-17。Repository：`jspusa/AMZ.API`；控制台：`https://jspusa.github.io/AMZ.API/`。
 
 ## 開始工作
 
@@ -11,7 +11,7 @@
 
 ## 目前狀態
 
-- Issue #305 接續 0.1.81 同次回查原因：.80 原生 GET 已實際前進，但 10 筆 Accepted／Verified 0 的原因尚未定位；新增封閉診斷 DTO 與畫面原因分類，不再將所有 pending 說成圖片不符。診斷沿用同一次 GET、保留原有嚴格 verified／禁止重送，不另取帳密或呼叫隱藏接口。依[0.1.81 帳本](releases/2026-09-image-readback-reasons.md)接續檢查、審查、可信產物與 native 唯讀原因定位；尚未宣稱新版本安裝或十筆完成。
+- Issue #305 的同次回查原因已由 PR #308／runtime `8d92b87b56ea1f9cd683c6ec744d17969b0afbc8` 發布並安裝 0.1.81。336 files／4,398 tests、audit 0、final 兩軸各 0 findings、四條 main／push attempt 1、Pages 11 檔 bytes、兩平台可信 artifacts／fuses 均已驗。第一次備份後 App 曾重開而產生新資料，安裝門檻先停止；正常退出並備份最新資料後換版，vault／ledger bytes 未變，舊 App／兩次資料備份保留。正常 native 已連線並找回同批 10 SKU／90 張：每筆 9 個位置回傳不同來源 Amazon 圖片 URL、0 ERROR，沒有身分／FBA／attributes blocker；最近回查由 2026-09-17 09:34:30 更新至 09:35:46（Asia/Taipei），仍 Accepted 10／Verified 0／unknown 0。已定位 URL equality 未通過，不代表不同網址的影像相同，保持嚴格確認與 GET-only，禁止重送。Mac→Windows 完成 receipts、一般下載密碼 UI／兩卡片及完整 authenticated HTTP bytes／hash 均已驗；本輪未宣稱 browser 落地檔案或真人 Windows Hello。依[0.1.81 帳本](releases/2026-09-image-readback-reasons.md)核對分層證據；原頂部完整頁／價目表修正仍包含在此 runtime。
 
 - Issue #305 已由 PR #306／runtime `f3c159d110bd1692a7a7e1beb9ff4101dd431299` 發布並安裝 0.1.80：頂部功能改完整工作頁，價目表隨入口直接載入，批次圖片手動 GET 啟動新一輪 canonical 回查，重開後可依 exact SKU 恢復既有 accepted 紀錄。335 files／4,326 tests、audit 0、final 兩軸 0 open findings、四條正式 main／push CI attempt 1、Pages HTML＋全部 10 個 JS／CSS bytes 及兩平台可信產物／fuses 均已驗。四區入口／返回、.80 啟動與 Amazon 連線已核對；.79 App／0700 userData 備份保留，ASAR 相符且 vault／ledger bytes 未變。10 個既有 SKU／90 張全部找回，手動 GET 的最近回查由 18:23:55 更新至 18:24:22（2026-09-16，Asia/Taipei），仍為 Accepted 10／Verified 0／unknown 0；同批 canonical 待確認原因未定位，不能斷言為 URL 不符，保持 pending、禁止重送，Issue #305 不結案。另單 SKU 9／9／FBA／PET_FOOD 讀取不是同批 snapshot。Mac→Windows 下載卡 receipts、一般下載密碼登入及兩份完整 authenticated HTTP bytes／hash 均已驗；UI 兩按鈕顯示開始下載，但未找到新本機完成檔，UI 落地 bytes 尚未證明。依[規格](specs/2026-09-workspace-image-recovery.md)與[本輪帳本](releases/2026-09-workspace-image-recovery.md)接續；不以文件 checkout 或 storefront 觀察取代固定 runtime／canonical 證據。
 
