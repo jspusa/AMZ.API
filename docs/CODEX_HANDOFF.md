@@ -11,7 +11,7 @@
 
 ## 目前狀態
 
-- Issue #314 新增單張／多張共用圖片批次更新，候選 Notebook Key 0.1.82：檔名帶入 SKU／01–10 位置，同 family FBA 候選與手動 exact SKU，多 SKU 只替換指定位置、保留其他圖片。使用者已要求直接實作與交付；驗收不得送真實 Amazon mutation。依[規格](specs/2026-09-shared-image-batch.md)及[本輪分層帳本](releases/2026-09-shared-image-batch.md)接續，正式來源／CI／Pages／可信產物／安全安裝／下載入口分開核對；原 0.1.81 accepted 紀錄保持 GET-only。
+- Issue #314 已由 PR #315／runtime `f7ac19c4bd38b12a85dbc7624a8b5a8ce412ff6c` 發布並安全安裝 0.1.82：單張／多張圖片可經檔名、FBA family 候選及手動 exact SKU 配對，只替換指定位置。339 files／4,428 tests、audit 0、兩軸 0 open、8 組畫面、四條 main／push attempt 1、Pages 11 檔 bytes 及兩平台可信產物／fuses 已驗。.81 App／0700 userData 備份保留，vault／ledger bytes 未變。Mac→Windows 兩張下載卡 completion receipts 已核對；一般密碼登入請求待完成，本輪 authenticated bytes／browser 落地下載仍未驗。新版啟動後觀察到 3 個相關 process，但 CUA 取得 App／畫面逾時；SecurityAgent 存取另遭工具安全限制拒絕，未繞過，不能推定 Mac 鎖定、提示內容、首頁或 Amazon 連線成功。原生畫面狀態詢問待回覆，不重裝或重複要求登入。依[規格](specs/2026-09-shared-image-batch.md)及[本輪帳本](releases/2026-09-shared-image-batch.md)接續；原 .81 accepted 紀錄保持 GET-only，本輪沒有 Amazon mutation。
 
 - Issue #305 的同次回查原因已由 PR #308／runtime `8d92b87b56ea1f9cd683c6ec744d17969b0afbc8` 發布並安裝 0.1.81。336 files／4,398 tests、audit 0、final 兩軸各 0 findings、四條 main／push attempt 1、Pages 11 檔 bytes、兩平台可信 artifacts／fuses 均已驗。第一次備份後 App 曾重開而產生新資料，安裝門檻先停止；正常退出並備份最新資料後換版，vault／ledger bytes 未變，舊 App／兩次資料備份保留。正常 native 已連線並找回同批 10 SKU／90 張：每筆 9 個位置回傳不同來源 Amazon 圖片 URL、0 ERROR，沒有身分／FBA／attributes blocker；最近回查由 2026-09-17 09:34:30 更新至 09:35:46（Asia/Taipei），仍 Accepted 10／Verified 0／unknown 0。已定位 URL equality 未通過，不代表不同網址的影像相同，保持嚴格確認與 GET-only，禁止重送。Mac→Windows 完成 receipts、一般下載密碼 UI／兩卡片及完整 authenticated HTTP bytes／hash 均已驗；本輪未宣稱 browser 落地檔案或真人 Windows Hello。依[0.1.81 帳本](releases/2026-09-image-readback-reasons.md)核對分層證據；原頂部完整頁／價目表修正仍包含在此 runtime。
 
