@@ -109,28 +109,40 @@ export default function BusinessPricingRecentWork({
 
   if (!enabled) return null;
   const visibleSnapshot = snapshot?.marketplaceId === marketplaceId && snapshot.mode === mode ? snapshot : null;
+  const summaryStatus = loading ? "讀取中…" : error ? "讀取失敗" :
+    visibleSnapshot ? `${visibleSnapshot.items.length} 筆紀錄` : "展開查看";
   return <section className="business-pricing-recent-work" aria-label="近期 B2B 工作" aria-busy={loading}>
-    <header>
-      <div><h4>近期 B2B 工作</h4><p>{marketplaceShort} · 此電腦、目前帳號 · 最多 {B2B_RECENT_WORK_LIMIT} 筆</p></div>
-      <button type="button" disabled={loading || busy} onClick={() => setRevision((current) => current + 1)}>重新讀取工作</button>
-    </header>
-    <p>恢復清單只讀取本機紀錄；查看商品才會向 Amazon 唯讀確認。後續更新仍須重新預檢及 Touch ID／Windows Hello。</p>
-    {loading && <p role="status">正在讀取近期工作…</p>}
-    {error && <p role="alert">{error}</p>}
-    {visibleSnapshot && <>
-      <p className="business-pricing-recent-time">本機紀錄讀取時間 · <WorkTime value={visibleSnapshot.checkedAt} />（此電腦時區）</p>
-      {visibleSnapshot.items.length === 0 ? <p>此電腦目前沒有可恢復的 B2B 工作紀錄。</p> :
-        <ul>{visibleSnapshot.items.map((item) => <li key={JSON.stringify([item.sellerSku, item.stage, item.updatedAt])}>
-          <div><strong>{item.sellerSku}</strong><span>{STATUS_LABEL[item.status]}</span>
-            <p>{item.notice}</p>
-            {item.acceptedAt && <small>Amazon 接受時間 · <WorkTime value={item.acceptedAt} /></small>}
-            {item.verifiedAt && <small>確認完成時間 · <WorkTime value={item.verifiedAt} /></small>}
-          </div>
-          <button type="button" aria-label={`唯讀查看 SKU ${item.sellerSku}`} disabled={busy}
-            aria-busy={openingSellerSku === item.sellerSku} onClick={() => onOpen(item)}>
-            {openingSellerSku === item.sellerSku ? "正在讀取 Amazon…" : "唯讀查看／繼續處理"}
-          </button>
-        </li>)}</ul>}
-    </>}
+    <details className="business-pricing-recent-work-disclosure">
+      <summary>
+        <span className="business-pricing-recent-work-summary-copy">
+          <span className="business-pricing-recent-work-title">近期 B2B 工作</span>
+          <span className="business-pricing-recent-work-summary-meta">{marketplaceShort} · 此電腦、目前帳號 · 最多 {B2B_RECENT_WORK_LIMIT} 筆</span>
+        </span>
+        <span className="business-pricing-recent-work-summary-state" aria-live="polite">{summaryStatus}</span>
+      </summary>
+      <div className="business-pricing-recent-work-body">
+        <div className="business-pricing-recent-work-toolbar">
+          <p>恢復清單只讀取本機紀錄；查看商品才會向 Amazon 唯讀確認。後續更新仍須重新預檢及 Touch ID／Windows Hello。</p>
+          <button type="button" disabled={loading || busy} onClick={() => setRevision((current) => current + 1)}>重新讀取工作</button>
+        </div>
+        {loading && <p role="status">正在讀取近期工作…</p>}
+        {error && <p role="alert">{error}</p>}
+        {visibleSnapshot && <>
+          <p className="business-pricing-recent-time">本機紀錄讀取時間 · <WorkTime value={visibleSnapshot.checkedAt} />（此電腦時區）</p>
+          {visibleSnapshot.items.length === 0 ? <p>此電腦目前沒有可恢復的 B2B 工作紀錄。</p> :
+            <ul>{visibleSnapshot.items.map((item) => <li key={JSON.stringify([item.sellerSku, item.stage, item.updatedAt])}>
+              <div><strong>{item.sellerSku}</strong><span>{STATUS_LABEL[item.status]}</span>
+                <p>{item.notice}</p>
+                {item.acceptedAt && <small>Amazon 接受時間 · <WorkTime value={item.acceptedAt} /></small>}
+                {item.verifiedAt && <small>確認完成時間 · <WorkTime value={item.verifiedAt} /></small>}
+              </div>
+              <button type="button" aria-label={`唯讀查看 SKU ${item.sellerSku}`} disabled={busy}
+                aria-busy={openingSellerSku === item.sellerSku} onClick={() => onOpen(item)}>
+                {openingSellerSku === item.sellerSku ? "正在讀取 Amazon…" : "唯讀查看／繼續處理"}
+              </button>
+            </li>)}</ul>}
+        </>}
+      </div>
+    </details>
   </section>;
 }
