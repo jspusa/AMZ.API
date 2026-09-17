@@ -570,9 +570,48 @@
   border-radius: 14px;
   background: #f7faff;
 }
-.business-pricing-recent-work header,
+.business-pricing-recent-work-disclosure > summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 12px;
+  cursor: pointer;
+  list-style: none;
+}
+.business-pricing-recent-work-disclosure > summary::-webkit-details-marker { display: none; }
+.business-pricing-recent-work-disclosure > summary::after {
+  content: "＋";
+  color: #315c86;
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 1;
+}
+.business-pricing-recent-work-disclosure[open] > summary::after { content: "−"; }
+.business-pricing-recent-work-disclosure > summary:focus-visible {
+  border-radius: 8px;
+  outline: 3px solid rgba(30, 119, 190, .24);
+  outline-offset: 4px;
+}
+.business-pricing-recent-work-summary-copy { display: grid; gap: 4px; min-width: 0; }
+.business-pricing-recent-work-title { color: #25252a; font-size: 13px; font-weight: 850; }
+.business-pricing-recent-work-summary-meta { color: #616977; font-size: 11px; line-height: 1.5; }
+.business-pricing-recent-work-summary-state {
+  padding: 4px 8px;
+  border: 1px solid #d4e0ed;
+  border-radius: 999px;
+  background: #fff;
+  color: #315c86;
+  font-size: 10px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+.business-pricing-recent-work-body {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid #dce4ed;
+}
+.business-pricing-recent-work-toolbar,
 .business-pricing-recent-work li { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
-.business-pricing-recent-work h4 { margin: 0; font-size: 13px; }
 .business-pricing-recent-work p { margin: 6px 0; color: #616977; font-size: 11px; line-height: 1.5; }
 .business-pricing-recent-work ul { display: grid; gap: 8px; padding: 0; margin: 12px 0 0; list-style: none; }
 .business-pricing-recent-work li { padding-top: 10px; border-top: 1px solid #dce4ed; }
@@ -584,7 +623,7 @@
 .business-pricing-recent-work button { flex-shrink: 0; min-height: 34px; padding: 6px 10px; border: 1px solid #cbd8e8; border-radius: 8px; background: #fff; color: #315c86; font-size: 11px; cursor: pointer; }
 .business-pricing-recent-work button:disabled { opacity: .5; cursor: default; }
 @media (max-width: 600px) {
-  .business-pricing-recent-work header,
+  .business-pricing-recent-work-toolbar,
   .business-pricing-recent-work li { flex-direction: column; }
 }
 

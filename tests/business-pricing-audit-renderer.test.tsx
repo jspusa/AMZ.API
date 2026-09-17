@@ -507,6 +507,14 @@ describe("FBA business pricing audit renderer", () => {
         marketplaceId: "ATVPDKIKX0DER", marketplaceShort: "US",
       }));
     });
+    const recentWorkDisclosure = renderer!.root.findByProps({
+      className: "business-pricing-recent-work-disclosure",
+    });
+    expect(recentWorkDisclosure.type).toBe("details");
+    expect(recentWorkDisclosure.props.open).toBeUndefined();
+    expect(recentWorkDisclosure.findByProps({
+      className: "business-pricing-recent-work-summary-state",
+    }).children).toEqual(["1 筆紀錄"]);
     expect(JSON.stringify(renderer!.toJSON())).toContain("近期 B2B 工作");
     expect(JSON.stringify(renderer!.toJSON())).toContain("送出結果不明");
     await act(async () => renderer!.root.findByProps({
