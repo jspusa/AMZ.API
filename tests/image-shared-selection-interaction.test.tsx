@@ -78,3 +78,61 @@ it("keeps a filename parent visible but blocks it while offering only FBA childr
   expect(JSON.stringify(renderer!.toJSON())).toContain("系列資料未完整");
   expect(renderer!.root.findAllByProps({ "aria-label": "PARENT_09.jpg 套用至 PARENT" })).toHaveLength(0);
 });
+
+async function mountSuggestions(files = [image("AFA21AM_09.jpg")], response = family) {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true); vi.stubGlobal("window", {});
+  const fetchMock = vi.fn(async () => Response.json(response)); vi.stubGlobal("fetch", fetchMock);
+  let rows: ImageFolderRow[] = [];
+  await act(async () => { renderer = create(<ImageSharedSelection files={files} marketplaceId={marketplaceId} disabled={false} onRowsChange={value => { rows = value; }} onBusyChange={() => undefined} />); });
+  return { rows: () => rows, fetchMock };
+}
+
+it("selects all suggestions and clears suggested selections while preserving manually added exact SKUs", async () => {
+  const { rows, fetchMock } = await mountSuggestions(undefined, { ...family, children: [...family.children, member("AFA23AM")] });
+  await act(async () => renderer!.root.findByProps({ "aria-label": "套用 SKU：AFA21AM_09.jpg" }).props.onChange({ target: { value: "AFA21AM\nManual-SKU\nAFA23AM" } }));
+  const all = () => renderer!.root.findByProps({ "aria-label": "全選同系列建議：AFA21AM_09.jpg" });
+  const clear = () => renderer!.root.findByProps({ "aria-label": "取消全選同系列建議：AFA21AM_09.jpg" });
+  expect(all().props.disabled).toBe(false);
+  await act(async () => all().props.onClick());
+  expect(rows().map(row => row.sellerSku)).toEqual(["AFA21AM", "Manual-SKU", "AFA23AM", "AFA22AM"]);
+  expect(all().props.disabled).toBe(true);
+  await act(async () => clear().props.onClick());
+  expect(rows().map(row => row.sellerSku)).toEqual(["Manual-SKU", "AFA23AM"]);
+  expect(clear().props.disabled).toBe(true);
+  expect(renderer!.root.findByProps({ "aria-label": "AFA21AM_09.jpg 套用至 AFA23AM" }).props.checked).toBe(true);
+  expect(fetchMock).toHaveBeenCalledOnce();
+});
+
+it("enforces the whole-batch 30 distinct SKU cap without blocking a SKU already assigned to another image", async () => {
+  const { rows } = await mountSuggestions([image("AFA21AM_09.jpg"), image("shared.jpg")]);
+  const other = Array.from({ length: 29 }, (_, index) => `MANUAL-${index + 1}`);
+  await act(async () => renderer!.root.findByProps({ "aria-label": "套用 SKU：shared.jpg" }).props.onChange({ target: { value: other.join("\n") } }));
+  const all = () => renderer!.root.findByProps({ "aria-label": "全選同系列建議：AFA21AM_09.jpg" });
+  const sibling = () => renderer!.root.findByProps({ "aria-label": "AFA21AM_09.jpg 套用至 AFA22AM" });
+  expect(all().props.disabled).toBe(true);
+  expect(sibling().props.disabled).toBe(true);
+  await act(async () => all().props.onClick());
+  expect(rows().map(row => row.sellerSku)).not.toContain("AFA22AM");
+  expect(JSON.stringify(renderer!.toJSON())).toContain("每批最多 30 個不同 SKU");
+  await act(async () => renderer!.root.findByProps({ "aria-label": "套用 SKU：shared.jpg" }).props.onChange({ target: { value: ["AFA22AM", ...other.slice(1)].join("\n") } }));
+  expect(all().props.disabled).toBe(false);
+  expect(sibling().props.disabled).toBe(false);
+  await act(async () => all().props.onClick());
+  expect(rows().find(row => row.sellerSku === "AFA22AM")?.fileCount).toBe(2);
+  expect(new Set(rows().map(row => row.sellerSku)).size).toBe(30);
+});
+
+it("presents one associated whole-row label per suggestion and keeps incomplete-family bulk selection unavailable", async () => {
+  await mountSuggestions(undefined, { ...family, familyComplete: false });
+  const list = renderer!.root.findByProps({ "aria-label": "同系列商品清單：AFA21AM_09.jpg" });
+  expect(list.type).toBe("ul");
+  expect(list.findAllByType("li")).toHaveLength(2);
+  const row = list.findAllByType("label")[1];
+  const checkbox = row.findByType("input");
+  expect(row.props.htmlFor).toBe(checkbox.props.id);
+  expect(row.findByType("strong").children).toEqual(["AFA22AM"]);
+  expect(row.findByType("span").children).toEqual(["Product AFA22AM"]);
+  expect(row.findByType("small").children).toEqual(["B000000001"]);
+  expect(renderer!.root.findByProps({ "aria-label": "全選同系列建議：AFA21AM_09.jpg" }).props.disabled).toBe(true);
+  expect(checkbox.props.disabled).toBe(false);
+});

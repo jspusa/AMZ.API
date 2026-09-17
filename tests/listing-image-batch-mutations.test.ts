@@ -47,7 +47,7 @@ async function setup(overrides: Partial<Pick<ListingImageBatchDependencies, "rea
   };
   const assertPreparedImageUrls = vi.fn(async (_input: Parameters<ListingImageBatchDependencies["assertPreparedImageUrls"]>[0]) => (overrides.now ?? Date.now)() + 60 * 60_000);
   const owner = new ListingImageBatchMutations({ context, writeGate, operations: createListingImageMutationOperations(gateway), assertPreparedImageUrls, readbackDelaysMs: [0], ...overrides });
-  return { owner, gateway, approveWrite, canonical, context, writeGate, assertPreparedImageUrls, directory };
+  return { owner, gateway, approveWrite, canonical, context, writeGate, assertPreparedImageUrls, directory, store };
 }
 
 async function previewSkus(owner: ListingImageBatchMutations, skus = ["AFA12AM", "AFA13AM"]): Promise<ListingImageBatchSnapshot> {
@@ -73,8 +73,94 @@ describe("image folder batch main owner", () => {
     const response = await owner.handle({ operation: "capabilities", request: request("GET") });
     expect(response).toMatchObject({ status: 200, body: { kind: "json", value: {
       capability: "listing-image-batch-v1", replacementMode: "complete", selectedSlotReplacement: true,
-      maxSkus: 30, maxImagesPerSku: 10, confirmationMode: "native", readbackRecovery: "exact-sku-v1",
+      maxSkus: 30, maxImagesPerSku: 10, confirmationMode: "native", readbackRecovery: "exact-sku-v1", previewProgress: "batch-v1",
     } } });
+    expect(gateway.read).not.toHaveBeenCalled();
+    expect(assertPreparedImageUrls).not.toHaveBeenCalled();
+  });
+
+  it("publishes actual asynchronous preview progress while keeping all exact rows observable", async () => {
+    const { owner, gateway, approveWrite } = await setup();
+    const read = vi.mocked(gateway.read).getMockImplementation()!;
+    let release!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    vi.mocked(gateway.read).mockImplementation(async (...args) => {
+      if (args[0].sellerSku === "AFA13AM") await held;
+      return read(...args);
+    });
+    const response = await owner.handle({ operation: "preview", request: request("POST", {
+      marketplaceId, replacementMode: "complete", asyncPreview: true,
+      rows: ["AFA12AM", "AFA13AM"].map(sellerSku => ({ sellerSku, urls: proposed(sellerSku) })),
+    }) });
+    expect(response.status).toBe(202);
+    const started = value(response);
+    expect(started).toMatchObject({ phase: "preparing", previewProgress: { checkedSkus: 0, totalSkus: 2 },
+      rows: [{ sellerSku: "AFA12AM", state: "checking" }, { sellerSku: "AFA13AM", state: "checking" }] });
+    const observe = () => owner.handle({ operation: "observe", request: request("GET", {}, { marketplaceId, batchId: started.batchId }) });
+    await vi.waitFor(async () => expect(value(await observe())).toMatchObject({ phase: "preparing",
+      previewProgress: { checkedSkus: 1, totalSkus: 2, currentSku: "AFA13AM" },
+      rows: [{ state: "ready" }, { state: "checking" }] }));
+    expect((await submit(owner, started)).status).toBe(409);
+    expect((await owner.handle({ operation: "preview", request: request("POST", {
+      marketplaceId, replacementMode: "complete", rows: [{ sellerSku: "AFA14AM", urls: proposed("AFA14AM") }],
+    }) })).status).toBe(409);
+    release();
+    await vi.waitFor(async () => expect(value(await observe())).toMatchObject({ phase: "ready",
+      previewProgress: { checkedSkus: 2, totalSkus: 2, currentSku: null }, totals: { ready: 2 } }));
+    expect(gateway.commitOnce).not.toHaveBeenCalled();
+    expect(approveWrite).not.toHaveBeenCalled();
+  });
+
+  it("stops an async preview on a global read failure without leaving rows eligible for submission", async () => {
+    const { owner, gateway, writeGate, approveWrite } = await setup();
+    const read = vi.mocked(gateway.read).getMockImplementation()!;
+    vi.mocked(gateway.read).mockImplementation(async (...args) => {
+      if (args[0].sellerSku === "AFA13AM") throw new SpApiError("Access denied", { status: 403, code: "AUTH_FORBIDDEN" });
+      return read(...args);
+    });
+    const stage = vi.spyOn(writeGate, "stagePreview");
+    const response = await owner.handle({ operation: "preview", request: request("POST", {
+      marketplaceId, replacementMode: "complete", asyncPreview: true,
+      rows: ["AFA12AM", "AFA13AM", "AFA14AM"].map(sellerSku => ({ sellerSku, urls: proposed(sellerSku) })),
+    }) });
+    expect(response.status).toBe(202);
+    const stopped = await terminal(owner, value(response));
+    expect(stopped).toMatchObject({ phase: "stopped", totals: { ready: 0, submitted: 0 }, previewProgress: { currentSku: null } });
+    expect(stopped.rows.every(row => row.state === "blocked")).toBe(true);
+    expect(vi.mocked(gateway.read).mock.calls.some(([identity]) => identity.sellerSku === "AFA14AM")).toBe(false);
+    expect(stage).not.toHaveBeenCalled();
+    expect(approveWrite).not.toHaveBeenCalled();
+    expect(gateway.commitOnce).not.toHaveBeenCalled();
+  });
+
+  it("does not resurrect asynchronous preview work after its security context is cleared", async () => {
+    const { owner, gateway, writeGate } = await setup();
+    const read = vi.mocked(gateway.read).getMockImplementation()!;
+    let release!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    vi.mocked(gateway.read).mockImplementation(async (...args) => { await held; return read(...args); });
+    const stage = vi.spyOn(writeGate, "stagePreview");
+    const response = await owner.handle({ operation: "preview", request: request("POST", {
+      marketplaceId, replacementMode: "complete", asyncPreview: true,
+      rows: ["AFA12AM", "AFA13AM"].map(sellerSku => ({ sellerSku, urls: proposed(sellerSku) })),
+    }) });
+    expect(response.status).toBe(202);
+    await vi.waitFor(() => expect(gateway.read).toHaveBeenCalledOnce());
+    owner.clear(); writeGate.clearEphemeral(); release();
+    await vi.waitFor(async () => expect((await owner.handle({ operation: "observe", request: request("GET", {}, {
+      marketplaceId, batchId: value(response).batchId,
+    }) })).status).toBe(410));
+    expect(vi.mocked(gateway.read).mock.calls.some(([identity]) => identity.sellerSku === "AFA13AM")).toBe(false);
+    expect(stage).not.toHaveBeenCalled();
+  });
+
+  it.each([false, null, "true", 1])("rejects malformed async preview opt-in %s before reading Amazon", async asyncPreview => {
+    const { owner, gateway, assertPreparedImageUrls } = await setup();
+    const response = await owner.handle({ operation: "preview", request: request("POST", {
+      marketplaceId, replacementMode: "complete", asyncPreview,
+      rows: [{ sellerSku: "AFA12AM", urls: proposed("AFA12AM") }],
+    }) });
+    expect(response.status).toBe(400);
     expect(gateway.read).not.toHaveBeenCalled();
     expect(assertPreparedImageUrls).not.toHaveBeenCalled();
   });
@@ -185,7 +271,9 @@ describe("image folder batch main owner", () => {
     await owner.handle({ operation: "commit", request: request("PATCH", {
       marketplaceId, batchId: review.batchId, reviewToken: review.reviewToken, selectedSlotsAcknowledged: true,
     }) });
-    expect(await terminal(owner, review)).toMatchObject({ phase: "stopped", rows: [{ state: "unknown" }, { state: "not-started" }] });
+    const uncertain = await terminal(owner, review);
+    expect(uncertain).toMatchObject({ phase: "stopped", rows: [{ state: "unknown" }, { state: "not-started" }] });
+    expect(uncertain.blockedByPreviousWrite).toBeUndefined();
     const another = await previewSkus(owner);
     await submit(owner, another);
     expect(await terminal(owner, another)).toMatchObject({ phase: "stopped", totals: { submitted: 0 } });
@@ -420,6 +508,81 @@ describe("image folder batch main owner", () => {
     expect(await terminal(owner, again)).toMatchObject({ phase: "stopped", totals: { submitted: 0 } });
     expect(gateway.commitOnce).toHaveBeenCalledTimes(2);
     expect(approveWrite).toHaveBeenCalledOnce();
+  });
+
+  it.each([1, 10])("marks a new %i-SKU selected-slot batch unsent when an older accepted batch blocks it before native approval", async count => {
+    const { owner, gateway, approveWrite, canonical } = await setup();
+    const skus = Array.from({ length: count }, (_, index) => `AFA${21 + index}AM`);
+    vi.mocked(gateway.commitOnce).mockImplementation(async (_patch, fence) => {
+      await fence.assertCurrent();
+      return { ok: true, status: 200, requestId: null, retryAfter: null, payload: { status: "ACCEPTED", issues: [], submissionId: "older-processing" } };
+    });
+    const older = value(await owner.handle({ operation: "preview", request: request("POST", {
+      marketplaceId, replacementMode: "complete", rows: skus.map(sellerSku => ({ sellerSku,
+        urls: [...Array.from({ length: 9 }, (_, index) => `https://images.example.com/${sellerSku}-older-${index + 1}.jpg`), null] })),
+    }) }));
+    await submit(owner, older);
+    expect((await terminal(owner, older)).totals).toMatchObject({ accepted: count, verified: 0 });
+    approveWrite.mockClear(); vi.mocked(gateway.commitOnce).mockClear();
+    const fresh = value(await owner.handle({ operation: "preview", request: request("POST", {
+      marketplaceId, replacementMode: "selected-slots", rows: skus.map(sellerSku => ({ sellerSku,
+        urls: [...Array<null>(8).fill(null), `https://images.example.com/${sellerSku}-shared-new.jpg`, null] })),
+    }) }));
+    expect(fresh.totals.ready).toBe(count);
+    expect((await owner.handle({ operation: "commit", request: request("PATCH", {
+      marketplaceId, batchId: fresh.batchId, reviewToken: fresh.reviewToken, selectedSlotsAcknowledged: true,
+    }) })).status).toBe(202);
+    const stopped = await terminal(owner, fresh);
+    expect(stopped).toMatchObject({ phase: "stopped", blockedByPreviousWrite: true, message: "前一次送出結果尚未確認。系統已禁止重送，請先回查 Amazon 狀態。", totals: { ready: 0, submitted: 0 } });
+    expect(approveWrite).not.toHaveBeenCalled();
+    expect(gateway.commitOnce).not.toHaveBeenCalled();
+    expect(stopped.rows).toEqual(skus.map(sellerSku => expect.objectContaining({ sellerSku, state: "not-started", code: "UPDATE_STATUS_UNKNOWN" })));
+    const reads = vi.mocked(gateway.read).mock.calls.length;
+    expect(value(await owner.handle({ operation: "observe", request: request("GET", {}, {
+      marketplaceId, batchId: fresh.batchId, refresh: "true",
+    }) })).batchId).toBe(fresh.batchId);
+    expect(gateway.read).toHaveBeenCalledTimes(reads);
+    const recovered = value(await owner.handle({ operation: "recover", request: request("GET", {}, {
+      marketplaceId, recoverSkus: JSON.stringify(skus),
+    }) }));
+    expect(recovered.batchId).not.toBe(fresh.batchId);
+    const historical = await terminal(owner, recovered);
+    expect(historical.totals).toMatchObject({ accepted: count, verified: 0 });
+    expect(historical.rows.map(row => row.requestedUrls)).toEqual(older.rows.map(row => row.requestedUrls));
+    expect(gateway.read).toHaveBeenCalledTimes(reads + count);
+    for (const row of older.rows) canonical.set(row.sellerSku, row.requestedUrls);
+    await owner.handle({ operation: "observe", request: request("GET", {}, { marketplaceId, batchId: recovered.batchId, refresh: "true" }) });
+    expect((await terminal(owner, recovered)).totals).toMatchObject({ accepted: count, verified: count });
+    expect(approveWrite).not.toHaveBeenCalled();
+    expect(gateway.commitOnce).not.toHaveBeenCalled();
+  });
+
+  it.each(["content-only", "mixed", "inspection-unavailable"] as const)("does not misdirect a %s Listing blocker into image-only recovery", async scenario => {
+    const { owner, gateway, approveWrite, context, store, writeGate } = await setup();
+    if (scenario === "mixed") {
+      vi.mocked(gateway.commitOnce).mockImplementation(async (_patch, fence) => {
+        await fence.assertCurrent();
+        return { ok: true, status: 200, requestId: null, retryAfter: null, payload: { status: "ACCEPTED", issues: [], submissionId: "older-image" } };
+      });
+      const older = await previewSkus(owner, ["AFA13AM"]);
+      await submit(owner, older);
+      expect((await terminal(owner, older)).totals.accepted).toBe(1);
+    }
+    await expect(store.runIdempotentOperation({ idempotencyKey: `prior-content-${scenario}`, operationType: "content", marketplaceId,
+      sellerSku: "AFA12AM", accountScope: (await context.capture(marketplaceId)).accountScope, fingerprint: "prior-content-change",
+      execute: async () => { throw new SpApiError("Content response lost", { status: 503, code: "UPDATE_STATUS_UNKNOWN" }); },
+    })).rejects.toMatchObject({ code: "UPDATE_STATUS_UNKNOWN" });
+    const fresh = await previewSkus(owner, scenario === "mixed" ? ["AFA13AM", "AFA12AM"] : ["AFA12AM"]);
+    if (scenario === "inspection-unavailable") vi.spyOn(writeGate, "inspect").mockRejectedValue(new Error("Store unavailable"));
+    approveWrite.mockClear(); vi.mocked(gateway.commitOnce).mockClear();
+    await submit(owner, fresh);
+    const stopped = await terminal(owner, fresh);
+    expect(stopped.blockedByPreviousWrite).toBeUndefined();
+    expect(stopped).toMatchObject({ phase: "stopped", totals: { ready: 0, submitted: 0 } });
+    expect(stopped.message).toContain("先前 Listing／文案更新仍待確認");
+    expect(stopped.rows.every(row => row.state === "not-started" && row.code === "LISTING_WRITE_RECOVERY_REQUIRED")).toBe(true);
+    expect(approveWrite).not.toHaveBeenCalled();
+    expect(gateway.commitOnce).not.toHaveBeenCalled();
   });
 
   it("refreshes an accepted terminal batch from fresh canonical GET after Amazon finishes later", async () => {

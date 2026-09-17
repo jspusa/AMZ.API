@@ -957,6 +957,13 @@
 .image-folder-workspace p { margin: 8px 0 14px; }
 .image-folder-workspace button { min-height: 42px; padding: 9px 16px; border: 1px solid var(--border, #cfd8e4); border-radius: 8px; font: inherit; cursor: pointer; }
 .image-folder-workspace button:disabled { cursor: default; opacity: .5; }
+.image-batch-progress { position: sticky; top: var(--image-progress-top, 12px); z-index: 4; display: grid; grid-template-columns: 1fr auto; gap: 6px 16px; margin: 12px 0 20px; padding: 16px 18px; border: 1px solid var(--border, #cfd8e4); border-left: 4px solid #50816e; border-radius: 10px; background: var(--surface, #fff); box-shadow: 0 4px 16px rgb(0 0 0 / 8%); }
+.image-batch-progress > strong { grid-column: 1 / -1; font-size: 16px; }
+.image-batch-progress > span { overflow-wrap: anywhere; color: var(--muted, #506579); }
+.image-batch-progress > span:first-of-type { grid-column: 1 / -1; }
+.image-batch-progress progress { align-self: center; width: 100%; height: 12px; accent-color: #50816e; }
+.image-folder-prior-blocker { margin: 18px 0; padding: 18px; border: 1px solid var(--border, #cfd8e4); border-left: 4px solid #a37a2c; border-radius: 10px; background: var(--surface-soft, #f7f9fc); }
+.image-folder-prior-blocker h3 { margin: 20px 0 12px; font-size: 16px; }
 .image-folder-temporary { padding: 12px 16px; border-left: 3px solid #50816e; border-radius: 6px; background: var(--surface-soft, #f2f7f5); color: var(--muted, #506579); }
 .image-folder-drop { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 26px 18px; border: 2px dashed var(--border, #bdcbd9); border-radius: 12px; background: var(--surface-soft, #f7f9fc); text-align: center; }
 .image-folder-drop > strong { font-size: 18px; }

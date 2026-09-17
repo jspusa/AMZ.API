@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type { ImageFolderRow } from "../image-folder-import";
 import { buildSharedImageRows, inspectLooseImages, parseManualImageSkus, type LooseImageDraft } from "../image-loose-import";
 import { parseVariationFamilyResponse, type VariationFamilyView, type VariationMemberView } from "../variation-planner";
 
 type FamilyLookup = { status: "loading" | "complete" | "failed"; family?: VariationFamilyView; message?: string };
+type ImageSelection = LooseImageDraft & { manualSkus: readonly string[] };
 
 function Thumbnail({ file }: { file: File }) {
   const [url, setUrl] = useState<string | null>(null);
@@ -31,7 +32,8 @@ export default function ImageSharedSelection({ files, marketplaceId, disabled, o
   onBusyChange: (busy: boolean) => void;
 }) {
   const inspected = useMemo(() => inspectLooseImages(files), [files]);
-  const [images, setImages] = useState<LooseImageDraft[]>(inspected.images);
+  const [images, setImages] = useState<ImageSelection[]>(() => inspected.images.map(image => ({ ...image, manualSkus: [] })));
+  const selectionId = useId();
   const [families, setFamilies] = useState<Record<string, FamilyLookup>>({});
   const [invalidated, setInvalidated] = useState(false);
   const generation = useRef(0);
@@ -44,7 +46,7 @@ export default function ImageSharedSelection({ files, marketplaceId, disabled, o
   }), [images, families]);
   useEffect(() => { callbacks.current.onRowsChange(rows); }, [rows]);
   useEffect(() => {
-    setImages(inspected.images); setFamilies({}); setInvalidated(false);
+    setImages(inspected.images.map(image => ({ ...image, manualSkus: [] }))); setFamilies({}); setInvalidated(false);
     const revision = ++generation.current;
     const request = new AbortController(); abortRef.current = request;
     const seeds = [...new Set(inspected.images.filter(image => !image.errors.length).map(image => image.seedSku).filter((sku): sku is string => sku !== null))];
@@ -89,8 +91,32 @@ export default function ImageSharedSelection({ files, marketplaceId, disabled, o
 
   const change = (id: string, update: Partial<LooseImageDraft>) => {
     if (disabled || invalidated) return;
-    setImages(previous => previous.map(image => image.id === id ? { ...image, ...update } : image));
+    setImages(previous => previous.map(image => {
+      if (image.id !== id) return image;
+      if (update.targets === undefined) return { ...image, ...update };
+      const previousLines = image.targets.split(/\r?\n/u);
+      // Manual additions remain selected when the operator clears family suggestions.
+      const manualSkus = update.targets.split(/\r?\n/u).filter(sku => sku !== "" && (image.manualSkus.includes(sku) || !previousLines.includes(sku)));
+      return { ...image, ...update, manualSkus };
+    }));
   };
+  const selectSuggestions = (id: string, skus: readonly string[], selected: boolean, preserveManual = false) => {
+    if (disabled || invalidated) return;
+    setImages(previous => {
+      const target = previous.find(image => image.id === id);
+      if (!target) return previous;
+      const parsed = parseManualImageSkus(target.targets);
+      if (parsed.error) return previous;
+      const lists = previous.map(image => parseManualImageSkus(image.targets));
+      if (selected && (lists.some(list => list.error) || new Set([...lists.flatMap(list => list.skus), ...skus]).size > 30)) return previous;
+      const targets = selected ? [...new Set([...parsed.skus, ...skus])]
+        : parsed.skus.filter(sku => !skus.includes(sku) || (preserveManual && target.manualSkus.includes(sku)));
+      return previous.map(image => image.id === id ? { ...image, targets: targets.join("\n"), manualSkus: image.manualSkus.filter(sku => targets.includes(sku)) } : image);
+    });
+  };
+  const parsedLists = images.map(image => parseManualImageSkus(image.targets));
+  const assignedSkus = new Set(parsedLists.flatMap(list => list.skus));
+  const invalidManualList = parsedLists.some(list => list.error);
   return <section className="image-shared-selection" aria-label="共用圖片與 SKU 選擇">
     <p>每張圖片可套用到多個 SKU；只更換選定位置，其餘圖片保留。檔名中的 01–10 會自動帶入位置，同系列商品仍由你勾選。</p>
     {inspected.error && <p role="alert" className="price-error">{inspected.error}</p>}
@@ -99,6 +125,12 @@ export default function ImageSharedSelection({ files, marketplaceId, disabled, o
       const parsed = parseManualImageSkus(image.targets);
       const lookup = image.seedSku ? families[image.seedSku] : undefined;
       const family = lookup?.family;
+      const suggested = family ? candidates(family) : [];
+      const suggestedSkus = suggested.map(candidate => candidate.sellerSku);
+      const allSelected = suggestedSkus.every(sku => parsed.skus.includes(sku));
+      const exceedsLimit = new Set([...assignedSkus, ...suggestedSkus]).size > 30;
+      const canSelectAll = !disabled && !invalidated && !invalidManualList && Boolean(family?.familyComplete) && suggested.length > 0 && !allSelected && !exceedsLimit;
+      const canClearAll = !disabled && !invalidated && !parsed.error && suggestedSkus.some(sku => parsed.skus.includes(sku) && !image.manualSkus.includes(sku));
       return <article className="image-shared-item" key={image.id}>
         <div className="image-shared-file"><Thumbnail file={image.file} /><strong>{image.file.name}</strong>
           <button type="button" disabled={disabled || invalidated} aria-label={`移除圖片：${image.file.name}`} onClick={() => { if (!disabled && !invalidated) setImages(previous => previous.filter(item => item.id !== image.id)); }}>移除此圖</button>
@@ -116,15 +148,27 @@ export default function ImageSharedSelection({ files, marketplaceId, disabled, o
         {lookup?.status === "failed" && <p role="status">☆ {lookup.message}</p>}
         {family && <div className="image-shared-suggestions">
           <p>★ {family.mode === "demo" ? "展示" : "Amazon"} 同系列建議 · {image.seedSku}（勾選才會加入）</p>
-          {!family.familyComplete && <p role="status">☆ 系列資料未完整，以下僅顯示已讀取商品；可手工補入其他完整 SKU。</p>}
+          <div className="image-shared-selection-actions">
+            <button type="button" aria-label={`全選同系列建議：${image.file.name}`} disabled={!canSelectAll} onClick={() => { if (canSelectAll) selectSuggestions(image.id, suggestedSkus, true); }}>全選</button>
+            <button type="button" aria-label={`取消全選同系列建議：${image.file.name}`} disabled={!canClearAll} onClick={() => { if (canClearAll) selectSuggestions(image.id, suggestedSkus, false, true); }}>取消全選</button>
+            <span>建議已選 {suggestedSkus.filter(sku => parsed.skus.includes(sku)).length}／{suggested.length} · 本批 {assignedSkus.size}／30 個 SKU</span>
+          </div>
+          <p className="image-shared-selection-help">點選整列即可勾選或取消；取消全選時，手動加入的 SKU 會保留。</p>
+          {exceedsLimit && <p role="status">☆ 每批最多 30 個不同 SKU；全選會超過上限，請逐筆選擇或先減少本批 SKU。</p>}
+          {invalidManualList && <p role="status">☆ 請先修正手動 SKU 清單，再加入同系列建議。</p>}
+          {!family.familyComplete && <p role="status">☆ 系列資料未完整，暫不提供全選；請逐筆勾選已讀取商品，或手工補入其他完整 SKU。</p>}
           {family.excludedChildren.length > 0 && <p>☆ {family.excludedChildren.length} 個商品未能確認為可用 FBA 建議。</p>}
           {family.queried.role === "parent" && <p>☆ 檔名 SKU 是父商品，請改選要更新的 FBA 子商品。</p>}
-          <div className="image-shared-candidates">{candidates(family).map(candidate => <label key={candidate.sellerSku}>
-            <input type="checkbox" aria-label={`${image.file.name} 套用至 ${candidate.sellerSku}`} checked={parsed.skus.includes(candidate.sellerSku)} disabled={disabled || invalidated || Boolean(parsed.error)} onChange={event => {
-              if (parsed.error) return;
-              change(image.id, { targets: (event.target.checked ? [...parsed.skus.filter(sku => sku !== candidate.sellerSku), candidate.sellerSku] : parsed.skus.filter(sku => sku !== candidate.sellerSku)).join("\n") });
-            }} /> <strong>{candidate.sellerSku}</strong><span>{candidate.title}</span><small>{candidate.asin ?? "ASIN 未提供"}</small>
-          </label>)}</div>
+          <ul className="image-shared-candidates" aria-label={`同系列商品清單：${image.file.name}`}>{suggested.map((candidate, index) => {
+            const checked = parsed.skus.includes(candidate.sellerSku);
+            const unavailable = disabled || invalidated || Boolean(parsed.error) || (!checked && (invalidManualList || (!assignedSkus.has(candidate.sellerSku) && assignedSkus.size >= 30)));
+            const checkboxId = `${selectionId}-${image.id}-${index}`;
+            return <li key={candidate.sellerSku}><label htmlFor={checkboxId} data-selected={checked} data-disabled={unavailable}>
+              <input id={checkboxId} type="checkbox" aria-label={`${image.file.name} 套用至 ${candidate.sellerSku}`} checked={checked} disabled={unavailable} onChange={event => {
+                if (!unavailable) selectSuggestions(image.id, [candidate.sellerSku], event.target.checked);
+              }} /><strong>{candidate.sellerSku}</strong><span>{candidate.title}</span><small>{candidate.asin ?? "ASIN 未提供"}</small>
+            </label></li>;
+          })}</ul>
         </div>}
       </article>;
     })}

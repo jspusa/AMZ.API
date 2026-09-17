@@ -44,6 +44,8 @@ type BatchPlan = {
   replacementMode: ListingImageReplacementMode;
   phase: ListingImageBatchSnapshot["phase"]; rows: PlanRow[]; message: string | null;
   lastReadbackAt: string | null;
+  previewProgress?: ListingImageBatchSnapshot["previewProgress"];
+  blockedByPreviousWrite?: true;
 };
 const PREVIEW_TTL_MS = 15 * 60_000;
 const TERMINAL_TTL_MS = 24 * 60 * 60_000;
@@ -57,7 +59,7 @@ function isolatedPreviewFailure(error: unknown): error is SpApiError {
     && ![401, 403, 429].includes(error.status) && ISOLATED_PREVIEW_CODES.has(error.code);
 }
 const capabilities: ListingImageBatchCapabilities = Object.freeze({
-  capability: "listing-image-batch-v1", maxSkus: 30, maxImagesPerSku: 10, replacementMode: "complete", selectedSlotReplacement: true, confirmationMode: "native", readbackRecovery: "exact-sku-v1",
+  capability: "listing-image-batch-v1", maxSkus: 30, maxImagesPerSku: 10, replacementMode: "complete", selectedSlotReplacement: true, confirmationMode: "native", readbackRecovery: "exact-sku-v1", previewProgress: "batch-v1",
 });
 
 function exactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
@@ -146,9 +148,12 @@ export class ListingImageBatchMutations implements ListingImageBatchMutationsPor
 
   private snapshot(plan: BatchPlan): ListingImageBatchSnapshot {
     const rows = plan.rows.map(row => structuredClone(row.public));
+    const { previewProgress: _progressCapability, ...snapshotCapabilities } = capabilities;
     return {
-      ...capabilities, batchId: plan.batchId, reviewToken: plan.reviewToken, marketplaceId: plan.context.marketplaceId,
+      ...snapshotCapabilities, batchId: plan.batchId, reviewToken: plan.reviewToken, marketplaceId: plan.context.marketplaceId,
       mode: plan.context.mode, replacementMode: plan.replacementMode, phase: plan.phase, lastReadbackAt: plan.lastReadbackAt, expiresAt: new Date(plan.expiresAt).toISOString(), rows, message: plan.message,
+      ...(plan.previewProgress ? { previewProgress: { ...plan.previewProgress } } : {}),
+      ...(plan.blockedByPreviousWrite ? { blockedByPreviousWrite: true as const } : {}),
       totals: { skus: rows.length, ready: rows.filter(row => row.state === "ready").length,
         blocked: rows.filter(row => row.state === "blocked").length, unchanged: rows.filter(row => row.state === "unchanged").length,
         submitted: rows.filter(row => ["accepted", "verified", "unknown", "rejected", "simulated"].includes(row.state)).length,
@@ -172,7 +177,8 @@ export class ListingImageBatchMutations implements ListingImageBatchMutationsPor
     const replacementMode = body?.replacementMode;
     if (replacementMode !== "complete" && replacementMode !== "selected-slots") return invalid("圖片批次更新方式無效。", 400, "INVALID_IMAGE_BATCH");
     const rows = parseRows(body?.rows, replacementMode);
-    if (!body || !exactKeys(body, ["marketplaceId", "replacementMode", "rows"]) || !marketplaceId || !rows) {
+    if (!body || !exactKeys(body, ["marketplaceId", "replacementMode", "rows", "asyncPreview"]) ||
+      (Object.hasOwn(body, "asyncPreview") && body.asyncPreview !== true) || !marketplaceId || !rows) {
       return invalid("請提供 1–30 個不同的完整 SKU 與十個明確圖片位置；完整替換需要主圖，指定位置至少需要一張圖片。", 400, "INVALID_IMAGE_BATCH");
     }
     const revision = this.revision;
@@ -185,24 +191,51 @@ export class ListingImageBatchMutations implements ListingImageBatchMutationsPor
     }
     while (this.plans.size >= 4) this.plans.delete(this.plans.keys().next().value!);
     const plan: BatchPlan = { batchId: `image-batch.${this.uuid()}`, reviewToken: `image-review.${this.uuid()}`, context,
-      replacementMode, expiresAt: this.now() + PREVIEW_TTL_MS, phase: "ready", rows: [], message: null, lastReadbackAt: null };
-    for (const row of rows) {
-      const pending: PlanRow = { input: { marketplaceId, sellerSku: row.sellerSku, expectedUrls: Array<null>(10).fill(null), urls: [...row.urls] }, preparedUrls: [...row.urls], preview: null,
+      replacementMode, expiresAt: this.now() + PREVIEW_TTL_MS, phase: "preparing", rows: rows.map(row => ({
+        input: { marketplaceId, sellerSku: row.sellerSku, expectedUrls: Array<null>(10).fill(null), urls: [...row.urls] }, preparedUrls: [...row.urls], preview: null,
         public: { sellerSku: row.sellerSku, asin: null, title: "", previousUrls: Array<null>(10).fill(null), requestedUrls: [...row.urls], changedSlots: [], deletedSlots: [],
-          state: "blocked", code: null, message: null, requestId: null, acceptedAt: null } };
+          state: "checking", code: null, message: null, requestId: null, acceptedAt: null } })), message: null, lastReadbackAt: null,
+      ...(body.asyncPreview ? { previewProgress: { checkedSkus: 0, totalSkus: rows.length, currentSku: null } } : {}) };
+    if (body.asyncPreview) {
+      this.plans.set(plan.batchId, plan);
+      void this.preparePlan(plan, revision).catch(error => {
+        if (revision !== this.revision || this.plans.get(plan.batchId) !== plan) return;
+        const failure = error instanceof MainWriteGateError ? error : error instanceof SpApiError
+          ? publicSpApiError(error, "圖片預檢未完成，尚未送出 Amazon 更新。") : null;
+        plan.phase = "stopped";
+        plan.message = failure?.message ?? "圖片預檢未完成，尚未送出 Amazon 更新。";
+        for (const row of plan.rows) {
+          if (["checking", "ready"].includes(row.public.state)) row.public = { ...row.public, state: "blocked", code: failure?.code ?? "IMAGE_BATCH_PREVIEW_FAILED", message: plan.message };
+        }
+        if (plan.previewProgress) plan.previewProgress = { ...plan.previewProgress, currentSku: null };
+        plan.expiresAt = this.now() + TERMINAL_TTL_MS;
+      });
+      return json(this.snapshot(plan), 202);
+    }
+    await this.preparePlan(plan, revision);
+    return json(this.snapshot(plan));
+  }
+
+  private async preparePlan(plan: BatchPlan, revision: number): Promise<void> {
+    const { context, replacementMode } = plan;
+    const marketplaceId = context.marketplaceId;
+    for (const pending of plan.rows) {
+      await this.fence(context, revision);
+      const sellerSku = pending.input.sellerSku;
+      if (plan.previewProgress) plan.previewProgress = { ...plan.previewProgress, currentSku: sellerSku };
       try {
         await this.preparedExpiry(pending, context, revision);
         await this.fence(context, revision);
-        const observation = await this.deps.operations.read({ marketplaceId, sellerSku: row.sellerSku });
+        const observation = await this.deps.operations.read({ marketplaceId, sellerSku });
         await this.fence(context, revision);
-        await this.deps.writeGate.reconcile({ context, marketplaceId, sellerSku: row.sellerSku, operations: ["images"], requireCurrent: true,
+        await this.deps.writeGate.reconcile({ context, marketplaceId, sellerSku, operations: ["images"], requireCurrent: true,
           snapshot: observation, project: (result, _operation, canonical) => reconcileImageWrite(result, canonical) });
         await this.fence(context, revision);
         const snapshot = observation.snapshot;
         if (snapshot.mode !== context.mode || snapshot.marketplaceId !== context.marketplaceId) throw new SpExecutionContextError("SP_CONTEXT_INVALIDATED", "圖片讀取結果不屬於目前帳號或站點。");
         const expectedUrls = snapshot.images.map(image => image.url);
-        const urls = replacementMode === "selected-slots" ? row.urls.map((url, index) => url ?? expectedUrls[index]) : [...row.urls];
-        const input: BoundInput = { marketplaceId, sellerSku: row.sellerSku, expectedUrls, urls,
+        const urls = replacementMode === "selected-slots" ? pending.preparedUrls.map((url, index) => url ?? expectedUrls[index]) : [...pending.preparedUrls];
+        const input: BoundInput = { marketplaceId, sellerSku, expectedUrls, urls,
           expectedImageIdentity: { asin: snapshot.asin!, productType: snapshot.productType } };
         const changedSlots = input.urls.flatMap((url, index) => url === input.expectedUrls[index] ? [] : [index + 1]);
         const deletedSlots = changedSlots.filter(slot => input.expectedUrls[slot - 1] && input.urls[slot - 1] === null);
@@ -221,15 +254,15 @@ export class ListingImageBatchMutations implements ListingImageBatchMutationsPor
         pending.public = { ...pending.public, state: error.code === "NO_CHANGES" ? "unchanged" : "blocked",
           code: publicError.code, message: publicError.message, requestId: publicError.requestId };
       }
-      plan.rows.push(pending);
+      if (plan.previewProgress) plan.previewProgress = { ...plan.previewProgress, checkedSkus: plan.previewProgress.checkedSkus + 1, currentSku: null };
     }
     await this.fence(context, revision);
     const sourceExpiry = await this.recheckReadySources(plan, revision);
     plan.expiresAt = Math.min(this.now() + PREVIEW_TTL_MS, sourceExpiry - LISTING_IMAGE_MIN_VALIDITY_MS);
     if (plan.rows.some(row => row.public.state === "ready")) await this.deps.writeGate.stagePreview(this.binding(plan));
     await this.fence(context, revision);
+    plan.phase = "ready";
     this.plans.set(plan.batchId, plan);
-    return json(this.snapshot(plan));
   }
 
   private async recheckReadySources(plan: BatchPlan, revision: number): Promise<number> {
@@ -456,10 +489,30 @@ export class ListingImageBatchMutations implements ListingImageBatchMutationsPor
     }
   }
 
+  private async hasImageRecoveryEvidence(plan: BatchPlan, revision: number): Promise<boolean> {
+    if (!this.deps.writeGate.inspect) return false;
+    let imageBlocker = false;
+    try {
+      for (const row of plan.rows.filter(item => item.public.state === "ready")) {
+        const unresolved = await this.deps.writeGate.inspect({ context: plan.context, marketplaceId: plan.context.marketplaceId,
+          sellerSku: row.input.sellerSku, operations: ["content", "images"], requireComplete: true,
+          project: entry => entry.state === "completed" ? null : entry.operationType });
+        await this.fence(plan.context, revision);
+        if (unresolved.includes("content")) return false;
+        if (unresolved.includes("images")) imageBlocker = true;
+      }
+      return imageBlocker;
+    } catch {
+      // Missing or incomplete evidence cannot authorize an image-specific recovery hint.
+      return false;
+    }
+  }
+
   private async execute(plan: BatchPlan, binding: WriteBinding, revision: number): Promise<void> {
     const controller = new AbortController();
     this.controllers.add(controller);
     let dispatchStopped = false;
+    let preApprovalStarted = false;
     try {
       await this.deps.writeGate.execute({
         binding,
@@ -471,6 +524,7 @@ export class ListingImageBatchMutations implements ListingImageBatchMutationsPor
           return `確認整批圖片｜${marketplaceById(plan.context.marketplaceId)?.code}｜${rows.length} SKU／${positions} 位置／清除 ${deleted}｜${scope}｜驗證碼 ${verificationCode}`;
         },
         beforeApproval: async () => {
+          preApprovalStarted = true;
           for (const row of plan.rows.filter(item => item.public.state === "ready")) {
             try {
               await this.fence(plan.context, revision);
@@ -568,9 +622,20 @@ export class ListingImageBatchMutations implements ListingImageBatchMutationsPor
     } catch (error) {
       // A cleared plan must never be reinserted or publish a late result.
       if (revision === this.revision && this.plans.get(plan.batchId) === plan) {
+        const priorWriteBlocked = !preApprovalStarted && error instanceof SpApiError && error.status === 409 && error.code === "UPDATE_STATUS_UNKNOWN";
+        const imageBlocker = priorWriteBlocked && await this.hasImageRecoveryEvidence(plan, revision);
+        if (revision !== this.revision || this.plans.get(plan.batchId) !== plan) return;
         plan.phase = "stopped";
         plan.message = error instanceof MainWriteGateError ? error.message : error instanceof SpApiError
           ? publicSpApiError(error, "圖片批次已停止，請重新核對未送出的商品。").message : "圖片批次已停止；請重新核對未送出的商品。";
+        if (imageBlocker) plan.blockedByPreviousWrite = true;
+        else if (priorWriteBlocked) plan.message = "先前 Listing／文案更新仍待確認；本圖片批次尚未送出，也尚未要求指紋確認。請先回查相關更新紀錄。";
+        const code = priorWriteBlocked && !imageBlocker ? "LISTING_WRITE_RECOVERY_REQUIRED"
+          : error instanceof MainWriteGateError ? error.code : error instanceof SpApiError ? publicSpApiError(error, "圖片批次已停止。").code : "IMAGE_BATCH_STOPPED";
+        for (const row of plan.rows) {
+          // These rows never entered the dispatcher. Preserve all actual attempts.
+          if (row.public.state === "ready") row.public = { ...row.public, state: "not-started", code, message: plan.message };
+        }
       }
     } finally {
       this.controllers.delete(controller);
