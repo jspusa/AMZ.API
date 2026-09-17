@@ -41,9 +41,10 @@ export const RENDERER_STYLESHEET_CONTRACT = Object.freeze({
     "styles/workflow-efficiency.css",
     "styles/inventory-health.css",
     "styles/audit-review.css",
+    "styles/shared-images.css",
     "styles/appearance.css",
     "styles/dark-palette.generated.css",
     "styles/dark-surfaces.css"
 ]),
-  fingerprint: "20e2d24872249d7f0a3f40f425ef0a3e63ec70fe0efd12409d72bd719921f135",
+  fingerprint: "6ba9602bee930791f320c70db419376f98abebd7a9f65bdd7a138b4ce278384e",
 });

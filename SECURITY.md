@@ -92,6 +92,8 @@ Server v2 是有固定額度上限的匿名 image-only 服務，不是員工或�
 
 ## 資料夾批次及有限期圖片來源
 
+共用圖片 `selected-slots` 模式只接受有界的指定位置與同 SKU 已準備來源；空位置表示由 main 保留 fresh canonical 原圖。main 合成完整目標，將模式、指定來源、完整原圖／目標及身分綁入預檢，原生批准前與送出前仍核對全部原圖。確認只接受該模式的 `selectedSlotsAcknowledged`，不能沿用完整替換的刪除授權或混合兩種確認。系列查詢只提供唯讀候選，所有目標仍重新證明 FBA／PTD；舊 Bridge 不支援時禁止降級為完整替換。
+
 手動圖片進度 refresh 與 exact-SKU 恢復均為 GET-only；普通 observer 不隱含新上游工作。恢復最多 30 個精確 SKU，main 依目前 account／mode／marketplace 透過固定 images inspection 核對最新 durable evidence；malformed、較新未知或歧義紀錄不得退回較舊成功。恢復計畫沒有 Preview Ticket 或 write authority，不取得原生批准、不準備／上傳圖片、不 PATCH。來源已到期仍可核對 Amazon 的 canonical 圖片欄位，不能把到期當成重送理由。
 
 資料夾批次固定最多 30 個 exact SKU／300 圖；main 自行取得 FBA／ASIN／Product Type／seller-specific PTD 與原圖片，不接受 renderer 提供的身分或省略舊圖證據。完整替換與刪除範圍必須顯示並包含在不可變 preview binding；單次 native approval 只涵蓋這份 plan。`images-batch` 共享圖片 collision／durable ledger，unknown／accepted recovery 維持 GET-only。圖片準備在同 context／SKU／bytes／expiry 綁定，context invalidation 清除準備授權但不清除 unknown upload 或 Amazon write evidence。

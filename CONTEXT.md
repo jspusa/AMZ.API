@@ -97,3 +97,7 @@ _Avoid_: variation mutation, account-wide upload, repeated single-SKU approval
 **Temporary Image Source**:
 A byte-verified Supply Boss image URL available for one hour so Amazon can retrieve the file; its expiry is distinct from the scheduled deletion of the underlying object and from Amazon acceptance or canonical confirmation.
 _Avoid_: permanent image library, completed Amazon download, immediate deletion on acceptance
+
+**Shared Image Batch**:
+A main-owned, exact-context proposal that applies individually selected image positions to at most 30 exact Seller SKUs while preserving every unselected position; filename hints and read-only family suggestions help choose targets but do not authorize writes.
+_Avoid_: complete folder replacement, inferred series update, cross-SKU preparation authority

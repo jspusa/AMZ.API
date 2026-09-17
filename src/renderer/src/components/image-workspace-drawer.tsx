@@ -664,7 +664,7 @@ export default function ImageWorkspaceDrawer({
     <AuditWorkspaceShell
       presentation={presentation}
       eyebrow="LISTING MEDIA · FBA ONLY"
-      title={tab === "audit" ? "全站圖片健檢" : tab === "folders" ? "資料夾批次圖片更新" : "商品圖片"}
+      title={tab === "audit" ? "全站圖片健檢" : tab === "folders" ? "批次圖片更新" : "商品圖片"}
       closeLabel="關閉圖片工作區"
       surfaceClassName="image-workspace-drawer"
       busy={busy}
@@ -708,7 +708,7 @@ export default function ImageWorkspaceDrawer({
                 onClick={() => changeTab("folders")}
                 disabled={busy}
               >
-                資料夾批次更新
+                圖片／資料夾批次更新
               </button>
             </div>
           </>
