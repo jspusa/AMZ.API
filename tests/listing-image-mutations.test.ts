@@ -466,6 +466,7 @@ describe("listing image mutations", () => {
       accountScope: "opaque-w03-image-cancel",
     }));
     const ledger = {
+      captureImageWriteRevision: vi.fn(async () => "a".repeat(64)),
       runIdempotentOperation: vi.fn(async () => {
         throw new Error("ledger must not be claimed after approval cancellation");
       }),

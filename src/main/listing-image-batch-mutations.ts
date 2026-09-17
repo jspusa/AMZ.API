@@ -38,7 +38,7 @@ export type ListingImageBatchDependencies = Readonly<{
 }>;
 
 type BoundInput = Parameters<ListingImageMutationOperations["preview"]>[0];
-type PlanRow = { public: ListingImageBatchRow; input: BoundInput; preparedUrls: readonly (string | null)[]; preview: ListingImageUpdateResult | null; accepted?: ListingImageUpdateResult };
+type PlanRow = { public: ListingImageBatchRow; input: BoundInput; preparedUrls: readonly (string | null)[]; preview: ListingImageUpdateResult | null; accepted?: ListingImageUpdateResult; imageWriteRevision?: string };
 type BatchPlan = {
   batchId: string; reviewToken: string; context: SpExecutionContext; expiresAt: number;
   replacementMode: ListingImageReplacementMode;
@@ -243,6 +243,8 @@ export class ListingImageBatchMutations implements ListingImageBatchMutationsPor
         pending.public = { ...pending.public, asin: snapshot.asin, title: snapshot.title,
           previousUrls: input.expectedUrls, requestedUrls: input.urls, changedSlots, deletedSlots, state: changedSlots.length ? "ready" : "unchanged" };
         if (changedSlots.length) {
+          if (context.mode === "live") pending.imageWriteRevision = await this.deps.writeGate.captureImageWriteRevision?.({ context, sellerSku });
+          await this.fence(context, revision);
           pending.preview = await this.deps.operations.preview(input);
           await this.fence(context, revision);
           this.assertResult(pending.preview, pending, context.mode, true);
@@ -285,6 +287,7 @@ export class ListingImageBatchMutations implements ListingImageBatchMutationsPor
       sellerSku: row.input.sellerSku, idempotencyKey: `${plan.batchId}-${index}`,
       proposalFingerprint: createHash("sha256").update(JSON.stringify(plan.replacementMode === "complete" ? row.input
         : { replacementMode: plan.replacementMode, input: row.input, preparedUrls: row.preparedUrls })).digest("hex"),
+      ...(plan.context.mode === "live" && row.input.expectedImageIdentity && row.imageWriteRevision ? { imageUpdate: { ...row.input.expectedImageIdentity, predecessorRevision: row.imageWriteRevision } } : {}),
     }));
     if (!intents.length) throw new SpApiError("沒有可送出的圖片變更。", { status: 422, code: "NO_CHANGES" });
     return { family: "images-batch", previewKey: plan.batchId, context: plan.context, previewExpiresAt:plan.expiresAt, intents: [intents[0], ...intents.slice(1)] };
