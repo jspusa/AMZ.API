@@ -2948,7 +2948,7 @@ describe("FBA business pricing audit renderer", () => {
       initialSnapshot: snapshot,
     }));
     const summary = markup.match(
-      /<div class="business-pricing-summary is-interactive" role="group" aria-label="B2B 價格健檢摘要與篩選">[\s\S]*?<\/div>/u,
+      /<div class="business-pricing-summary business-pricing-summary--b2b is-interactive" role="group" aria-label="B2B 價格健檢摘要與篩選">[\s\S]*?<\/div>/u,
     )?.[0];
 
     expect(summary).toBeDefined();
@@ -2970,6 +2970,15 @@ describe("FBA business pricing audit renderer", () => {
     const css = await readRendererStylesheet();
     expect(css).toMatch(
       /\.business-pricing-summary\s*\{[^}]*minmax\(104px,\s*1fr\)/su,
+    );
+    expect(css).toMatch(
+      /\.business-pricing-summary--b2b button\.active\s*\{[^}]*background:\s*#edf6ff;[^}]*color:\s*#174f7c;/su,
+    );
+    expect(css).toMatch(
+      /\.business-pricing-summary--b2b button\.active span\s*\{[^}]*color:\s*#315c86;/su,
+    );
+    expect(css).toMatch(
+      /\.business-pricing-summary--b2b button\.active strong\s*\{[^}]*color:\s*#174f7c;/su,
     );
   });
 

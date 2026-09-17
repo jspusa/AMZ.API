@@ -246,6 +246,16 @@
 
 .business-pricing-summary button.active span { color: #d7d7dc; }
 
+.business-pricing-summary--b2b button.active {
+  border-color: #1e77be;
+  background: #edf6ff;
+  color: #174f7c;
+  box-shadow: inset 0 0 0 1px rgba(30, 119, 190, .24), 0 5px 14px rgba(30, 119, 190, .12);
+}
+
+.business-pricing-summary--b2b button.active span { color: #315c86; }
+.business-pricing-summary--b2b button.active strong { color: #174f7c; }
+
 .business-pricing-summary button:focus-visible {
   outline: 3px solid rgba(30, 119, 190, .28);
   outline-offset: 2px;
