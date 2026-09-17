@@ -4,7 +4,8 @@ import type {
   ListingImageSnapshot,
   ListingImageUpdateResult,
 } from "../src/main/amazon/listing-image-types";
-import { imageReadbackDecision, reconcileImageWrite } from
+import type { ListingImageGatewayRead } from "../src/main/amazon/listing-image-gateway";
+import { analyzeImageReadback, imageReadbackDecision, reconcileImageWrite } from
   "../src/main/listing-image-mutations";
 
 const US = "ATVPDKIKX0DER" as const;
@@ -90,6 +91,149 @@ function durableResult(
 }
 
 describe("Listing Image canonical write readback", () => {
+  const untrustedTargets: Array<[string, (receipt: ListingImageUpdateResult, observation: ListingImageGatewayRead) => void]> = [
+    ["invalid-evidence", receipt => { delete (receipt as unknown as Record<string, unknown>).imageWriteEvidence; }],
+    ["receipt-not-live-accepted", receipt => { receipt.mode = "demo"; }],
+    ["receipt-not-live-accepted", receipt => { receipt.status = "VALID"; }],
+    ["readback-not-live", (_receipt, observation) => { observation.snapshot.mode = "demo"; }],
+    ["not-fba", (_receipt, observation) => { (observation as { fulfillment: string }).fulfillment = "MFN"; }],
+    ["marketplace-mismatch", (_receipt, observation) => { observation.snapshot.marketplaceId = "A1F83G8C2ARO7P"; }],
+    ["sku-mismatch", (_receipt, observation) => { observation.snapshot.sellerSku = "OTHER-SKU"; }],
+    ["asin-mismatch", (_receipt, observation) => { observation.snapshot.asin = "B000000001"; }],
+    ["product-type-mismatch", (_receipt, observation) => { observation.snapshot.productType = "OTHER_TYPE"; }],
+    ["attributes-missing", (_receipt, observation) => { observation.snapshot.attributesPresent = false; }],
+    ["slot-shape-mismatch", (_receipt, observation) => { observation.snapshot.images.pop(); }],
+  ];
+  it.each(untrustedTargets)("does not compare image URLs against an untrusted target: %s", (blocker, mutate) => {
+    const requested = [...URLS, null];
+    requested[1] = "https://source.example/new.jpg";
+    const receipt = durableResult(requested, 2);
+    const observation: ListingImageGatewayRead = { snapshot: snapshot(), sourceEvidence: {} as never, fulfillment: "FBA" };
+    mutate(receipt, observation);
+    const diagnostics = analyzeImageReadback(receipt, observation);
+    expect(diagnostics).toMatchObject({ decision: "pending", blockers: [blocker], slots: { compared: false } });
+    expect(Object.values(diagnostics.slots).filter(value => typeof value === "number").every(value => value === 0)).toBe(true);
+    expect(reconcileImageWrite(receipt, observation)).toBeNull();
+  });
+
+  it("explains slot differences and ERROR scopes without emitting any source values", () => {
+    const requested = ["https://source.example/private-main", null, "https://source.example/private-missing", "https://source.example/private-invalid",
+      "https://source.example/private-cdn", "https://source.example/private-matched", null, null, null, null];
+    const canonical = snapshot();
+    canonical.images[3].url = "private-invalid-url";
+    canonical.images[4].url = "https://media-origin-na-ssl.integ.amazon.com/images/I/private-cdn.jpg";
+    canonical.images[5].url = requested[5];
+    canonical.issues = [
+      { code: "PRIVATE-1", severity: "ERROR", message: "private text", attributeNames: ["other_product_image_locator_4"] },
+      { code: "PRIVATE-2", severity: "ERROR", message: "private text", attributeNames: ["ingredients"] },
+      { code: "PRIVATE-3", severity: "ERROR", message: "private text", attributeNames: [] },
+      { code: "PRIVATE-4", severity: "WARNING", message: "private text", attributeNames: [] },
+    ];
+    const receipt = durableResult(requested, 2);
+    const observation = { snapshot: canonical, sourceEvidence: {} as never, fulfillment: "FBA" as const };
+    const diagnostics = analyzeImageReadback(receipt, observation);
+    expect(diagnostics).toEqual({
+      version: 1, decision: "pending", blockers: ["error-issues", "url-mismatch"],
+      issues: { errorCount: 3, imageErrorCount: 1, nonImageErrorCount: 1, unscopedErrorCount: 1 },
+      slots: { compared: true, targetCount: 10, matchedCount: 5, missingCount: 1, deletionPendingCount: 1, differentUrlCount: 2,
+        invalidUrlCount: 1, unchangedPreviousCount: 3, amazonHostedDifferentCount: 1, crossHostAmazonDifferentCount: 1 },
+    });
+    expect(JSON.stringify(diagnostics)).not.toMatch(/private|https:|AFA|B09|ingredients|submission|request-w03/iu);
+    expect(imageReadbackDecision(receipt, observation)).toBe("pending");
+    expect(reconcileImageWrite(receipt, observation)).toBeNull();
+  });
+
+  it.each([
+    ["https://m.media-amazon.com/images/I/new.jpg", 1],
+    ["https://media-origin-na-ssl.integ.amazon.com/images/I/new.jpg", 1],
+    ["https://m.media-amazon.com.evil.example/images/I/new.jpg", 0],
+    ["https://evil.example/m.media-amazon.com/images/I/new.jpg", 0],
+    ["https://m.media-amazon.com@evil.example/images/I/new.jpg", 0],
+    ["https://user@m.media-amazon.com/images/I/new.jpg", 0],
+    ["http://m.media-amazon.com/images/I/new.jpg", 0],
+    ["https://m.media-amazon.com:8443/images/I/new.jpg", 0],
+  ])("treats exact media host %s only as a pending diagnostic candidate", (actual, expected) => {
+    const requested = [...URLS, null];
+    requested[1] = "https://source.example/new.jpg";
+    const canonical = snapshot();
+    canonical.images[1].url = actual;
+    const observation = { snapshot: canonical, sourceEvidence: {} as never, fulfillment: "FBA" as const };
+    const receipt = durableResult(requested, 2);
+    expect(analyzeImageReadback(receipt, observation)).toMatchObject({ decision: "pending", blockers: ["url-mismatch"],
+      slots: { differentUrlCount: 1, amazonHostedDifferentCount: expected, crossHostAmazonDifferentCount: expected } });
+    expect(reconcileImageWrite(receipt, observation)).toBeNull();
+  });
+
+  it("distinguishes a changed Amazon media URL on the same host without verifying it", () => {
+    const requested = [...URLS, null];
+    requested[1] = "https://m.media-amazon.com/images/I/requested.jpg";
+    const canonical = snapshot();
+    canonical.images[1].url = "https://m.media-amazon.com/images/I/different.jpg";
+    expect(analyzeImageReadback(durableResult(requested, 2), { snapshot: canonical, sourceEvidence: {} as never, fulfillment: "FBA" })).toMatchObject({
+      decision: "pending", slots: { amazonHostedDifferentCount: 1, crossHostAmazonDifferentCount: 0 },
+    });
+  });
+
+  it("reports evidence and identity failures independently without comparing an unknown target", () => {
+    const canonical = snapshot();
+    canonical.mode = "demo";
+    canonical.marketplaceId = "A1F83G8C2ARO7P";
+    canonical.sellerSku = "other-private-sku";
+    canonical.asin = "B000000001";
+    canonical.productType = "OTHER_TYPE";
+    canonical.attributesPresent = false;
+    canonical.images.pop();
+    const requested = [...URLS];
+    requested[1] = "https://source.example/new.jpg";
+    const receipt = durableResult(requested);
+    const observation = { snapshot: canonical, sourceEvidence: {} as never, fulfillment: "MFN" as never };
+    expect(analyzeImageReadback(receipt, observation)).toMatchObject({ decision: "pending", blockers: [
+      "readback-not-live", "not-fba", "marketplace-mismatch", "sku-mismatch", "asin-mismatch", "product-type-mismatch", "attributes-missing", "slot-shape-mismatch",
+    ], slots: { compared: false, targetCount: 0 } });
+    delete (receipt as unknown as Record<string, unknown>).imageWriteEvidence;
+    expect(analyzeImageReadback(receipt, observation)).toMatchObject({ decision: "pending", blockers: [
+      "invalid-evidence", "readback-not-live", "not-fba", "marketplace-mismatch", "sku-mismatch", "attributes-missing", "slot-shape-mismatch",
+    ], slots: { compared: false, targetCount: 0 } });
+  });
+
+  it.each([null, undefined, "private-upstream-text", 1, {}, { severity: "UNKNOWN" }, { severity: "error" },
+    { code: null, severity: "ERROR", message: "private text", attributeNames: null },
+    { code: null, severity: "WARNING", message: "private text", attributeNames: [42] }])(
+    "does not verify when a canonical issue element is malformed: %j", issue => {
+      const requested = [...URLS, null];
+      requested[1] = "https://source.example/new.jpg";
+      const canonical = snapshot();
+      canonical.images[1].url = requested[1];
+      canonical.issues = [issue] as never;
+      const receipt = durableResult(requested, 2);
+      const observation = { snapshot: canonical, sourceEvidence: {} as never, fulfillment: "FBA" as const };
+      expect(analyzeImageReadback(receipt, observation)).toMatchObject({
+        decision: "pending", blockers: ["issues-unavailable"],
+        issues: { errorCount: 0, imageErrorCount: 0, nonImageErrorCount: 0, unscopedErrorCount: 0 },
+        slots: { compared: true, matchedCount: 10 },
+      });
+      expect(imageReadbackDecision(receipt, observation)).toBe("pending");
+      expect(reconcileImageWrite(receipt, observation)).toBeNull();
+    },
+  );
+
+  it("counts only valid ERROR issues and keeps malformed neighboring evidence pending", () => {
+    const requested = [...URLS, null];
+    requested[1] = "https://source.example/new.jpg";
+    const canonical = snapshot();
+    canonical.images[1].url = requested[1];
+    canonical.issues = [null, { code: null, severity: "ERROR", message: "private text", attributeNames: [] }] as never;
+    expect(analyzeImageReadback(durableResult(requested, 2), { snapshot: canonical, sourceEvidence: {} as never, fulfillment: "FBA" })).toMatchObject({
+      decision: "pending", blockers: ["issues-unavailable", "error-issues"],
+      issues: { errorCount: 1, imageErrorCount: 0, nonImageErrorCount: 0, unscopedErrorCount: 1 },
+    });
+    canonical.issues = [
+      { code: null, severity: "WARNING", message: "warning", attributeNames: [] },
+      { code: null, severity: "INFO", message: "information", attributeNames: [] },
+    ];
+    expect(imageReadbackDecision(durableResult(requested, 2), { snapshot: canonical, sourceEvidence: {} as never, fulfillment: "FBA" })).toBe("verified");
+  });
+
   it("reconciles a preserved nine-slot receipt from a complete ten-slot GET without claiming the new slot", () => {
     const requested = [...URLS];
     requested[1] = "https://images.example.test/replacement-1.jpg";
@@ -99,6 +243,9 @@ describe("Listing Image canonical write readback", () => {
     const receipt = durableResult(requested);
     const before = JSON.stringify(receipt);
     expect(imageReadbackDecision(receipt, { snapshot: canonical, sourceEvidence: {} as never, fulfillment: "FBA" })).toBe("verified");
+    expect(analyzeImageReadback(receipt, { snapshot: canonical, sourceEvidence: {} as never, fulfillment: "FBA" })).toMatchObject({
+      decision: "verified", blockers: [], slots: { compared: true, targetCount: 9, matchedCount: 9, differentUrlCount: 0 },
+    });
     expect(JSON.stringify(receipt)).toBe(before);
     canonical.images[1].url = "https://images.example.test/different.jpg";
     expect(imageReadbackDecision(receipt, { snapshot: canonical, sourceEvidence: {} as never, fulfillment: "FBA" })).toBe("pending");

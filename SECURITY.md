@@ -15,6 +15,8 @@
 
 ## 已套用保護
 
+- 圖片回查原因只由同一次 main canonical observation 投影封閉 enum 與有限計數，shared parser 拒絕額外鍵、矛盾狀態與畸形數字。診斷不含完整 URL、SKU／ASIN、帳號、憑證或 raw issues，不提供額外 transport，也不改變回查完成與禁止重送條件。
+
 - `contextIsolation: true`
 - `sandbox: true`
 - `nodeIntegration: false`

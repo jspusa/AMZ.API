@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type DragEvent } from "react";
 import { LISTING_IMAGE_MIN_VALIDITY_MS, LISTING_IMAGE_RETENTION_MS } from "../../../shared/listing-image-retention";
 import type { ListingImageBatchRow, ListingImageBatchSnapshot } from "../../../shared/listing-image-batch";
+import { parseListingImageReadbackDiagnostics, type ListingImageReadbackBlocker, type ListingImageReadbackDiagnostics } from "../../../shared/listing-image-readback";
 import { inspectImageFolders, readDroppedImageFolders, type BrowserFolderEntry, type ImageFolderRow, type SelectedFolderImage } from "../image-folder-import";
 
 const BATCH_PATH = "/api/sp-api/listing-images-batch";
@@ -9,6 +10,46 @@ const ROW_LABELS: Record<ListingImageBatchRow["state"], string> = {
   ready: "★ 核對通過", unchanged: "☆ 圖片相同", blocked: "待修正", "not-started": "尚未送出", submitting: "送出中",
   accepted: "Amazon 已接受，待回查", verified: "★ Amazon 回查確認", unknown: "結果待確認，不可重送", rejected: "Amazon 未接受", simulated: "展示模式已完成",
 };
+
+const READBACK_REASONS: Record<ListingImageReadbackBlocker, string> = {
+  "invalid-evidence": "先前更新紀錄不足以完成核對",
+  "receipt-not-live-accepted": "先前紀錄不是正式接受的更新",
+  "readback-not-live": "這次取得的不是正式 Amazon 資料",
+  "not-fba": "這次資料未能確認為 FBA 商品",
+  "marketplace-mismatch": "Amazon 站點與先前更新不一致",
+  "sku-mismatch": "Seller SKU 與先前更新不一致",
+  "asin-mismatch": "ASIN 與先前更新不一致",
+  "product-type-mismatch": "商品類型與先前更新不一致",
+  "attributes-missing": "Amazon 尚未提供完整商品欄位",
+  "slot-shape-mismatch": "Amazon 圖片位置資料不完整",
+  "issues-unavailable": "Amazon 問題清單無法完整判讀",
+  "error-issues": "Amazon 仍回報商品錯誤",
+  "url-mismatch": "部分圖片位置與這次送出的資料不同",
+};
+
+function ReadbackReasons({ diagnostics, sellerSku, state }: { diagnostics: ListingImageReadbackDiagnostics; sellerSku: string; state: ListingImageBatchRow["state"] }) {
+  const { slots, issues, blockers } = diagnostics;
+  return <details><summary>查看本次回查原因</summary>
+    {diagnostics.decision === "verified" && state !== "verified" && <p>本次圖片資料已相符，更新紀錄仍待確認。</p>}
+    <table className="image-folder-comparison" aria-label={`${sellerSku} 本次回查原因`}><tbody>
+      <tr><th scope="row">核對結果</th><td>{blockers.length ? blockers.map(reason => <p key={reason}>☆ {READBACK_REASONS[reason]}</p>) : "★ 本次資料核對相符"}</td></tr>
+      <tr><th scope="row">圖片位置</th><td>{slots.compared ? <>
+        <p>{`圖片位置符合 ${slots.matchedCount}／${slots.targetCount}`}</p>
+        {slots.missingCount > 0 && <p>{`尚缺圖片 ${slots.missingCount} 個位置`}</p>}
+        {slots.deletionPendingCount > 0 && <p>{`舊圖尚未清除 ${slots.deletionPendingCount} 個位置`}</p>}
+        {slots.differentUrlCount > 0 && <p>{`圖片網址不同 ${slots.differentUrlCount} 個位置`}</p>}
+        {slots.invalidUrlCount > 0 && <p>{`圖片資料無法判讀 ${slots.invalidUrlCount} 個位置`}</p>}
+        {slots.unchangedPreviousCount > 0 && <p>{`其中 ${slots.unchangedPreviousCount} 個位置仍與更新前相同`}</p>}
+        {slots.crossHostAmazonDifferentCount > 0 && <p>{`有 ${slots.crossHostAmazonDifferentCount} 個位置回傳為不同來源的 Amazon 圖片網址；尚不能據此確認為本次送出的圖片。`}</p>}
+      </> : "☆ 本次資料不足，尚未完成圖片比對"}</td></tr>
+      <tr><th scope="row">Amazon 回報</th><td>{blockers.includes("issues-unavailable") ? "☆ 問題清單尚未完整讀取" : issues.errorCount ? <>
+        {issues.imageErrorCount > 0 && <p>{`圖片欄位錯誤 ${issues.imageErrorCount} 項`}</p>}
+        {issues.nonImageErrorCount > 0 && <p>{`其他欄位錯誤 ${issues.nonImageErrorCount} 項`}</p>}
+        {issues.unscopedErrorCount > 0 && <p>{`未指明欄位的錯誤 ${issues.unscopedErrorCount} 項`}</p>}
+      </> : "★ 本次未回報錯誤"}</td></tr>
+    </tbody></table>
+  </details>;
+}
 
 function responseSnapshot(value: unknown, marketplaceId: string, expectedSkus: readonly string[], batchId?: string): ListingImageBatchSnapshot {
   const item = value as ListingImageBatchSnapshot | null;
@@ -21,7 +62,8 @@ function responseSnapshot(value: unknown, marketplaceId: string, expectedSkus: r
       !Object.hasOwn(ROW_LABELS, row.state) || typeof row.title !== "string" || (row.asin !== null && typeof row.asin !== "string") ||
       !Array.isArray(row.previousUrls) || !Array.isArray(row.requestedUrls) || row.previousUrls.length !== 10 || row.requestedUrls.length !== 10 ||
       [...row.previousUrls, ...row.requestedUrls].some(url => url !== null && (typeof url !== "string" || !url.startsWith("https://"))) ||
-      !Array.isArray(row.changedSlots) || !Array.isArray(row.deletedSlots) || [...row.changedSlots, ...row.deletedSlots].some(slot => !Number.isInteger(slot) || slot < 1 || slot > 10)) ||
+      !Array.isArray(row.changedSlots) || !Array.isArray(row.deletedSlots) || [...row.changedSlots, ...row.deletedSlots].some(slot => !Number.isInteger(slot) || slot < 1 || slot > 10) ||
+      (row.readbackDiagnostics !== undefined && !parseListingImageReadbackDiagnostics(row.readbackDiagnostics))) ||
     (item.lastReadbackAt !== undefined && item.lastReadbackAt !== null && (typeof item.lastReadbackAt !== "string" || !Number.isFinite(Date.parse(item.lastReadbackAt)))) ||
     !item.totals || Object.values(item.totals).some(count => !Number.isSafeInteger(count) || count < 0) || item.totals.skus !== item.rows.length) {
     throw new Error("批次回應與本次商品不一致，已停止；請更新 Notebook Key 後重新核對。");
@@ -70,6 +112,7 @@ export default function ImageFolderWorkspace({ marketplaceId, onBusyChange }: { 
   const controller = useRef<AbortController | null>(null);
   const active = Boolean(batch && ACTIVE_PHASES.has(batch.phase));
   const busy = working || active || uncertainSubmission || checking;
+  const showReadbackReasons = !checking && !active && !observationPaused;
   const validRows = rows.filter(row => !row.errors.length && row.sellerSku);
 
   useEffect(() => { onBusyChange(busy); return () => onBusyChange(false); }, [busy, onBusyChange]);
@@ -234,7 +277,7 @@ export default function ImageFolderWorkspace({ marketplaceId, onBusyChange }: { 
       setRows([]); setBatch(recovered); setAcknowledged(false); setObservationPaused(false); setUncertainSubmission(false);
       submitted.current = true;
     } catch (reason) {
-      if (revision === generation.current) setError(reason instanceof Error ? reason.message : "先前圖片進度未能讀取，沒有重新送出更新。");
+      if (revision === generation.current) { setError(reason instanceof Error ? reason.message : "先前圖片進度未能讀取，沒有重新送出更新。"); setObservationPaused(true); }
     } finally { if (revision === generation.current) { running.current = false; setChecking(false); } }
   };
 
@@ -278,7 +321,7 @@ export default function ImageFolderWorkspace({ marketplaceId, onBusyChange }: { 
                   </tr>)}
                 </tbody></table>
               </details>}</> : <span>待核對商品與可用位置</span>}</td>
-            <td aria-live="polite">{row.errors.length ? row.errors.map(issue => <p key={issue}>{issue}</p>) : result ? <><strong>{ROW_LABELS[result.state]}</strong>{result.message && <p>{result.message}</p>}</> : <><span>{row.preparation}</span>{attempted && <small>已準備 {row.uploaded}／{row.images.length} 張</small>}</>}{row.expiresAt && <small>圖片暫存至 {new Date(row.expiresAt).toLocaleString("zh-TW")}</small>}</td>
+            <td aria-live="polite">{row.errors.length ? row.errors.map(issue => <p key={issue}>{issue}</p>) : result ? <><strong>{ROW_LABELS[result.state]}</strong>{result.message && <p>{result.message}</p>}{showReadbackReasons && result.readbackDiagnostics && <ReadbackReasons diagnostics={result.readbackDiagnostics} sellerSku={result.sellerSku} state={result.state} />}</> : <><span>{row.preparation}</span>{attempted && <small>已準備 {row.uploaded}／{row.images.length} 張</small>}</>}{row.expiresAt && <small>圖片暫存至 {new Date(row.expiresAt).toLocaleString("zh-TW")}</small>}</td>
           </tr>;
         })}
       </tbody></table></div>
@@ -290,7 +333,7 @@ export default function ImageFolderWorkspace({ marketplaceId, onBusyChange }: { 
       <thead><tr><th scope="col">SKU／ASIN</th><th scope="col">送出圖片</th><th scope="col">狀況</th></tr></thead>
       <tbody>{batch.rows.map(row => <tr key={row.sellerSku} data-state={row.state}><td><strong>{row.sellerSku}</strong><small>{row.asin ?? "ASIN 尚未確認"}</small></td>
         <td>{row.acceptedAt ? `${row.requestedUrls.filter(Boolean).length} 張` : "沒有可核對的接受紀錄"}</td>
-        <td aria-live="polite"><strong>{ROW_LABELS[row.state]}</strong>{row.message && <p>{row.message}</p>}</td></tr>)}</tbody>
+        <td aria-live="polite"><strong>{ROW_LABELS[row.state]}</strong>{row.message && <p>{row.message}</p>}{showReadbackReasons && row.readbackDiagnostics && <ReadbackReasons diagnostics={row.readbackDiagnostics} sellerSku={row.sellerSku} state={row.state} />}</td></tr>)}</tbody>
     </table></div>}
     {(checking || batch?.phase === "readback") && <p role="status">{readbackSupported ? "正在唯讀回查 Amazon 圖片，請稍候…" : "正在讀取圖片更新進度，請稍候…"}</p>}
     {batch && <div className="image-folder-confirmation">
