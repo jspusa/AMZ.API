@@ -59,7 +59,7 @@ it("prepares one complete folder, discloses old extras, and requires acknowledge
   expect(text()).toContain("Amazon 已接受");
 });
 
-async function mountSafetyFixture(options: { upload?: () => Promise<Response>; unavailable?: boolean; uncertainCommit?: boolean; wholeWorkspace?: boolean; legacyReadback?: boolean } = {}) {
+async function mountSafetyFixture(options: { upload?: () => Promise<Response>; unavailable?: boolean; uncertainCommit?: boolean; wholeWorkspace?: boolean; legacyReadback?: boolean; asyncPreview?: boolean } = {}) {
   const calls: Array<{ method: string; path: string }> = [];
   const busy: boolean[] = [];
   const listeners = new Set<() => void>();
@@ -69,13 +69,13 @@ async function mountSafetyFixture(options: { upload?: () => Promise<Response>; u
     calls.push({ method: init?.method ?? "GET", path: url.split("?")[0] });
     if (url === "/api/uploads/listing-images") return options.upload ? options.upload() : Response.json({ amazonUrl: urls[0], readyForAmazon: true, expiresAt: sourceExpiry });
     const oneImage = { ...batch, rows: [{ ...batch.rows[0], requestedUrls: [urls[0], ...Array.from({ length: 9 }, () => null)] }] };
-    if (init?.method === "POST") return Response.json(oneImage);
+    if (init?.method === "POST") return Response.json(options.asyncPreview ? { ...oneImage, phase: "preparing", rows: [{ ...oneImage.rows[0], state: "checking" }], totals: { ...batch.totals, ready: 0 }, previewProgress: { checkedSkus: 0, totalSkus: 1, currentSku: "AFA12AM" } } : oneImage);
     if (init?.method === "PATCH") {
       if (options.uncertainCommit) throw new Error("Network disconnected");
       return Response.json({ ...oneImage, phase: "completed" });
     }
     if (url.includes("batchId=")) return Response.json({ ...oneImage, phase: "completed", rows: [{ ...oneImage.rows[0], state: "accepted" }], totals: { ...batch.totals, submitted: 1, accepted: 1 } });
-    return options.unavailable ? Response.json({ message: "Unavailable" }, { status: 404 }) : Response.json({ capability: "listing-image-batch-v1", maxSkus: 30, maxImagesPerSku: 10, replacementMode: "complete", confirmationMode: "native", ...(options.legacyReadback ? {} : { readbackRecovery: "exact-sku-v1" }) });
+    return options.unavailable ? Response.json({ message: "Unavailable" }, { status: 404 }) : Response.json({ capability: "listing-image-batch-v1", maxSkus: 30, maxImagesPerSku: 10, replacementMode: "complete", confirmationMode: "native", ...(options.asyncPreview ? { previewProgress: "batch-v1" } : {}), ...(options.legacyReadback ? {} : { readbackRecovery: "exact-sku-v1" }) });
   }));
   await act(async () => { renderer = create(options.wholeWorkspace
     ? <ImageWorkspaceDrawer initialMarketplaceId={marketplaceId} initialTab="folders" presentation="workspace" onClose={() => undefined} onBusyChange={value => busy.push(value)} />
@@ -380,4 +380,122 @@ it("does not redisplay previous reasons after a failed recovery request", async 
   await act(async () => { await button("讀取先前圖片進度").props.onClick(); });
   expect(renderer!.root.findByProps({ "aria-label": "AFA12AM 本次回查原因" })).toBeTruthy();
   expect(vi.mocked(fetch).mock.calls.every(([, init]) => !init?.method || init.method === "GET")).toBe(true);
+});
+
+it("shows prominent live image preparation progress before an upload completes", async () => {
+  let finish!: (response: Response) => void;
+  const fixture = await mountSafetyFixture({ upload: () => new Promise(resolve => { finish = resolve; }) });
+  await chooseOne();
+  let preparing!: Promise<void>;
+  await act(async () => { preparing = button("準備圖片並核對 1 個 SKU").props.onClick(); });
+  const progress = renderer!.root.findByProps({ "aria-label": "圖片批次處理進度" });
+  expect(progress.findByType("strong").children.join("")).toBe("準備圖片");
+  expect(text()).toContain("AFA12AM");
+  expect(progress.findByType("progress").props).toMatchObject({ value: 0, max: 1 });
+  await act(async () => { finish(Response.json({ amazonUrl: urls[0], readyForAmazon: true, expiresAt: sourceExpiry })); await preparing; });
+  expect(fixture.calls.filter(call => call.method === "PATCH")).toHaveLength(0);
+});
+
+it("recovers the previous write blocking a new batch while retaining the new files and never resending", async () => {
+  const fixture = await mountSafetyFixture();
+  await chooseOne();
+  await act(async () => { await button("準備圖片並核對 1 個 SKU").props.onClick(); });
+  await act(async () => renderer!.root.findByProps({ type: "checkbox" }).props.onChange({ target: { checked: true } }));
+  vi.mocked(fetch).mockResolvedValueOnce(Response.json({ ...batch, phase: "stopped", blockedByPreviousWrite: true,
+    rows: [{ ...batch.rows[0], state: "not-started", code: "UPDATE_STATUS_UNKNOWN" }],
+    totals: { ...batch.totals, ready: 0 }, message: "先前圖片更新待確認，本批次尚未送出。" }));
+  await act(async () => { await button("一次指紋確認並更新 1 個 SKU").props.onClick(); });
+  vi.mocked(fetch).mockResolvedValueOnce(Response.json(pendingRecovery(diagnosticFixture)));
+  await act(async () => { await button("回查擋住本次更新的先前紀錄").props.onClick(); });
+  const requestUrl = new URL(String(vi.mocked(fetch).mock.lastCall?.[0]), "https://example.test");
+  expect(JSON.parse(requestUrl.searchParams.get("recoverSkus")!)).toEqual(["AFA12AM"]);
+  expect(text()).toContain("AF_US組圖_AFA12AM_V11");
+  expect(text()).toContain("擋住本次更新的先前紀錄");
+  expect(text()).toContain("其他欄位錯誤 2 項");
+  expect(button("一次指紋確認並更新 1 個 SKU")).toBeUndefined();
+  expect(fixture.calls.filter(call => call.method === "POST")).toHaveLength(2);
+});
+
+it.each([false, true])("polls real preview progress and verifies the final prepared-image binding (mismatch: %s)", async mismatch => {
+  vi.useFakeTimers();
+  try {
+    const fixture = await mountSafetyFixture({ asyncPreview: true });
+    await chooseOne();
+    await act(async () => { await button("準備圖片並核對 1 個 SKU").props.onClick(); });
+    const previewRequest = vi.mocked(fetch).mock.calls.find(([, init]) => init?.method === "POST" && typeof init.body === "string")!;
+    expect(JSON.parse(previewRequest[1]!.body as string).asyncPreview).toBe(true);
+    const progress = renderer!.root.findByProps({ "aria-label": "圖片批次處理進度" });
+    expect(progress.findByType("progress").props).toMatchObject({ value: 0, max: 1 });
+    expect(text()).toContain("正在核對商品與可用位置");
+    expect(button("一次指紋確認並更新 1 個 SKU")).toBeUndefined();
+    expect(fixture.busy.at(-1)).toBe(true);
+    vi.mocked(fetch).mockResolvedValueOnce(Response.json({ ...batch,
+      rows: [{ ...batch.rows[0], requestedUrls: [mismatch ? "https://images.example/wrong.jpg" : urls[0], ...Array(9).fill(null)] }],
+      previewProgress: { checkedSkus: 1, totalSkus: 1, currentSku: null } }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_500); });
+    if (mismatch) {
+      expect(text()).toContain("核對結果的圖片位置與所選內容不一致");
+      expect(button("一次指紋確認並更新 1 個 SKU")).toBeUndefined();
+    } else {
+      expect(button("一次指紋確認並更新 1 個 SKU").props.disabled).toBe(true);
+      expect(fixture.busy.at(-1)).toBe(false);
+    }
+    expect(fixture.calls.filter(call => call.method === "PATCH")).toHaveLength(0);
+  } finally { vi.useRealTimers(); }
+});
+
+it("keeps an uncertain dispatch locked if its status read still returns only a ready preview", async () => {
+  const fixture = await mountSafetyFixture({ uncertainCommit: true });
+  await chooseOne();
+  await act(async () => { await button("準備圖片並核對 1 個 SKU").props.onClick(); });
+  await act(async () => renderer!.root.findByProps({ type: "checkbox" }).props.onChange({ target: { checked: true } }));
+  await act(async () => { await button("一次指紋確認並更新 1 個 SKU").props.onClick(); });
+  vi.mocked(fetch).mockResolvedValueOnce(Response.json(batch));
+  await act(async () => { await button("重新讀取本批次進度").props.onClick(); });
+  expect(text()).toContain("Notebook Key 尚未確認這次送出狀態");
+  expect(button("選擇資料夾").props.disabled).toBe(true);
+  expect(button("一次指紋確認並更新 1 個 SKU")).toBeUndefined();
+  expect(fixture.calls.filter(call => call.method === "PATCH")).toHaveLength(1);
+});
+
+it("freshly previews retained files after the prior collision resolves while a second SKU has no previous image write", async () => {
+  await mountSafetyFixture();
+  const second = new File(["image"], "AFA11AM_01.jpg", { type: "image/jpeg" });
+  Object.defineProperty(second, "webkitRelativePath", { value: `AF_US組圖_AFA11AM_V11/${second.name}` });
+  await act(async () => renderer!.root.findByProps({ "aria-label": "選擇商品資料夾" }).props.onChange({ target: { files: [file("01"), second], value: "" } }));
+  const requestedUrls = [urls[0], ...Array(9).fill(null)];
+  const ready = { ...batch, rows: ["AFA11AM", "AFA12AM"].map(sellerSku => ({ ...batch.rows[0], sellerSku, requestedUrls })), totals: { ...batch.totals, skus: 2, ready: 2 } };
+  const upload = () => Response.json({ amazonUrl: urls[0], readyForAmazon: true, expiresAt: sourceExpiry });
+  vi.mocked(fetch).mockResolvedValueOnce(upload()).mockResolvedValueOnce(upload()).mockResolvedValueOnce(Response.json(ready));
+  await act(async () => { await button("準備圖片並核對 2 個 SKU").props.onClick(); });
+  await act(async () => renderer!.root.findByProps({ type: "checkbox" }).props.onChange({ target: { checked: true } }));
+  vi.mocked(fetch).mockResolvedValueOnce(Response.json({ ...ready, phase: "stopped", blockedByPreviousWrite: true,
+    rows: ready.rows.map(row => ({ ...row, state: "not-started", code: "UPDATE_STATUS_UNKNOWN" })), totals: { ...ready.totals, ready: 0 } }));
+  await act(async () => { await button("一次指紋確認並更新 2 個 SKU").props.onClick(); });
+  vi.mocked(fetch).mockResolvedValueOnce(Response.json({ ...ready, batchId: "old-readonly-batch", phase: "completed", rows: [
+    { ...ready.rows[0], state: "blocked", code: "IMAGE_WRITE_NOT_FOUND" },
+    { ...ready.rows[1], state: "verified", acceptedAt: new Date(initialNow).toISOString() },
+  ], totals: { ...ready.totals, ready: 0, blocked: 1, submitted: 1, accepted: 1, verified: 1 } }));
+  await act(async () => { await button("回查擋住本次更新的先前紀錄").props.onClick(); });
+  expect(button("重新核對保留的圖片").props.disabled).toBe(false);
+  const priorCalls = vi.mocked(fetch).mock.calls.length;
+  vi.mocked(fetch).mockResolvedValueOnce(upload()).mockResolvedValueOnce(upload()).mockResolvedValueOnce(Response.json({ ...ready, batchId: "fresh-preview", reviewToken: "fresh-review" }));
+  await act(async () => { await button("重新核對保留的圖片").props.onClick(); });
+  expect(vi.mocked(fetch).mock.calls.slice(priorCalls).map(([, init]) => init?.method)).toEqual(["POST", "POST", "POST"]);
+  expect(button("一次指紋確認並更新 2 個 SKU").props.disabled).toBe(true);
+  expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "PATCH")).toHaveLength(1);
+});
+
+it("explains a completed local refresh when an unsent stopped batch has no accepted image receipt", async () => {
+  await mountSafetyFixture();
+  await chooseOne();
+  await act(async () => { await button("準備圖片並核對 1 個 SKU").props.onClick(); });
+  await act(async () => renderer!.root.findByProps({ type: "checkbox" }).props.onChange({ target: { checked: true } }));
+  const stopped = { ...batch, phase: "stopped", rows: [{ ...batch.rows[0], state: "not-started", code: "ACTION_CANCELLED" }], totals: { ...batch.totals, ready: 0 } };
+  vi.mocked(fetch).mockResolvedValueOnce(Response.json(stopped));
+  await act(async () => { await button("一次指紋確認並更新 1 個 SKU").props.onClick(); });
+  vi.mocked(fetch).mockResolvedValueOnce(Response.json(stopped));
+  await act(async () => { await button("重新讀取本批次進度").props.onClick(); });
+  expect(text()).toContain("已讀取最新進度：本批次尚未送出，沒有已接受的圖片可回查");
+  expect(button("一次指紋確認並更新 1 個 SKU")).toBeUndefined();
 });

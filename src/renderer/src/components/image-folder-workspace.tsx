@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type DragEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type DragEvent } from "react";
 import { LISTING_IMAGE_MIN_VALIDITY_MS, LISTING_IMAGE_RETENTION_MS } from "../../../shared/listing-image-retention";
 import type { ListingImageBatchRow, ListingImageBatchSnapshot } from "../../../shared/listing-image-batch";
 import { parseListingImageReadbackDiagnostics, type ListingImageReadbackBlocker, type ListingImageReadbackDiagnostics } from "../../../shared/listing-image-readback";
@@ -6,9 +6,9 @@ import { inspectImageFolders, readDroppedImageFolders, type BrowserFolderEntry, 
 import ImageSharedSelection from "./image-shared-selection";
 
 const BATCH_PATH = "/api/sp-api/listing-images-batch";
-const ACTIVE_PHASES = new Set(["revalidating", "awaiting-approval", "submitting", "readback"]);
+const ACTIVE_PHASES = new Set(["preparing", "revalidating", "awaiting-approval", "submitting", "readback"]);
 const ROW_LABELS: Record<ListingImageBatchRow["state"], string> = {
-  ready: "★ 核對通過", unchanged: "☆ 圖片相同", blocked: "待修正", "not-started": "尚未送出", submitting: "送出中",
+  checking: "核對中", ready: "★ 核對通過", unchanged: "☆ 圖片相同", blocked: "待修正", "not-started": "尚未送出", submitting: "送出中",
   accepted: "Amazon 已接受，待回查", verified: "★ Amazon 回查確認", unknown: "結果待確認，不可重送", rejected: "Amazon 未接受", simulated: "展示模式已完成",
 };
 
@@ -66,6 +66,10 @@ function responseSnapshot(value: unknown, marketplaceId: string, expectedSkus: r
       !Array.isArray(row.changedSlots) || !Array.isArray(row.deletedSlots) || [...row.changedSlots, ...row.deletedSlots].some(slot => !Number.isInteger(slot) || slot < 1 || slot > 10) ||
       (row.readbackDiagnostics !== undefined && !parseListingImageReadbackDiagnostics(row.readbackDiagnostics))) ||
     (item.lastReadbackAt !== undefined && item.lastReadbackAt !== null && (typeof item.lastReadbackAt !== "string" || !Number.isFinite(Date.parse(item.lastReadbackAt)))) ||
+    (item.previewProgress !== undefined && (!item.previewProgress || !Number.isSafeInteger(item.previewProgress.checkedSkus) ||
+      item.previewProgress.checkedSkus < 0 || item.previewProgress.checkedSkus > expectedSkus.length || item.previewProgress.totalSkus !== expectedSkus.length ||
+      (item.previewProgress.currentSku !== null && !expectedSkus.includes(item.previewProgress.currentSku)))) ||
+    (item.blockedByPreviousWrite !== undefined && (item.blockedByPreviousWrite !== true || item.phase !== "stopped" || item.rows.some(row => ["accepted", "verified", "submitting", "unknown"].includes(row.state)))) ||
     !item.totals || Object.values(item.totals).some(count => !Number.isSafeInteger(count) || count < 0) || item.totals.skus !== item.rows.length) {
     throw new Error("批次回應與本次商品不一致，已停止；請更新 Notebook Key 後重新核對。");
   }
@@ -90,9 +94,54 @@ function LocalThumbnail({ file, slot }: { file: File; slot: number }) {
 }
 
 type FolderState = ImageFolderRow & { preparation: string; uploaded: number; urls: (string | null)[]; expiresAt: string | null };
+type PreparedImageRow = { sellerSku: string; urls: (string | null)[]; expiresAt: number };
+type BatchProgressValue = { label: string; completed: number; total: number; current: string | null };
+
+function BatchProgress({ value, determinate }: { value: BatchProgressValue; determinate: boolean }) {
+  const element = useRef<HTMLDivElement | null>(null);
+  useLayoutEffect(() => {
+    const node = element.current;
+    const header = node?.closest(".workspace-content") ? node.ownerDocument.querySelector(".workspace-header") : null;
+    if (!node || !header) return;
+    const update = () => node.style.setProperty("--image-progress-top", `${Math.ceil(header.getBoundingClientRect().height) + 12}px`);
+    update();
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(update);
+    observer?.observe(header);
+    window.addEventListener("resize", update);
+    return () => { observer?.disconnect(); window.removeEventListener("resize", update); };
+  }, []);
+  return <div ref={element} className="image-batch-progress" role="status" aria-live="polite" aria-label="圖片批次處理進度">
+    <strong>{value.label}</strong><span>{value.current ?? "正在處理，請保留這個工作區。"}</span>
+    {determinate ? <><progress aria-label={value.label} value={value.completed} max={value.total} /><span>{`${value.completed}／${value.total} 已完成`}</span></>
+      : <progress aria-label={value.label} />}
+  </div>;
+}
+
+function validatePreparedReview(reviewed: ListingImageBatchSnapshot, prepared: readonly PreparedImageRow[]) {
+  if (reviewed.phase === "preparing") return;
+  const shared = reviewed.replacementMode === "selected-slots";
+  if (reviewed.rows.some(row => {
+    const supplied = prepared.find(input => input.sellerSku === row.sellerSku)!.urls;
+    if (shared && row.state === "blocked") return row.deletedSlots.length > 0;
+    return (shared && row.deletedSlots.length > 0) || row.requestedUrls.some((url, slot) => url !== (shared ? supplied[slot] ?? row.previousUrls[slot] : supplied[slot]));
+  })) throw new Error("核對結果的圖片位置與所選內容不一致，已停止，請重新核對。");
+  const readyExpiry = Math.min(...reviewed.rows.filter(row => row.state === "ready").map(row => prepared.find(input => input.sellerSku === row.sellerSku)!.expiresAt));
+  if (reviewed.totals.ready && (Date.parse(reviewed.expiresAt) > readyExpiry - LISTING_IMAGE_MIN_VALIDITY_MS || Date.parse(reviewed.expiresAt) <= Date.now())) throw new Error("核對期限已不足以送出這組圖片，請重新準備並核對；尚未更新 Amazon。");
+}
+
+function RecoveredRows({ batch, showReasons }: { batch: ListingImageBatchSnapshot; showReasons: boolean }) {
+  return <div className="image-folder-table image-folder-recovered" tabIndex={0} aria-label="先前圖片更新進度"><table>
+    <thead><tr><th scope="col">SKU／ASIN</th><th scope="col">先前送出圖片</th><th scope="col">狀況</th></tr></thead>
+    <tbody>{batch.rows.map(row => <tr key={row.sellerSku} data-state={row.state}><td><strong>{row.sellerSku}</strong><small>{row.asin ?? "ASIN 尚未確認"}</small></td>
+      <td>{row.acceptedAt ? `${row.requestedUrls.filter(Boolean).length} 張` : "沒有可核對的接受紀錄"}</td>
+      <td aria-live="polite"><strong>{ROW_LABELS[row.state]}</strong>{row.message && <p>{row.message}</p>}{showReasons && row.readbackDiagnostics && <ReadbackReasons diagnostics={row.readbackDiagnostics} sellerSku={row.sellerSku} state={row.state} />}</td></tr>)}</tbody>
+  </table></div>;
+}
 
 export default function ImageFolderWorkspace({ marketplaceId, onBusyChange }: { marketplaceId: string; onBusyChange: (busy: boolean) => void }) {
   const [supported, setSupported] = useState(false);
+  const [progressSupported, setProgressSupported] = useState(false);
+  const [progress, setProgress] = useState<BatchProgressValue | null>(null);
   const [sharedSupported, setSharedSupported] = useState(false);
   const [looseFiles, setLooseFiles] = useState<readonly File[]>([]);
   const [selectionBusy, setSelectionBusy] = useState(false);
@@ -102,6 +151,7 @@ export default function ImageFolderWorkspace({ marketplaceId, onBusyChange }: { 
   const [recoveryText, setRecoveryText] = useState("");
   const [rows, setRows] = useState<FolderState[]>([]);
   const [batch, setBatch] = useState<ListingImageBatchSnapshot | null>(null);
+  const [priorBatch, setPriorBatch] = useState<ListingImageBatchSnapshot | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [working, setWorking] = useState(false);
   const [attempted, setAttempted] = useState(false);
@@ -116,7 +166,9 @@ export default function ImageFolderWorkspace({ marketplaceId, onBusyChange }: { 
   const running = useRef(false);
   const submitted = useRef(false);
   const controller = useRef<AbortController | null>(null);
-  const active = Boolean(batch && ACTIVE_PHASES.has(batch.phase));
+  const preparedReview = useRef<readonly PreparedImageRow[]>([]);
+  const observedBatch = priorBatch ?? batch;
+  const active = Boolean(observedBatch && ACTIVE_PHASES.has(observedBatch.phase));
   const busy = working || active || uncertainSubmission || checking || selectionBusy;
   const shared = replacementMode === "selected-slots";
   const showReadbackReasons = !checking && !active && !observationPaused;
@@ -130,12 +182,13 @@ export default function ImageFolderWorkspace({ marketplaceId, onBusyChange }: { 
   useEffect(() => {
     const revision = ++generation.current;
     const request = new AbortController();
-    setSupported(false); setReadbackSupported(false); setSharedSupported(false);
+    setSupported(false); setReadbackSupported(false); setSharedSupported(false); setProgressSupported(false);
     void fetch(`${BATCH_PATH}?marketplaceId=${encodeURIComponent(marketplaceId)}`, { signal: request.signal }).then(jsonResponse).then(value => {
       if (revision !== generation.current) return;
       const item = value as Record<string, unknown>;
       if (item.capability !== "listing-image-batch-v1" || item.maxSkus !== 30 || item.maxImagesPerSku !== 10 || item.replacementMode !== "complete" || item.confirmationMode !== "native") throw new Error("目前 Notebook Key 尚未支援完整的資料夾批次更新，請更新桌面程式。");
       setSupported(true);
+      setProgressSupported(item.previewProgress === "batch-v1");
       setSharedSupported(item.selectedSlotReplacement === true);
       setReadbackSupported(item.readbackRecovery === "exact-sku-v1");
     }).catch(reason => { if (revision === generation.current && !request.signal.aborted) setError(reason instanceof Error ? reason.message : "無法確認批次功能，請更新 Notebook Key。"); });
@@ -146,14 +199,16 @@ export default function ImageFolderWorkspace({ marketplaceId, onBusyChange }: { 
     controller.current?.abort();
     running.current = false;
     submitted.current = false;
-    setWorking(false); setRows([]); setLooseFiles([]); setSelectionBusy(false); setSharedSupported(false); setBatch(null); setAcknowledged(false); setAttempted(false); setSupported(false); setUncertainSubmission(false); setReadbackSupported(false); setChecking(false); setRecoveryText("");
+    preparedReview.current = [];
+    setPriorBatch(null); setProgress(null); setWorking(false); setRows([]); setLooseFiles([]); setSelectionBusy(false); setSharedSupported(false); setBatch(null); setAcknowledged(false); setAttempted(false); setSupported(false); setUncertainSubmission(false); setReadbackSupported(false); setChecking(false); setRecoveryText("");
     setError("帳號或安全環境已更新，本批次已停止；請重新選擇資料夾。已送出的更新不會重送。");
     setContextEpoch(value => value + 1);
   }), []);
 
   const acceptRows = useCallback((selected: ImageFolderRow[]) => {
     setRows(selected.map(row => ({ ...row, preparation: "待準備", uploaded: 0, urls: Array.from({ length: 10 }, () => null), expiresAt: null })));
-    setBatch(null); setAcknowledged(false); setAttempted(false); setObservationPaused(false); setUncertainSubmission(false); submitted.current = false;
+    preparedReview.current = [];
+    setPriorBatch(null); setProgress(null); setBatch(null); setAcknowledged(false); setAttempted(false); setObservationPaused(false); setUncertainSubmission(false); submitted.current = false;
     setError(null);
   }, []);
   const acceptFiles = (files: readonly SelectedFolderImage[]) => {
@@ -193,17 +248,23 @@ export default function ImageFolderWorkspace({ marketplaceId, onBusyChange }: { 
   };
 
   const observe = async (refresh = false) => {
-    if (!batch || running.current) return;
+    if (!observedBatch || running.current) return;
     if (refresh && !readbackSupported && !active && !uncertainSubmission) { setError("目前 Notebook Key 只支援讀取已保存進度，請更新桌面程式後重新回查 Amazon。"); return; }
     const revision = generation.current;
     running.current = true;
     if (refresh) setChecking(true);
     const request = new AbortController(); controller.current = request;
     try {
-      const value = await jsonResponse(await fetch(`${BATCH_PATH}?marketplaceId=${encodeURIComponent(marketplaceId)}&batchId=${encodeURIComponent(batch.batchId)}${refresh && readbackSupported ? "&refresh=true" : ""}`, { signal: request.signal }));
+      const value = await jsonResponse(await fetch(`${BATCH_PATH}?marketplaceId=${encodeURIComponent(marketplaceId)}&batchId=${encodeURIComponent(observedBatch.batchId)}${refresh && readbackSupported ? "&refresh=true" : ""}`, { signal: request.signal }));
       if (revision !== generation.current) return;
-      setBatch(responseSnapshot(value, marketplaceId, batch.rows.map(row => row.sellerSku), batch.batchId, batch.replacementMode));
-      setError(null); setObservationPaused(false); setUncertainSubmission(false);
+      const updated = responseSnapshot(value, marketplaceId, observedBatch.rows.map(row => row.sellerSku), observedBatch.batchId, observedBatch.replacementMode);
+      if (!priorBatch && observedBatch.phase === "preparing") validatePreparedReview(updated, preparedReview.current);
+      if (priorBatch) setPriorBatch(updated); else setBatch(updated);
+      const unresolved = !priorBatch && submitted.current && updated.phase === "ready";
+      setError(unresolved ? "Notebook Key 尚未確認這次送出狀態；請繼續讀取進度，不可重送。"
+        : refresh && updated.phase === "stopped" && updated.totals.submitted === 0 && !updated.blockedByPreviousWrite
+          ? "已讀取最新進度：本批次尚未送出，沒有已接受的圖片可回查。請依各列說明處理待確認項目。" : null);
+      setObservationPaused(unresolved); setUncertainSubmission(unresolved);
     } catch (reason) {
       if (revision === generation.current) { setError(reason instanceof Error ? reason.message : "進度暫時無法讀取，只能重新讀取，不能重送。"); setObservationPaused(true); }
     } finally { if (revision === generation.current) { running.current = false; if (refresh) setChecking(false); } }
@@ -225,7 +286,10 @@ export default function ImageFolderWorkspace({ marketplaceId, onBusyChange }: { 
     const revision = generation.current;
     const request = new AbortController(); controller.current = request;
     running.current = true; setWorking(true); setAttempted(true); setError(null); setAcknowledged(false); setBatch(null); setNow(Date.now());
-    const prepared: Array<{ sellerSku: string; urls: (string | null)[]; expiresAt: number }> = [];
+    const imageCount = validRows.reduce((total, row) => total + row.images.length, 0);
+    let preparedImages = 0;
+    setProgress({ label: "準備圖片", completed: 0, total: imageCount, current: validRows[0].sellerSku });
+    const prepared: PreparedImageRow[] = [];
     const assertRemaining = (expiry = Infinity) => {
       if (Math.min(expiry, ...prepared.map(row => row.expiresAt)) <= Date.now() + LISTING_IMAGE_MIN_VALIDITY_MS) throw new Error("圖片暫存期限不足十分鐘，請重新準備並核對；尚未更新 Amazon。");
     };
@@ -238,6 +302,7 @@ export default function ImageFolderWorkspace({ marketplaceId, onBusyChange }: { 
         for (const image of row.images) {
           if (revision !== generation.current) return;
           assertRemaining(firstExpiry ? Date.parse(firstExpiry) : Infinity);
+          setProgress({ label: "準備圖片", completed: preparedImages, total: imageCount, current: `${row.sellerSku} · 第 ${image.slot + 1} 張` });
           update(row.id, { preparation: `準備第 ${image.slot + 1} 張…` });
           const form = new FormData();
           form.set("marketplaceId", marketplaceId); form.set("sellerSku", row.sellerSku!); form.set("batchMode", "true"); form.set("file", image.file);
@@ -252,6 +317,8 @@ export default function ImageFolderWorkspace({ marketplaceId, onBusyChange }: { 
             typeof payload.expiresAt !== "string" || !Number.isFinite(Date.parse(payload.expiresAt)) || new Date(payload.expiresAt).toISOString() !== payload.expiresAt || Date.parse(payload.expiresAt) > Date.now() + LISTING_IMAGE_RETENTION_MS + 60_000) throw new Error("圖片服務尚未提供可用的暫存期限，已停止；請更新 Notebook Key 與圖片服務。");
           assertRemaining(Math.min(Date.parse(payload.expiresAt), firstExpiry ? Date.parse(firstExpiry) : Infinity));
           nextUrls[image.slot] = payload.amazonUrl;
+          preparedImages += 1;
+          setProgress({ label: "準備圖片", completed: preparedImages, total: imageCount, current: row.sellerSku });
           if (!firstExpiry || payload.expiresAt < firstExpiry) firstExpiry = payload.expiresAt;
           update(row.id, { uploaded: nextUrls.filter(Boolean).length, urls: [...nextUrls], expiresAt: firstExpiry });
         }
@@ -259,20 +326,16 @@ export default function ImageFolderWorkspace({ marketplaceId, onBusyChange }: { 
       }
       if (!prepared.length) throw new Error("沒有完整通過的 SKU；請修正資料夾後重新選擇。");
       assertRemaining();
-      const value = await jsonResponse(await fetch(BATCH_PATH, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ marketplaceId, replacementMode, rows: prepared.map(({sellerSku,urls}) => ({sellerSku,urls})) }), signal: request.signal }));
+      setProgress({ label: "核對 Amazon 商品與圖片位置", completed: 0, total: prepared.length, current: null });
+      const value = await jsonResponse(await fetch(BATCH_PATH, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ marketplaceId, replacementMode, ...(progressSupported ? { asyncPreview: true } : {}), rows: prepared.map(({sellerSku,urls}) => ({sellerSku,urls})) }), signal: request.signal }));
       if (revision === generation.current) {
         const reviewed = responseSnapshot(value, marketplaceId, prepared.map(row => row.sellerSku), undefined, replacementMode);
-        if (reviewed.rows.some(row => {
-          const supplied = prepared.find(input => input.sellerSku === row.sellerSku)!.urls;
-          if (shared && row.state === "blocked") return row.deletedSlots.length > 0;
-          return (shared && row.deletedSlots.length > 0) || row.requestedUrls.some((url, slot) => url !== (shared ? supplied[slot] ?? row.previousUrls[slot] : supplied[slot]));
-        })) throw new Error("核對結果的圖片位置與所選內容不一致，已停止，請重新核對。");
-        const readyExpiry = Math.min(...reviewed.rows.filter(row => row.state === "ready").map(row => prepared.find(input => input.sellerSku === row.sellerSku)!.expiresAt));
-        if (reviewed.totals.ready && (Date.parse(reviewed.expiresAt) > readyExpiry - LISTING_IMAGE_MIN_VALIDITY_MS || Date.parse(reviewed.expiresAt) <= Date.now())) throw new Error("核對期限已不足以送出這組圖片，請重新準備並核對；尚未更新 Amazon。");
-        setBatch(reviewed); setNow(Date.now());
+        validatePreparedReview(reviewed, prepared);
+        preparedReview.current = prepared;
+        setBatch(reviewed); setProgress(null); setNow(Date.now());
       }
     } catch (reason) { if (revision === generation.current) setError(reason instanceof Error ? reason.message : "本批次準備未完成；不會自動重傳或更新 Amazon。"); }
-    finally { if (revision === generation.current) { running.current = false; setWorking(false); } }
+    finally { if (revision === generation.current) { running.current = false; setWorking(false); setProgress(null); } }
   };
 
   const submit = async () => {
@@ -289,10 +352,10 @@ export default function ImageFolderWorkspace({ marketplaceId, onBusyChange }: { 
     } finally { if (revision === generation.current) { running.current = false; setWorking(false); } }
   };
 
-  const recover = async () => {
+  const recover = async (previousBlocker = false) => {
     if (busy || running.current) return;
     if (!readbackSupported) { setError("請更新 Notebook Key 後，再讀取先前圖片更新。"); return; }
-    const skus = recoveryText.split(/\r?\n/u).filter(sku => Boolean(sku.trim()));
+    const skus = previousBlocker && batch ? batch.rows.map(row => row.sellerSku) : recoveryText.split(/\r?\n/u).filter(sku => Boolean(sku.trim()));
     if (skus.some(sku => sku !== sku.trim())) { setError("SKU 前後不可有空白；請每行貼上一個完整 SKU。"); return; }
     if (!skus.length || skus.length > 30 || new Set(skus).size !== skus.length) {
       setError("請每行貼上一個完整 SKU，最多 30 個且不可重複。"); return;
@@ -304,16 +367,32 @@ export default function ImageFolderWorkspace({ marketplaceId, onBusyChange }: { 
       const value = await jsonResponse(await fetch(`${BATCH_PATH}?marketplaceId=${encodeURIComponent(marketplaceId)}&recoverSkus=${encodeURIComponent(JSON.stringify(skus))}`, { signal: request.signal }));
       if (revision !== generation.current) return;
       const recovered = responseSnapshot(value, marketplaceId, skus);
-      if (recovered.phase === "ready" || recovered.rows.some(row => ["ready", "submitting", "not-started"].includes(row.state))) throw new Error("先前更新回應不是唯讀進度，已停止，請更新 Notebook Key。");
-      setRows([]); setLooseFiles([]); setBatch(recovered); setAcknowledged(false); setObservationPaused(false); setUncertainSubmission(false);
+      if (!["readback", "completed", "stopped"].includes(recovered.phase) || recovered.rows.some(row => ["checking", "ready", "submitting", "not-started"].includes(row.state))) throw new Error("先前更新回應不是唯讀進度，已停止，請更新 Notebook Key。");
+      if (previousBlocker) setPriorBatch(recovered);
+      else { setRows([]); setLooseFiles([]); setPriorBatch(null); setBatch(recovered); }
+      setAcknowledged(false); setObservationPaused(false); setUncertainSubmission(false);
       submitted.current = true;
     } catch (reason) {
       if (revision === generation.current) { setError(reason instanceof Error ? reason.message : "先前圖片進度未能讀取，沒有重新送出更新。"); setObservationPaused(true); }
     } finally { if (revision === generation.current) { running.current = false; setChecking(false); } }
   };
 
+  const mainProgress = observedBatch?.phase === "preparing" ? observedBatch.previewProgress : undefined;
+  const phaseLabel = observedBatch?.phase === "preparing" ? "核對 Amazon 商品與圖片位置"
+    : observedBatch?.phase === "revalidating" ? "送出前重新核對"
+    : observedBatch?.phase === "awaiting-approval" ? "等待 Touch ID／Windows Hello 確認"
+    : observedBatch?.phase === "submitting" ? "正在送出圖片更新"
+    : observedBatch?.phase === "readback" || checking ? "正在唯讀回查 Amazon 圖片" : null;
+  const visibleProgress = progress ?? (phaseLabel ? {
+    label: phaseLabel,
+    completed: observedBatch?.phase === "submitting" ? observedBatch.totals.submitted : mainProgress?.checkedSkus ?? 0,
+    total: observedBatch?.totals.skus ?? 1,
+    current: mainProgress?.currentSku ?? null,
+  } : null);
   const awaitingResult = submitted.current && batch?.phase === "ready";
+  const previousImagesResolved = priorBatch?.rows.every(row => row.state === "verified" || (row.state === "blocked" && row.code === "IMAGE_WRITE_NOT_FOUND"));
   return <section className="image-folder-workspace" aria-label="批次圖片更新">
+    {visibleProgress && <BatchProgress value={visibleProgress} determinate={Boolean(progress?.label === "準備圖片" || mainProgress || observedBatch?.phase === "submitting")} />}
     <p>每批最多 <strong>30 個 SKU</strong>，每個 SKU 最多 <strong>10 張</strong>；可選單張、多張圖片或商品資料夾，實際可用位置依商品檢查結果。</p>
     <p className="image-folder-temporary">圖片只作暫時轉交，準備後保留 1 小時，再由服務自動清理。Amazon 已接受不代表已下載完成，圖片不會在送出後立刻刪除。</p>
     <div className="image-folder-drop" onDragOver={event => event.preventDefault()} onDrop={dropped} aria-disabled={busy || !supported}>
@@ -341,7 +420,7 @@ export default function ImageFolderWorkspace({ marketplaceId, onBusyChange }: { 
     <details className="image-folder-recovery"><summary>找回先前圖片更新</summary>
       <p>重新開啟程式後，可貼上先前送出的 SKU。只核對本機紀錄與 Amazon 圖片，不需重新上傳檔案。</p>
       <label>每行一個完整 SKU，最多 30 個<textarea aria-label="找回圖片更新的 SKU" value={recoveryText} disabled={busy} rows={4} onChange={event => setRecoveryText(event.target.value)} /></label>
-      <button type="button" disabled={busy || !supported || !recoveryText.trim()} onClick={recover}>讀取先前圖片進度</button>
+      <button type="button" disabled={busy || !supported || !recoveryText.trim()} onClick={() => recover()}>讀取先前圖片進度</button>
     </details>
     <p className="image-folder-rule">{shared ? "共用圖片只替換指定位置，其他位置全部保留。01 是主圖，02–10 是副圖；不必補齊整組。" : "以資料夾為完整圖片組：01 主圖、02–10 副圖；資料夾未提供的舊圖片會列出並清除。"}</p>
     {error && <p className="price-error" role="alert">{error}</p>}
@@ -353,7 +432,7 @@ export default function ImageFolderWorkspace({ marketplaceId, onBusyChange }: { 
           return <tr key={row.id} data-state={row.errors.length ? "blocked" : result?.state ?? "local"}>
             <td><strong>{row.sellerSku ?? "SKU 待確認"}</strong><small>{row.folderName}</small>{result && <small>{result.asin ?? "ASIN 待確認"} · {result.title}</small>}</td>
             <td><div className="image-folder-thumbnails">{row.images.map((image, index) => <LocalThumbnail key={`${image.slot}-${index}`} file={image.file} slot={image.slot} />)}</div></td>
-            <td>{result?.state === "blocked" ? <span>本 SKU 未通過核對，暫不更新。</span> : result ? <><span>★ 更新 {result.changedSlots.filter(slot => !result.deletedSlots.includes(slot)).length} 個位置</span>{result.deletedSlots.length > 0 ? <strong className="image-folder-deletions">清除第 {result.deletedSlots.join("、")} 張</strong> : <small>{shared ? "☆ 其他位置全部保留" : "☆ 沒有多出的舊圖"}</small>}
+            <td>{result?.state === "checking" ? <span>正在核對商品與可用位置…</span> : result?.state === "blocked" ? <span>本 SKU 未通過核對，暫不更新。</span> : result ? <><span>★ 更新 {result.changedSlots.filter(slot => !result.deletedSlots.includes(slot)).length} 個位置</span>{result.deletedSlots.length > 0 ? <strong className="image-folder-deletions">清除第 {result.deletedSlots.join("、")} 張</strong> : <small>{shared ? "☆ 其他位置全部保留" : "☆ 沒有多出的舊圖"}</small>}
               {result.changedSlots.length > 0 && <details><summary>查看逐張變更（原圖／新圖）</summary>
                 <table className="image-folder-comparison" aria-label={`${row.sellerSku} 逐張圖片變更`}><thead><tr><th scope="col">位置</th><th scope="col">原圖</th><th scope="col">新圖</th></tr></thead><tbody>
                   {result.changedSlots.map(slot => <tr key={slot}>
@@ -368,23 +447,29 @@ export default function ImageFolderWorkspace({ marketplaceId, onBusyChange }: { 
         })}
       </tbody></table></div>
       {!batch && !attempted && <button type="button" className="price-primary-button" disabled={busy || !supported || !validRows.length} onClick={() => prepare()}>{working ? "準備與核對中…" : `準備圖片並核對 ${validRows.length} 個 SKU`}</button>}
-      {working && <p role="status">準備與核對中，請保留這個工作區。</p>}
+      {working && !visibleProgress && <p role="status">正在處理，請保留這個工作區。</p>}
       {attempted && !submitted.current && (!batch || batch.phase === "ready") && <button type="button" disabled={busy || !supported || !validRows.length} onClick={() => prepare(true)}>重新準備並核對</button>}
     </>}
-    {batch && rows.length === 0 && <div className="image-folder-table image-folder-recovered" tabIndex={0} aria-label="先前圖片更新進度"><table>
-      <thead><tr><th scope="col">SKU／ASIN</th><th scope="col">送出圖片</th><th scope="col">狀況</th></tr></thead>
-      <tbody>{batch.rows.map(row => <tr key={row.sellerSku} data-state={row.state}><td><strong>{row.sellerSku}</strong><small>{row.asin ?? "ASIN 尚未確認"}</small></td>
-        <td>{row.acceptedAt ? `${row.requestedUrls.filter(Boolean).length} 張` : "沒有可核對的接受紀錄"}</td>
-        <td aria-live="polite"><strong>{ROW_LABELS[row.state]}</strong>{row.message && <p>{row.message}</p>}{showReadbackReasons && row.readbackDiagnostics && <ReadbackReasons diagnostics={row.readbackDiagnostics} sellerSku={row.sellerSku} state={row.state} />}</td></tr>)}</tbody>
-    </table></div>}
-    {(checking || batch?.phase === "readback") && <p role="status">{readbackSupported ? "正在唯讀回查 Amazon 圖片，請稍候…" : "正在讀取圖片更新進度，請稍候…"}</p>}
+    {batch && rows.length === 0 && <RecoveredRows batch={batch} showReasons={showReadbackReasons} />}
+    {batch?.blockedByPreviousWrite && <div className="image-folder-prior-blocker" role="region" aria-label="本次尚未送出">
+      <strong>本批次尚未送出，尚未要求指紋確認。</strong>
+      <p>這些 SKU 有先前送出、仍待確認的圖片紀錄。請先回查舊紀錄；這次選的圖片仍保留。</p>
+      {!priorBatch && <button type="button" disabled={busy || !readbackSupported} onClick={() => recover(true)}>回查擋住本次更新的先前紀錄</button>}
+      {priorBatch && <><h3>擋住本次更新的先前紀錄</h3><RecoveredRows batch={priorBatch} showReasons={showReadbackReasons} />
+        <p role="status">{priorBatch.message ?? `先前紀錄：回查確認 ${priorBatch.totals.verified}／${priorBatch.totals.skus} 個 SKU。`}</p>
+        {previousImagesResolved && <p>可重新核對保留的圖片；送出前仍會檢查是否有其他待確認更新，並重新要求指紋確認。</p>}
+        {previousImagesResolved && <button type="button" disabled={busy} onClick={() => {
+          submitted.current = false; setPriorBatch(null); setObservationPaused(false); return prepare(true);
+        }}>重新核對保留的圖片</button>}</>}
+    </div>}
+    {(checking || observedBatch?.phase === "readback") && <p role="status">{readbackSupported ? "正在唯讀回查 Amazon 圖片，請稍候…" : "正在讀取圖片更新進度，請稍候…"}</p>}
     {batch && <div className="image-folder-confirmation">
       <p role="status">{batch.message ?? (batch.phase === "ready" ? `核對通過 ${batch.totals.ready} 個 SKU，待修正 ${batch.totals.blocked} 個。` : `已送出 ${batch.totals.submitted}／${batch.totals.skus} · Amazon 已接受 ${batch.totals.accepted} · 回查確認 ${batch.totals.verified}`)}</p>
       {batch.phase === "ready" && !awaitingResult && <><p>本次核對有效至 {new Date(batch.expiresAt).toLocaleString("zh-TW")}；每張圖片送出時仍須保留超過十分鐘的有效期。</p><label><input type="checkbox" aria-label="確認本批圖片變更" checked={acknowledged} disabled={busy} onChange={event => setAcknowledged(event.target.checked)} />{batch.replacementMode === "selected-slots" ? "我已核對每個 SKU 的指定圖片位置，其他位置全部保留，只更新核對通過的 SKU。" : "我已核對完整圖片組與列出的舊圖清除項目，只更新核對通過的 SKU。"}</label>
         <button type="button" className="price-primary-button" disabled={busy || !acknowledged || !batch.totals.ready || Date.parse(batch.expiresAt) <= now} onClick={submit}>一次指紋確認並更新 {batch.totals.ready} 個 SKU</button>
         {Date.parse(batch.expiresAt) <= now && <p role="status">核對已到期，請使用「重新準備並核對」；原檔仍保留，尚未送出 Amazon 更新。</p>}</>}
-      {batch.lastReadbackAt && <p>最近回查：{new Date(batch.lastReadbackAt).toLocaleString("zh-TW")}</p>}
-      {(batch.phase !== "ready" || awaitingResult) && <button type="button" disabled={working || checking || (active && !observationPaused)} onClick={() => observe(true)}>重新讀取本批次進度</button>}
+      {observedBatch?.lastReadbackAt && <p>最近回查：{new Date(observedBatch.lastReadbackAt).toLocaleString("zh-TW")}</p>}
+      {(batch.phase !== "ready" || awaitingResult) && <button type="button" disabled={working || checking || (active && !observationPaused)} onClick={() => batch.blockedByPreviousWrite && !priorBatch ? recover(true) : observe(true)}>{priorBatch ? "再次回查先前紀錄" : "重新讀取本批次進度"}</button>}
       {(active || awaitingResult) && <p>本批次已交給 Notebook Key；只讀取既有進度，不會重送更新。</p>}
     </div>}
   </section>;

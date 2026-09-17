@@ -12,7 +12,7 @@ export type ListingImageBatchRowInput = Readonly<{
 }>;
 
 export type ListingImageBatchRowState =
-  | "ready" | "unchanged" | "blocked" | "not-started" | "submitting"
+  | "checking" | "ready" | "unchanged" | "blocked" | "not-started" | "submitting"
   | "accepted" | "verified" | "unknown" | "rejected" | "simulated";
 
 export type ListingImageBatchRow = Readonly<{
@@ -42,6 +42,8 @@ export type ListingImageBatchCapabilities = Readonly<{
   selectedSlotReplacement?: true;
   confirmationMode: "native";
   readbackRecovery?: "exact-sku-v1";
+  /** Opt-in initial preview returns a pollable main-owned plan. */
+  previewProgress?: "batch-v1";
 }>;
 
 export type ListingImageBatchSnapshot = Readonly<{
@@ -51,19 +53,23 @@ export type ListingImageBatchSnapshot = Readonly<{
   marketplaceId: MarketplaceId;
   mode: "live" | "demo";
   replacementMode: ListingImageReplacementMode;
-  phase: "ready" | "revalidating" | "awaiting-approval" | "submitting" | "readback" | "completed" | "stopped";
+  phase: "preparing" | "ready" | "revalidating" | "awaiting-approval" | "submitting" | "readback" | "completed" | "stopped";
   expiresAt: string;
   rows: readonly ListingImageBatchRow[];
   totals: Readonly<{ skus: number; ready: number; blocked: number; unchanged: number; submitted: number; accepted: number; verified: number; deletedSlots: number }>;
   message: string | null;
   /** Main-owned completion time of the latest bounded readback pass. */
   lastReadbackAt?: string | null;
+  previewProgress?: Readonly<{ checkedSkus: number; totalSkus: number; currentSku: string | null }>;
+  /** No attempt in this plan started; an older durable write blocked approval. */
+  blockedByPreviousWrite?: true;
 }>;
 
 export type ListingImageBatchPreviewInput = Readonly<{
   marketplaceId: MarketplaceId;
   replacementMode: ListingImageReplacementMode;
   rows: readonly ListingImageBatchRowInput[];
+  asyncPreview?: true;
 }>;
 
 export type ListingImageBatchCommitInput = Readonly<{

@@ -12,14 +12,27 @@
 .image-shared-item > p { margin: 0; }
 .image-shared-suggestions { min-width: 0; }
 .image-shared-suggestions > p { color: var(--muted, #506579); }
-.image-shared-candidates { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr)); gap: 8px; max-height: 340px; overflow-y: auto; }
-.image-shared-candidates label { display: grid; grid-template-columns: 20px minmax(0, 1fr); gap: 3px 8px; align-content: start; padding: 10px 12px; border: 1px solid var(--border, #cfd8e4); border-radius: 8px; background: var(--surface-soft, #f2f7f5); font-size: 13px; overflow-wrap: anywhere; cursor: pointer; }
-.image-shared-candidates input { grid-row: 1 / 4; width: 17px; height: 17px; margin: 2px 0 0; }
-.image-shared-candidates :is(strong, span, small) { grid-column: 2; }
+.image-shared-selection-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+.image-shared-selection-actions > button { min-height: 40px; padding: 8px 16px; }
+.image-shared-selection-actions > span { color: var(--muted, #506579); font-size: 13px; }
+.image-shared-selection-help { font-size: 13px; line-height: 1.5; }
+.image-shared-candidates { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; max-height: 360px; overflow-y: auto; list-style: none; margin: 12px 0 0; padding: 3px; }
+.image-shared-candidates > li { min-width: 0; }
+.image-shared-candidates label { display: grid; grid-template-columns: 22px minmax(100px, .8fr) minmax(0, 2fr) auto; gap: 6px 12px; align-items: center; min-height: 54px; padding: 12px 14px; border: 1px solid var(--border, #cfd8e4); border-radius: 8px; background: var(--surface, #fff); font-size: 14px; overflow-wrap: anywhere; cursor: pointer; }
+.image-shared-candidates label[data-selected="true"] { background: var(--surface-blue, #eaf4fc); border-color: #87acd0; }
+.image-shared-candidates label:not([data-disabled="true"]):hover { border-color: #509ddc; }
+.image-shared-candidates label[data-disabled="true"] { cursor: default; }
+.image-shared-candidates label:focus-within { outline: 3px solid #509ddc; outline-offset: 1px; }
+.image-shared-candidates input { width: 19px; height: 19px; margin: 0; cursor: inherit; }
+.image-shared-candidates small { color: var(--muted, #506579); }
 .image-shared-item :is(select, textarea):focus-visible { outline: 3px solid #509ddc; outline-offset: 3px; }
 @media (max-width: 640px) {
   .image-shared-item { grid-template-columns: minmax(0, 1fr); padding: 14px; gap: 12px; }
   .image-shared-file { flex-wrap: wrap; }
   .image-shared-thumbnail { width: 64px; height: 64px; flex-basis: 64px; }
   .image-shared-file > button { margin-left: auto; }
+  .image-shared-selection-actions > span { flex-basis: 100%; }
+  .image-shared-candidates label { grid-template-columns: 22px minmax(0, 1fr); gap: 4px 10px; padding: 12px; }
+  .image-shared-candidates input { grid-row: 1 / 4; align-self: start; margin-top: 2px; }
+  .image-shared-candidates :is(strong, span, small) { grid-column: 2; }
 }
